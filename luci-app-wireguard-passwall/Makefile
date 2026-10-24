@@ -51,12 +51,15 @@ endef
 define Package/luci-app-wireguard-passwall/postinst
 #!/bin/sh
 [ -n "$${IPKG_INSTROOT}" ] || {
-	rm -f /tmp/luci-indexcache* /tmp/luci-modulecache/* 2>/dev/null
-	/etc/init.d/rpcd restart
+	# like LuCI's own packages: reload (not restart) rpcd, which keeps
+	# everyone logged in and gives open sessions the new app's permissions
+	rm -f /tmp/luci-indexcache.*
+	rm -rf /tmp/luci-modulecache/
+	/etc/init.d/rpcd reload 2>/dev/null
 	# OpenWrt only enables new init scripts on fresh installs, not upgrades
 	/etc/init.d/wgpasswall enable
 	/etc/init.d/wgpasswall restart
-	echo "luci-app-wireguard-passwall: log out of LuCI and back in, then open VPN -> WireGuard Client"
+	echo "luci-app-wireguard-passwall: reload the LuCI page, then open VPN -> WireGuard + Passwall"
 }
 exit 0
 endef

@@ -30,7 +30,7 @@ Simple, consumer-router style apps for OpenWrt's LuCI web interface. Built and t
    apk add --allow-untrusted /tmp/luci-app-*.apk
    ```
    `apk update` lets apk pull the dependencies it doesn't find on the router (`qrencode`, `usbmuxd`, `wireguard-tools`, the ucode modules, ...) from the official feeds, so the router needs internet access for the install. Install the tethering app **before** you need it.
-4. **Log out of LuCI and log back in**, then open the pages under **Network** and **VPN**. LuCI decides which menu entries you may see when you log in, so an already open session won't show new entries.
+4. **Reload the LuCI page** (Ctrl+F5), then open the new pages under **Network** and **VPN**. Installing doesn't log you out.
 
 ### Installing from LuCI (signed packages)
 
@@ -66,7 +66,7 @@ echo "https://github.com/willhuang85/luci-apps/releases/latest/download/packages
 
 ### Troubleshooting
 
-- **Installed but no menu entry** – log out of LuCI and back in (and reload the page with Ctrl+F5). Still nothing? Check `apk info -e luci-app-wifisetup` (or the app you installed), run `/etc/init.d/rpcd restart` and verify `ubus list 'luci.*'` lists `luci.wifisetup`, `luci.tether` or `luci.wgpasswall`.
+- **Installed but no menu entry** – reload the page with Ctrl+F5. Still nothing? Check `apk info -e luci-app-wifisetup` (or the app you installed), run `/etc/init.d/rpcd reload` and verify `ubus list 'luci.*'` lists `luci.wifisetup`, `luci.tether` or `luci.wgpasswall`.
 - **`UNTRUSTED signature`** – see *Installing from LuCI* above, or use `apk add --allow-untrusted`.
 - **`wget ... Failed to send request: Operation not permitted`** during `apk update` – the router itself cannot reach the package mirror; a firewall rule is dropping the router's own outgoing traffic (not related to these apps). Check with:
   ```sh

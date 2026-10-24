@@ -49,11 +49,14 @@ endef
 define Package/luci-app-tether/postinst
 #!/bin/sh
 [ -n "$${IPKG_INSTROOT}" ] || {
-	rm -f /tmp/luci-indexcache* /tmp/luci-modulecache/* 2>/dev/null
-	/etc/init.d/rpcd restart
+	# like LuCI's own packages: reload (not restart) rpcd, which keeps
+	# everyone logged in and gives open sessions the new app's permissions
+	rm -f /tmp/luci-indexcache.*
+	rm -rf /tmp/luci-modulecache/
+	/etc/init.d/rpcd reload 2>/dev/null
 	/etc/init.d/usbmuxd enable 2>/dev/null
 	/etc/init.d/usbmuxd start 2>/dev/null
-	echo "luci-app-tether: log out of LuCI and back in, then open Network -> Phone Tethering"
+	echo "luci-app-tether: reload the LuCI page, then open Network -> Phone Tethering"
 }
 exit 0
 endef
