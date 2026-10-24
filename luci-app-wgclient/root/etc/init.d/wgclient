@@ -6,6 +6,7 @@ START=99
 USE_PROCD=1
 
 start_service() {
+	rm -f /var/run/wgclient/relay-status.json
 	[ "$(uci -q get wgclient.settings.mode)" = vpn_passwall ] || return 0
 	uci -q show network | grep -q '\.wgclient_orig_host=' || return 0
 
@@ -14,6 +15,12 @@ start_service() {
 	procd_set_param respawn 3600 5 0
 	procd_set_param stderr 1
 	procd_close_instance
+}
+
+# the relay rewrites its status file every 2 seconds; do not leave a stale
+# one behind when it stops (e.g. when switching to another mode)
+stop_service() {
+	rm -f /var/run/wgclient/relay-status.json
 }
 
 service_triggers() {
