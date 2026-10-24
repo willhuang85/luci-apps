@@ -858,7 +858,6 @@ const methods = {
 				proxy_apps: detect_proxy_apps(uci),
 				mode: get_mode(uci),
 				last_profile: uci.get('wgclient', 'settings', 'last_profile'),
-				last_mode: uci.get('wgclient', 'settings', 'last_mode') || 'vpn',
 				killswitch_paused: s.killswitch && killswitch_paused(uci),
 				passwall: {
 					installed: pw_installed(uci),
@@ -1118,10 +1117,6 @@ const methods = {
 				uci.set('network', id, 'auto', '1');
 				uci.set('wgclient', 'settings', 'last_profile', id);
 			}
-
-			// for "Turn back on"
-			if (mode == 'off' && prev != 'off')
-				uci.set('wgclient', 'settings', 'last_mode', prev);
 
 			sync_routing(uci);
 			sync_firewall(uci);

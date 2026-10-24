@@ -196,7 +196,7 @@ ubus call luci.wgclient set_mode '{"mode":"off"}' | jq -e '.mode == "off"' >/dev
 [ "$(uci -q get firewall.wgclient_killswitch.enabled)" = 0 ] || fail "kill switch not paused in off mode"
 [ "$(uci -q get network.wgclient_rule_vpn.lookup)" = 51820 ] || fail "normal VPN rule missing in off mode"
 ubus call luci.wgclient connect '{"id":"wgc_civpn"}' | jq -e '.error' >/dev/null || fail "connect allowed in off mode"
-ubus call luci.wgclient status | jq -e '.mode == "off" and .killswitch_paused and .last_mode == "passwall"' >/dev/null || fail "status off mode"
+ubus call luci.wgclient status | jq -e '.mode == "off" and .killswitch_paused' >/dev/null || fail "status off mode"
 [ "$(uci -q get passwall.@global[0].node)" = hy2node ] || fail "picked node not kept selected in off mode"
 ubus call luci.wgclient status | jq -e '.passwall.node == "hy2node"' >/dev/null || fail "status does not show the picked node in off mode"
 

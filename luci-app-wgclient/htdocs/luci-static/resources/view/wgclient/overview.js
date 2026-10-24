@@ -228,10 +228,6 @@ return view.extend({
 	},
 
 	handleConnect(p) {
-		// connecting while everything is off means: back to VPN mode
-		if (this.data?.mode == 'off')
-			return this.act(_('Connecting to %s…').format(p.label), () => callSetMode('vpn', '', p.id));
-
 		return this.act(_('Connecting to %s…').format(p.label), () => callConnect(p.id));
 	},
 
@@ -245,7 +241,7 @@ return view.extend({
 		const msg = {
 			vpn: _('Switch to VPN mode?\n\nPasswall goes back to exactly the settings it had before you first used a Passwall mode, and your last VPN profile connects.'),
 			vpn_passwall: _('Switch to "VPN through Passwall"?\n\nPasswall is switched on with the selected node and "Client Proxy" off. WireGuard reaches your VPN server through Passwall\'s SOCKS port via a small relay on the router, with the tunnel MTU at 1280. Traffic from your LAN devices goes through the VPN; the router\'s own traffic and DNS are handled by Passwall.\n\nYour current Passwall settings are saved and restored when you switch back to VPN mode.'),
-			off: _('Turn everything off?\n\nThe VPN is disconnected, Passwall\'s main switch is turned off (its other settings stay as they are) and the kill switch is paused, so your devices use your regular internet connection. Pick any other mode (or press Connect on a profile) to turn things back on.'),
+			off: _('Turn everything off?\n\nThe VPN is disconnected, Passwall\'s main switch is turned off (its other settings stay as they are) and the kill switch is paused, so your devices use your regular internet connection. Pick another mode to turn things back on.'),
 			passwall: _('Switch to "Passwall only"?\n\nThe VPN is disconnected and Passwall proxies your LAN devices with the selected node ("Client Proxy" on, default proxy modes set to Proxy). The kill switch is paused in this mode.\n\nYour current Passwall settings are saved and restored when you switch back to VPN mode.')
 		}[mode];
 
@@ -479,8 +475,7 @@ return view.extend({
 					E('div', { 'class': 'wgc-hero-text' }, [
 						E('div', { 'class': 'wgc-hero-title' }, _('Everything is off')),
 						E('div', { 'class': 'wgc-sub' }, _('No VPN and no proxy: your devices use your regular internet connection.'))
-					]),
-					E('button', { 'class': 'btn cbi-button cbi-button-action', click: () => this.handleMode(this.data?.last_mode ?? 'vpn') }, [ _('Turn back on') ])
+					])
 				])
 			]);
 		}
@@ -495,8 +490,7 @@ return view.extend({
 					E('div', { 'class': 'wgc-hero-text' }, [
 						E('div', { 'class': 'wgc-hero-title' }, pw.running ? _('Passwall only') : _('Passwall is starting…')),
 						E('div', { 'class': 'wgc-sub' }, _('Your devices go through Passwall (%s). The VPN is off.').format(node?.label ?? _('no node')))
-					]),
-					E('button', { 'class': 'btn cbi-button cbi-button-action', click: () => this.handleMode('vpn') }, [ _('Switch to VPN') ])
+					])
 				])
 			]);
 		}
@@ -668,7 +662,7 @@ return view.extend({
 	renderProfile(p) {
 		const state = profileState(p);
 		const isOn = p.up || p.auto;
-		const pwOnly = this.data?.mode == 'passwall';
+		const noVpn = this.data?.mode == 'passwall' || this.data?.mode == 'off';
 
 		return E('div', { 'class': 'wgc-card wgc-profile' + (isOn ? ' active' : '') }, [
 			E('span', { 'class': 'wgc-dot ' + state.cls, title: state.text }),
@@ -686,8 +680,8 @@ return view.extend({
 					? E('button', { 'class': 'btn cbi-button cbi-button-negative', click: ui.createHandlerFn(this, 'handleDisconnect', p) }, [ _('Disconnect') ])
 					: E('button', {
 						'class': 'btn cbi-button cbi-button-positive',
-						disabled: pwOnly ? '' : null,
-						title: pwOnly ? _('Switch the mode to VPN to connect') : null,
+						disabled: noVpn ? '' : null,
+						title: noVpn ? _('Pick a VPN mode in the Mode card to connect') : null,
 						click: ui.createHandlerFn(this, 'handleConnect', p)
 					}, [ _('Connect') ]),
 				E('button', { 'class': 'btn cbi-button', title: _('Edit'), click: ui.createHandlerFn(this, 'handleEdit', p) }, [ _('Edit') ]),
