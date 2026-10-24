@@ -27,12 +27,13 @@ Built and tested for **OpenWrt 25.12** (apk package manager).
    apk add --allow-untrusted /tmp/luci-app-wgclient-*.apk
    ```
    `apk update` lets apk pull the dependencies (`wireguard-tools`, `kmod-wireguard`, ...) from the official feeds.
-4. Reload LuCI and open **VPN → WireGuard Client**.
+4. **Log out of LuCI and log back in**, then open **VPN → WireGuard Client**. LuCI decides which menu entries you may see when you log in, so an already open session won't show the new entry.
 
 > **Use SSH, not LuCI's "Upload Package…" button.** OpenWrt 25.12 only signs repository indexes, never single `.apk` files, so every self-built package fails with `UNTRUSTED signature` unless `--allow-untrusted` is passed — and the LuCI upload dialog has no way to pass it.
 
 ### Troubleshooting
 
+- **Installed but no menu entry** – log out of LuCI and back in (and reload the page with Ctrl+F5). Still nothing? Check `apk info -e luci-app-wgclient`, run `/etc/init.d/rpcd restart` and verify `ubus list luci.wgclient` prints the object.
 - **`UNTRUSTED signature`** – you installed through LuCI's upload button or forgot `--allow-untrusted`; use the `apk add` command above.
 - **`wget ... Failed to send request: Operation not permitted`** during `apk update` – the router itself cannot reach the package mirror; a firewall rule is dropping the router's own outgoing traffic (not related to this app). `apk` needs the mirror to fetch `wireguard-tools` and `kmod-wireguard`. Check with:
   ```sh

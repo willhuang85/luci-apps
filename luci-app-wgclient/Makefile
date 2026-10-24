@@ -46,6 +46,7 @@ define Package/luci-app-wgclient/postinst
 [ -n "$${IPKG_INSTROOT}" ] || {
 	rm -f /tmp/luci-indexcache* /tmp/luci-modulecache/* 2>/dev/null
 	/etc/init.d/rpcd reload
+	echo "luci-app-wgclient: log out of LuCI and back in, then open VPN -> WireGuard Client"
 }
 exit 0
 endef
