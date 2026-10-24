@@ -4,7 +4,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-wgclient
 PKG_VERSION:=1.0.0
-PKG_RELEASE:=7
+PKG_RELEASE:=8
 
 PKG_LICENSE:=Apache-2.0
 PKG_MAINTAINER:=willhuang85

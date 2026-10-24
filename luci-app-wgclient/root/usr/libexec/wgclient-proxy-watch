@@ -23,10 +23,8 @@ rebind_tunnels() {
 	for ifname in $(wg show interfaces 2>/dev/null); do
 		case "$ifname" in wgc_*) ;; *) continue ;; esac
 
-		port=$(( 20000 + $(od -An -N2 -tu2 /dev/urandom) % 40000 ))
-
-		if wg set "$ifname" listen-port "$port" 2>/dev/null ||
-		   wg set "$ifname" listen-port 0 2>/dev/null; then
+		# port 0: the kernel binds the socket to a new random free port
+		if wg set "$ifname" listen-port 0 2>/dev/null; then
 			logger -t wgclient "transparent proxy (re)started, moved $ifname to a new source port"
 		fi
 	done
@@ -40,7 +38,8 @@ while :; do
 	if [ -n "$sig" ] && [ "$sig" != "$last" ]; then
 		# give the proxy a moment to finish loading its rules
 		sleep 3
-		rebind_tunnels
+		# in a subshell, so a failure can never end the watcher
+		( rebind_tunnels )
 	fi
 
 	last="$sig"
