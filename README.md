@@ -82,6 +82,7 @@ With Passwall (not Passwall 2) installed, the app shows a **Mode** picker and a 
 | **VPN** | connected | exactly as you had it before you first picked a Passwall mode |
 | **VPN through Passwall** | connected, carried through Passwall | on with the chosen node, Client Proxy off |
 | **Passwall only** | disconnected | on with the chosen node, Client Proxy on, TCP/UDP default proxy mode Proxy |
+| **Off** | disconnected | off (if installed) |
 
 How **VPN through Passwall** works: each tunnel's endpoint is pointed at a small relay on the router (`127.0.0.1:51821`, `51822`, …), which forwards WireGuard's packets through Passwall's node SOCKS port (`node_socks_port`, default 1070) to the real VPN server, so your ISP only sees the proxy connection. The real server stays in the profile (the editor and status show it) and comes back when you leave the mode. Only traffic from LAN devices goes into the tunnel; the router's own traffic, including Passwall's DNS and the proxy's lookup of its server name, stays outside it, otherwise the proxy carrying the tunnel would wait for the tunnel to resolve its own server. The tunnel MTU is lowered to 1280 for the proxy overhead. The node must support UDP.
 
@@ -89,6 +90,7 @@ Details:
 
 - Passwall's settings (and whether its service starts at boot) are saved the first time you leave **VPN** mode and restored when you return to it. Switching between the two Passwall modes keeps that saved copy. Passwall's own page shows whatever the current mode set, e.g. its main switch is ticked in both Passwall modes.
 - In **Passwall only** the kill switch is paused, since Passwall sends some traffic directly on purpose; Connect is disabled until you pick a VPN mode.
+- **Off** turns everything off in one click: VPN disconnected, Passwall switched off, kill switch paused, so devices use the regular internet connection. **Turn back on** returns to the previous mode; pressing Connect on a profile switches to VPN mode.
 - Uninstalling the app switches back to **VPN** mode first, so Passwall is restored.
 
 ### Why not Passwall's "Localhost Proxy"?

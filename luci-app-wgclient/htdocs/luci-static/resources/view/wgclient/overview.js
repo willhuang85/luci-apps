@@ -18,7 +18,8 @@ const callSetMode = rpc.declare({ object: 'luci.wgclient', method: 'set_mode', p
 const MODE_INFO = {
 	vpn: { icon: '🔒', title: _('VPN'), desc: _('All devices use the WireGuard VPN.') },
 	vpn_passwall: { icon: '🔀', title: _('VPN through Passwall'), desc: _('The VPN, hidden inside a Passwall proxy connection.') },
-	passwall: { icon: '🌐', title: _('Passwall only'), desc: _('No VPN; Passwall proxies your devices.') }
+	passwall: { icon: '🌐', title: _('Passwall only'), desc: _('No VPN; Passwall proxies your devices.') },
+	off: { icon: '⏻', title: _('Off'), desc: _('No VPN and no proxy: your regular internet connection.') }
 };
 
 // A handshake older than this means the peer is not answering anymore.
@@ -67,7 +68,7 @@ const CSS = `
 	border: 1px solid var(--wgc-line); vertical-align: middle; font-weight: normal; }
 .wgc-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .wgc-actions .btn, .wgc-actions .cbi-button { margin: 0; }
-.wgc-modes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 12px; }
+.wgc-modes { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin-top: 12px; }
 .wgc-mode { display: flex; flex-direction: column; justify-content: flex-start; text-align: left; border: 2px solid var(--wgc-line);
 	border-radius: 10px; padding: 12px; background: transparent; color: inherit; cursor: pointer; font: inherit; }
 .wgc-actions .btn:disabled { opacity: .45; cursor: not-allowed; }
@@ -76,7 +77,7 @@ const CSS = `
 .wgc-mode:disabled { opacity: .5; cursor: not-allowed; }
 .wgc-mode-title { font-weight: 600; margin-top: 4px; }
 .wgc-mode-icon { font-size: 22px; line-height: 1; }
-@media (max-width: 600px) { .wgc-modes { grid-template-columns: 1fr; } }
+@media (max-width: 600px) { .wgc-modes { grid-template-columns: 1fr 1fr; } }
 .wgc-drop { border: 2px dashed var(--wgc-line); border-radius: 12px; padding: 32px 16px; text-align: center; cursor: pointer;
 	transition: border-color .15s, background .15s; }
 .wgc-drop:hover, .wgc-drop.over { border-color: var(--wgc-ok); background: rgba(26,156,74,.06); }
@@ -227,6 +228,10 @@ return view.extend({
 	},
 
 	handleConnect(p) {
+		// connecting while everything is off means: back to VPN mode
+		if (this.data?.mode == 'off')
+			return this.act(_('Connecting to %s…').format(p.label), () => callSetMode('vpn', '', p.id));
+
 		return this.act(_('Connecting to %s…').format(p.label), () => callConnect(p.id));
 	},
 
@@ -240,6 +245,7 @@ return view.extend({
 		const msg = {
 			vpn: _('Switch to VPN mode?\n\nPasswall goes back to exactly the settings it had before you first used a Passwall mode, and your last VPN profile connects.'),
 			vpn_passwall: _('Switch to "VPN through Passwall"?\n\nPasswall is switched on with the selected node and "Client Proxy" off. WireGuard reaches your VPN server through Passwall\'s SOCKS port via a small relay on the router, with the tunnel MTU at 1280. Traffic from your LAN devices goes through the VPN; the router\'s own traffic and DNS are handled by Passwall.\n\nYour current Passwall settings are saved and restored when you switch back to VPN mode.'),
+			off: _('Turn everything off?\n\nThe VPN is disconnected, Passwall is switched off and the kill switch is paused, so your devices use your regular internet connection. Pick any other mode (or press Connect on a profile) to turn things back on.'),
 			passwall: _('Switch to "Passwall only"?\n\nThe VPN is disconnected and Passwall proxies your LAN devices with the selected node ("Client Proxy" on, default proxy modes set to Proxy). The kill switch is paused in this mode.\n\nYour current Passwall settings are saved and restored when you switch back to VPN mode.')
 		}[mode];
 
@@ -435,7 +441,7 @@ return view.extend({
 			input.click();
 		} }, [ _('Load from file…') ]);
 
-		if (isNew && this.data?.mode != 'passwall')
+		if (isNew && this.data?.mode != 'passwall' && this.data?.mode != 'off')
 			buttons.push(E('button', { 'class': 'btn cbi-button cbi-button-positive', click: () => save(true) }, [ _('Save & connect') ]));
 
 		buttons.push(E('button', { 'class': 'btn cbi-button cbi-button-action' + (isNew ? '' : ' important'), click: () => save(false) }, [ _('Save') ]));
@@ -465,6 +471,19 @@ return view.extend({
 	renderHero(data) {
 		const profiles = data.profiles;
 		const live = profiles.find((p) => p.up) ?? profiles.find((p) => p.auto);
+
+		if (data.mode == 'off') {
+			return E('div', { 'class': 'wgc-card' }, [
+				E('div', { 'class': 'wgc-hero' }, [
+					E('div', { 'class': 'wgc-orb' }, '⏻'),
+					E('div', { 'class': 'wgc-hero-text' }, [
+						E('div', { 'class': 'wgc-hero-title' }, _('Everything is off')),
+						E('div', { 'class': 'wgc-sub' }, _('No VPN and no proxy: your devices use your regular internet connection.'))
+					]),
+					E('button', { 'class': 'btn cbi-button cbi-button-action', click: () => this.handleMode(this.data?.last_mode ?? 'vpn') }, [ _('Turn back on') ])
+				])
+			]);
+		}
 
 		if (data.mode == 'passwall') {
 			const pw = data.passwall;
@@ -540,7 +559,9 @@ return view.extend({
 		let note = '';
 
 		if (data.killswitch_paused)
-			note = E('div', { 'class': 'wgc-note' }, _('Paused while in "Passwall only" mode, because Passwall sends some traffic directly on purpose. It comes back when you switch to a VPN mode.'));
+			note = E('div', { 'class': 'wgc-note' }, data.mode == 'off'
+				? _('Paused while everything is off. It comes back when you switch to a VPN mode.')
+				: _('Paused while in "Passwall only" mode, because Passwall sends some traffic directly on purpose. It comes back when you switch to a VPN mode.'));
 		else if (!data.lan_zone_ok || !data.wan_zone_ok)
 			note = E('div', { 'class': 'wgc-note bad' }, _('The kill switch needs the firewall zones "%s" and "%s", but at least one of them does not exist.').format(s.lan_zone, s.wan_zone));
 		else if (data.killswitch_active && !connected)
@@ -582,7 +603,7 @@ return view.extend({
 				E('a', { href: L.url('admin/services/passwall') }, _('Open Passwall'))
 			]);
 		}
-		else if (mode != 'vpn' && !pw.running) {
+		else if ((mode == 'vpn_passwall' || mode == 'passwall') && !pw.running) {
 			note = E('div', { 'class': 'wgc-note' }, _('Passwall is starting… this can take up to a minute.'));
 		}
 		else if (mode == 'vpn_passwall' && live?.proxied === true) {
@@ -598,7 +619,7 @@ return view.extend({
 		const buttons = Object.keys(MODE_INFO).map((m) => E('button', {
 			'class': 'wgc-mode' + (m == mode ? ' active' : ''),
 			'aria-pressed': (m == mode) ? 'true' : 'false',
-			disabled: (m != 'vpn' && !pw.nodes.length) ? '' : null,
+			disabled: ((m == 'vpn_passwall' || m == 'passwall') && !pw.nodes.length) ? '' : null,
 			click: () => this.handleMode(m)
 		}, [
 			E('div', { 'class': 'wgc-mode-icon' }, MODE_INFO[m].icon),

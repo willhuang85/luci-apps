@@ -103,10 +103,10 @@ function pw_installed(uci) {
 	return uci.get_all('passwall') != null && access('/etc/init.d/passwall') == true;
 }
 
-const MODES = { vpn: true, vpn_passwall: true, passwall: true };
+const MODES = { vpn: true, vpn_passwall: true, passwall: true, off: true };
 
 // vpn: WireGuard only; vpn_passwall: WireGuard wrapped by Passwall;
-// passwall: no WireGuard, Passwall proxies the LAN
+// passwall: no WireGuard, Passwall proxies the LAN; off: neither
 function get_mode(uci) {
 	const m = uci.get('wgclient', 'settings', 'mode');
 
@@ -115,6 +115,15 @@ function get_mode(uci) {
 
 	// 1.0.0-r5/r6 had a single "Tunnel through Passwall" switch
 	return uci.get('wgclient', 'passwall', 'enabled') == '1' ? 'vpn_passwall' : 'vpn';
+}
+
+// The kill switch is paused while nothing should use the VPN: in
+// Passwall-only mode (Passwall sends some traffic direct on purpose) and
+// when everything is off.
+function killswitch_paused(uci) {
+	const m = get_mode(uci);
+
+	return m == 'passwall' || m == 'off';
 }
 
 // true while the tunnel is wrapped by Passwall
@@ -364,8 +373,7 @@ function sync_firewall(uci) {
 	uci.set('firewall', KS_SID, 'proto', 'all');
 	uci.set('firewall', KS_SID, 'family', 'any');
 	uci.set('firewall', KS_SID, 'target', 'REJECT');
-	// paused in Passwall-only mode, where Passwall sends some traffic direct on purpose
-	uci.set('firewall', KS_SID, 'enabled', (s.killswitch && get_mode(uci) != 'passwall') ? '1' : '0');
+	uci.set('firewall', KS_SID, 'enabled', (s.killswitch && !killswitch_paused(uci)) ? '1' : '0');
 
 	uci.save('firewall');
 }
@@ -682,7 +690,15 @@ function pw_apply_mode(uci, mode, node) {
 	const fw = installed ? first_section(uci, 'passwall', 'global_forwarding') : null;
 	let service = null;
 
-	if (mode != 'vpn') {
+	if (mode == 'off') {
+		// switch Passwall off, keeping its saved original for later
+		if (installed && g) {
+			pw_save_baseline(uci, g, fw);
+			pw_restore_baseline(uci, g, fw);
+			uci.set('passwall', g, 'enabled', '0');
+		}
+	}
+	else if (mode != 'vpn') {
 		if (!installed)
 			return { error: 'Passwall is not installed' };
 
@@ -828,7 +844,8 @@ const methods = {
 				proxy_apps: detect_proxy_apps(uci),
 				mode: get_mode(uci),
 				last_profile: uci.get('wgclient', 'settings', 'last_profile'),
-				killswitch_paused: s.killswitch && get_mode(uci) == 'passwall',
+				last_mode: uci.get('wgclient', 'settings', 'last_mode') || 'vpn',
+				killswitch_paused: s.killswitch && killswitch_paused(uci),
 				passwall: {
 					installed: pw_installed(uci),
 					enabled: pw_on,
@@ -919,7 +936,7 @@ const methods = {
 				id = slugify(uci, label);
 			}
 
-			if (req.args.connect && get_mode(uci) == 'passwall')
+			if (req.args.connect && killswitch_paused(uci))
 				return { error: 'Switch the mode to VPN to connect a profile' };
 
 			const connect_now = req.args.connect || auto;
@@ -996,7 +1013,7 @@ const methods = {
 			if (!is_profile(uci, id))
 				return { error: 'No such profile' };
 
-			if (get_mode(uci) == 'passwall')
+			if (killswitch_paused(uci))
 				return { error: 'Switch the mode to VPN to connect a profile' };
 
 			for (let other in profile_ids(uci)) {
@@ -1056,7 +1073,7 @@ const methods = {
 
 			let id = null;
 
-			if (mode != 'passwall' && req.args.connect !== false) {
+			if ((mode == 'vpn' || mode == 'vpn_passwall') && req.args.connect !== false) {
 				for (let cand in [ req.args.id, uci.get('wgclient', 'settings', 'last_profile'), ...profile_ids(uci) ]) {
 					if (cand && is_profile(uci, cand)) {
 						id = cand;
@@ -1076,7 +1093,7 @@ const methods = {
 			let down = [];
 
 			for (let other in profile_ids(uci)) {
-				if (mode == 'passwall' || (id && other != id)) {
+				if (mode == 'passwall' || mode == 'off' || (id && other != id)) {
 					uci.set('network', other, 'auto', '0');
 					push(down, other);
 				}
@@ -1086,6 +1103,10 @@ const methods = {
 				uci.set('network', id, 'auto', '1');
 				uci.set('wgclient', 'settings', 'last_profile', id);
 			}
+
+			// for "Turn back on"
+			if (mode == 'off' && prev != 'off')
+				uci.set('wgclient', 'settings', 'last_mode', prev);
 
 			sync_routing(uci);
 			sync_firewall(uci);
@@ -1099,7 +1120,14 @@ const methods = {
 			if (id)
 				iface_up(id);
 
-			if (mode != 'vpn') {
+			// starts the relay in VPN through Passwall mode, stops it otherwise
+			relay_restart();
+
+			if (mode == 'off') {
+				if (pw_installed(uci))
+					pw_restart(false);	// stops it, enabled is 0 now
+			}
+			else if (mode != 'vpn') {
 				pw_restart(true);
 			}
 			else if (prev != 'vpn' && pw_installed(uci)) {

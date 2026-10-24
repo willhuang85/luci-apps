@@ -112,6 +112,12 @@ echo "$1" >> /tmp/passwall-init.log
 exit 0
 PW
 chmod +x /etc/init.d/passwall
+cat > /etc/init.d/wgclient <<'WG'
+#!/bin/sh
+echo "$1" >> /tmp/wgclient-init.log
+WG
+chmod +x /etc/init.d/wgclient
+rm -f /tmp/wgclient-init.log
 uci show passwall > "$WORK/passwall.orig"
 cp /etc/passwall/rules/proxy_ip "$WORK/proxy_ip.orig"
 cp /etc/passwall/rules/direct_ip "$WORK/direct_ip.orig"
@@ -153,6 +159,7 @@ check_wrapped() {
 	ubus call luci.wgclient status | jq -e '.mode == "vpn_passwall" and .passwall.enabled' >/dev/null || fail "status mode"
 }
 check_wrapped
+sleep 1; grep -qx restart /tmp/wgclient-init.log || fail "relay service not restarted on mode change"
 
 echo "== mode: Passwall only"
 ubus call luci.wgclient set_mode '{"mode":"passwall"}' | jq -e '.mode == "passwall"' >/dev/null || fail "set passwall"
@@ -172,6 +179,17 @@ uci -q get network.wgc_civpn.mtu >/dev/null && fail "MTU not restored"
 [ "$(uci -q get network.wgclient_rule_vpn.lookup)" = 51820 ] || fail "normal VPN rule missing"
 ubus call luci.wgclient connect '{"id":"wgc_civpn"}' | jq -e '.error' >/dev/null || fail "connect allowed in Passwall-only mode"
 ubus call luci.wgclient status | jq -e '.mode == "passwall" and .killswitch_paused' >/dev/null || fail "status passwall mode"
+
+echo "== mode: Off"
+ubus call luci.wgclient set_mode '{"mode":"off"}' | jq -e '.mode == "off"' >/dev/null || fail "set off"
+[ "$(uci -q get passwall.@global[0].enabled)" = 0 ] || fail "passwall not switched off"
+[ "$(uci -q get passwall.@global[0].client_proxy)" = 1 ] || fail "passwall settings not back to original in off mode"
+[ "$(uci -q get network.wgc_civpn.auto)" = 0 ] || fail "profile not disconnected in off mode"
+[ "$(uci -q get firewall.wgclient_killswitch.enabled)" = 0 ] || fail "kill switch not paused in off mode"
+uci show network | grep -q "wgclient_orig_host" && fail "relay endpoint left in off mode"
+[ "$(uci -q get network.wgclient_rule_vpn.lookup)" = 51820 ] || fail "normal VPN rule missing in off mode"
+ubus call luci.wgclient connect '{"id":"wgc_civpn"}' | jq -e '.error' >/dev/null || fail "connect allowed in off mode"
+ubus call luci.wgclient status | jq -e '.mode == "off" and .killswitch_paused and .last_mode == "passwall"' >/dev/null || fail "status off mode"
 
 echo "== mode: back to VPN through Passwall"
 ubus call luci.wgclient set_mode '{"mode":"vpn_passwall","node":"hy2node"}' >/dev/null || fail "set vpn_passwall again"
