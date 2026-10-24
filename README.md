@@ -122,7 +122,6 @@ Build locally with an OpenWrt SDK:
 ```sh
 ln -s "$PWD/luci-app-wgclient" /path/to/openwrt-sdk/package/
 cd /path/to/openwrt-sdk
-./scripts/feeds update base luci && ./scripts/feeds install -a -p base && ./scripts/feeds install luci-base
 make defconfig && make package/luci-app-wgclient/compile V=s
 ```
 
