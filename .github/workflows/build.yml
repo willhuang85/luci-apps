@@ -51,8 +51,24 @@ jobs:
   build:
     needs: test
     runs-on: ubuntu-24.04
+    outputs:
+      release: ${{ steps.rel.outputs.num }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # The package release number (the "-rN" in 1.1.0-rN) is the number of
+      # commits on the built branch, so every merge to main gets a higher
+      # one and nobody has to bump PKG_RELEASE by hand. It is passed to make
+      # on the command line, which overrides the Makefile's PKG_RELEASE.
+      - name: Determine release number
+        id: rel
+        run: |
+          num=$(git rev-list --count HEAD)
+          echo "num=$num" >> "$GITHUB_OUTPUT"
+          echo "REL_NUM=$num" >> "$GITHUB_ENV"
+          echo "Package release: r$num"
 
       - name: Install SDK dependencies
         run: |
@@ -99,7 +115,7 @@ jobs:
 
       - name: Build package
         working-directory: ${{ runner.temp }}/sdk
-        run: make "package/$PKG_NAME/compile" V=s -j1
+        run: make "package/$PKG_NAME/compile" PKG_RELEASE="$REL_NUM" V=s -j1
 
       - name: Collect package
         id: pkg
@@ -107,6 +123,10 @@ jobs:
         run: |
           pkg=$(find bin/packages -name "${PKG_NAME}-*.apk" -o -name "${PKG_NAME}_*.ipk" | head -n1)
           [ -n "$pkg" ] || { echo "Package not found"; find bin -type f; exit 1; }
+          case "$pkg" in
+            *"-r${REL_NUM}.apk") ;;
+            *) echo "Package $pkg does not carry release r${REL_NUM}"; exit 1 ;;
+          esac
           mkdir -p "$GITHUB_WORKSPACE/dist"
           cp "$pkg" "$GITHUB_WORKSPACE/dist/"
           echo "name=$(basename "$pkg")" >> "$GITHUB_OUTPUT"
@@ -160,8 +180,8 @@ jobs:
 
   # Publishes the package (and, when signed, packages.adb and the public
   # key wireguard-passwall.pem) as a GitHub release: on every push to main,
-  # tagged with the version from the Makefile (e.g. v1.1.0-r2), and on
-  # pushed v* tags. Re-running for an unchanged version replaces the files.
+  # tagged v<PKG_VERSION>-r<commit count> (e.g. v1.1.0-r45), and on pushed
+  # v* tags. Re-running a build of the same commit replaces the files.
   release:
     if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     needs: build
@@ -173,14 +193,14 @@ jobs:
 
       - name: Determine version
         id: version
+        env:
+          REL_NUM: ${{ needs.build.outputs.release }}
         run: |
           if [ "${GITHUB_REF_TYPE}" = tag ]; then
             tag="${GITHUB_REF_NAME}"
           else
-            mk="$PKG_NAME/Makefile"
-            ver=$(sed -n 's/^PKG_VERSION:=//p' "$mk")
-            rel=$(sed -n 's/^PKG_RELEASE:=//p' "$mk")
-            tag="v${ver}-r${rel}"
+            ver=$(sed -n 's/^PKG_VERSION:=//p' "$PKG_NAME/Makefile")
+            tag="v${ver}-r${REL_NUM}"
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "Releasing $tag"

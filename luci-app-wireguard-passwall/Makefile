@@ -4,7 +4,8 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-wireguard-passwall
 PKG_VERSION:=1.1.0
-PKG_RELEASE:=2
+# CI sets the release to the number of commits on the branch it builds
+PKG_RELEASE:=1
 
 PKG_LICENSE:=Apache-2.0
 PKG_MAINTAINER:=willhuang85
