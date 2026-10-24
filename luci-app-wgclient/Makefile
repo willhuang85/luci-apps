@@ -4,7 +4,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-wgclient
 PKG_VERSION:=1.0.0
-PKG_RELEASE:=3
+PKG_RELEASE:=4
 
 PKG_LICENSE:=Apache-2.0
 PKG_MAINTAINER:=willhuang85
@@ -42,6 +42,7 @@ define Package/luci-app-wgclient/install
 	$(CP) ./root/* $(1)/
 	find $(1) -type d -exec chmod 0755 {} +
 	find $(1) -type f -exec chmod 0644 {} +
+	chmod 0755 $(1)/etc/init.d/* $(1)/usr/libexec/*
 endef
 
 define Package/luci-app-wgclient/postinst

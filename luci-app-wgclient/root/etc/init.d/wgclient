@@ -1,0 +1,13 @@
+#!/bin/sh /etc/rc.common
+# Keeps WireGuard client tunnels wrapped by transparent proxies such as
+# Passwall, see /usr/libexec/wgclient-proxy-watch.
+
+START=99
+USE_PROCD=1
+
+start_service() {
+	procd_open_instance
+	procd_set_param command /usr/libexec/wgclient-proxy-watch
+	procd_set_param respawn
+	procd_close_instance
+}

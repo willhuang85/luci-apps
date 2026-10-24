@@ -1,0 +1,48 @@
+#!/bin/sh
+# Rebinds the WireGuard client sockets whenever a transparent proxy
+# (Passwall, Passwall 2) (re)creates its nftables rules.
+#
+# Proxies only intercept new connections. A tunnel that started before the
+# proxy's rules existed (always the case at boot: the network comes up long
+# before Passwall) keeps its unmarked conntrack entry forever, because the
+# keepalives never let it expire, so it would bypass the proxy. Moving the
+# socket to a new random port starts a fresh connection that the proxy can
+# catch; the server follows the new port automatically (WireGuard roaming).
+
+INTERVAL="${WGCLIENT_WATCH_INTERVAL:-10}"
+
+proxy_signature() {
+	# the table/chain handles change whenever the proxy rebuilds its rules
+	{
+		nft -a list chain inet passwall PSW_OUTPUT_MANGLE 2>/dev/null | head -n 2
+		nft -a list chain inet passwall2 PSW2_OUTPUT_MANGLE 2>/dev/null | head -n 2
+	} | tr -d '\n'
+}
+
+rebind_tunnels() {
+	for ifname in $(wg show interfaces 2>/dev/null); do
+		case "$ifname" in wgc_*) ;; *) continue ;; esac
+
+		port=$(( 20000 + $(od -An -N2 -tu2 /dev/urandom) % 40000 ))
+
+		if wg set "$ifname" listen-port "$port" 2>/dev/null ||
+		   wg set "$ifname" listen-port 0 2>/dev/null; then
+			logger -t wgclient "transparent proxy (re)started, moved $ifname to a new source port"
+		fi
+	done
+}
+
+last=""
+
+while :; do
+	sig=$(proxy_signature)
+
+	if [ -n "$sig" ] && [ "$sig" != "$last" ]; then
+		# give the proxy a moment to finish loading its rules
+		sleep 3
+		rebind_tunnels
+	fi
+
+	last="$sig"
+	sleep "$INTERVAL"
+done

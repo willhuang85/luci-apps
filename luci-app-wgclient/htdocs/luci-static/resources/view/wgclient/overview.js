@@ -519,6 +519,7 @@ return view.extend({
 			E('ul', { style: 'margin:8px 0 0 18px; padding:0' }, [
 				E('li', {}, _('Connections made by the proxy core (Xray / sing-box) bypass the VPN, so they never loop into the tunnel.')),
 				E('li', {}, _('To send the WireGuard tunnel itself through the proxy, enable the proxy for the router\'s own traffic (Passwall: "Localhost proxy") and make sure the VPN server address is proxied, not direct.')),
+				E('li', {}, _('Whenever the proxy (re)starts, the tunnel moves to a new source port so the proxy picks it up, also after a reboot.')),
 				E('li', {}, _('A wrapped tunnel adds overhead: if pages stall, set MTU = 1280 in the profile.'))
 			])
 		]);

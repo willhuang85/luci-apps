@@ -79,6 +79,7 @@ How it stays out of the proxy's way:
 - Only *unmarked* traffic is routed into the VPN. Passwall's Xray and sing-box mark their own connections with `255`, so the proxy's connection to its server always leaves via WAN and never loops into the tunnel.
 - WireGuard's own packets carry the mark `0xca6c`. That also keeps them out of the VPN table, and because the low byte isn't `0xff`, Passwall's router-traffic rules still pick them up and can wrap them.
 - The ip rules use priority 30100/30110, after Passwall's TPROXY rule (priority 999).
+- Passwall only intercepts *new* connections, and at boot WireGuard is up long before Passwall starts. The `wgclient` service therefore watches Passwall's nftables rules and, whenever Passwall (re)starts, moves each tunnel to a new random source port. That starts a fresh connection Passwall can catch; the server follows the new port automatically.
 
 To wrap the tunnel with Passwall:
 
@@ -86,6 +87,7 @@ To wrap the tunnel with Passwall:
 2. In Passwall enable **Localhost proxy** (proxy the router's own traffic) with UDP proxying turned on, and pick a node that supports UDP (VLESS, VMess, Trojan, Shadowsocks, ...).
 3. Make sure the WireGuard server's address goes through the proxy. In *Global* mode it does; in rule-based modes add the server IP/domain to the proxy list, and keep it out of the direct list.
 4. If some sites stall, set `MTU = 1280` in the profile (Edit) because the proxy adds overhead.
+5. Check it: `grep <server-ip> /proc/net/nf_conntrack` should show the WireGuard connection with `mark=1347639089` (Passwall's mark). `mark=0` means it still goes out directly; run `/etc/init.d/wgclient restart` or Disconnect/Connect the profile.
 
 Alternatively, point the profile's `Endpoint` at a local Xray `dokodemo-door` inbound (e.g. `127.0.0.1:51821`) that forwards to the real server through the proxy.
 
