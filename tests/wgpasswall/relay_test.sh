@@ -6,7 +6,7 @@
 # socket and uloop modules, and python3.
 set -e
 
-SRC="$(cd "$(dirname "$0")/.." && pwd)"
+SRC="$(cd "$(dirname "$0")/../.." && pwd)"
 T=$(mktemp -d)
 SOCKS=41080 ECHO=41820 L1=41821 L2=41822
 
@@ -16,7 +16,7 @@ trap cleanup EXIT
 fail() { echo "FAIL: $*"; cat "$T/relay.log" 2>/dev/null; cat "$T/status.json" 2>/dev/null; exit 1; }
 
 start_stub() {
-	python3 "$SRC/tests/helpers/socks5_udp_stub.py" $SOCKS $ECHO > "$T/stub.log" 2>&1 &
+	python3 "$SRC/tests/wgpasswall/helpers/socks5_udp_stub.py" $SOCKS $ECHO > "$T/stub.log" 2>&1 &
 	STUB=$!
 	for i in 1 2 3 4 5 6 7 8 9 10; do grep -q ready "$T/stub.log" 2>/dev/null && return; sleep 0.3; done
 	fail "stub did not start"

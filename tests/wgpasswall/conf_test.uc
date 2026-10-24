@@ -1,5 +1,5 @@
 // Unit tests for wgpasswall/conf.uc
-// Run: ucode -L luci-app-wireguard-passwall/root/usr/share/ucode tests/conf_test.uc
+// Run: ucode -L luci-app-wireguard-passwall/root/usr/share/ucode tests/wgpasswall/conf_test.uc
 
 'use strict';
 

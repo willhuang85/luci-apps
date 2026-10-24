@@ -4,11 +4,11 @@
 # OpenWrt release. Must run as root (installs into /usr and /etc/config);
 # meant for throwaway CI machines.
 #
-#   OPENWRT_VERSION=25.12.2 sudo -E ./tests/integration.sh
+#   OPENWRT_VERSION=25.12.2 sudo -E ./tests/wgpasswall/integration.sh
 set -e
 
 OPENWRT_VERSION="${OPENWRT_VERSION:-25.12.2}"
-SRC="$(cd "$(dirname "$0")/.." && pwd)"
+SRC="$(cd "$(dirname "$0")/../.." && pwd)"
 WORK="${WORK:-$(mktemp -d)}"
 RAW="https://raw.githubusercontent.com/openwrt/openwrt/v${OPENWRT_VERSION}"
 

@@ -4,7 +4,7 @@
 # or have `ucode` in $PATH.
 set -e
 
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 
 if [ -n "$UCODE_DIR" ]; then
 	UCODE="$UCODE_DIR/ucode"
@@ -14,9 +14,9 @@ else
 fi
 
 SRC="$PWD/luci-app-wireguard-passwall/root/usr/share/ucode/*.uc"
-MOCKS="$PWD/tests/mocks/*.uc"
+MOCKS="$PWD/tests/wgpasswall/mocks/*.uc"
 
 echo "== conf parser"
-"$UCODE" ${UCODE_DIR:+-L "$UCODE_DIR/*.so"} -L "$SRC" tests/conf_test.uc
+"$UCODE" ${UCODE_DIR:+-L "$UCODE_DIR/*.so"} -L "$SRC" tests/wgpasswall/conf_test.uc
 echo "== rpcd backend"
-"$UCODE" ${UCODE_DIR:+-L "$UCODE_DIR/*.so"} -L "$MOCKS" -L "$SRC" tests/backend_test.uc
+"$UCODE" ${UCODE_DIR:+-L "$UCODE_DIR/*.so"} -L "$MOCKS" -L "$SRC" tests/wgpasswall/backend_test.uc

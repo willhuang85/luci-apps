@@ -1,5 +1,5 @@
 // Exercises the rpcd plugin against in-memory uci/ubus mocks.
-// Run: ucode -L 'tests/mocks/*.uc' -L 'luci-app-wireguard-passwall/root/usr/share/ucode/*.uc' tests/backend_test.uc
+// Run: ucode -L 'tests/wgpasswall/mocks/*.uc' -L 'luci-app-wireguard-passwall/root/usr/share/ucode/*.uc' tests/wgpasswall/backend_test.uc
 
 'use strict';
 
@@ -17,7 +17,7 @@ global.__uci_store = {
 	}
 };
 
-const plugin = loadfile(sourcepath(0, true) + '/../luci-app-wireguard-passwall/root/usr/share/rpcd/ucode/luci.wgpasswall')();
+const plugin = loadfile(sourcepath(0, true) + '/../../luci-app-wireguard-passwall/root/usr/share/rpcd/ucode/luci.wgpasswall')();
 const m = plugin['luci.wgpasswall'];
 const st = global.__uci_store;
 
