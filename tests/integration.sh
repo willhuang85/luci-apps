@@ -131,6 +131,9 @@ grep -qx '1.2.3.4' /etc/passwall/rules/proxy_ip || fail "server not in proxy lis
 grep -qx '# disabled by luci-app-wgclient: 1.2.3.4' /etc/passwall/rules/direct_ip || fail "server not disabled in direct list"
 grep -qx '223.5.5.5' /etc/passwall/rules/direct_ip || fail "user direct entry lost"
 [ "$(uci -q get network.wgc_civpn.mtu)" = 1280 ] || fail "MTU not lowered"
+[ "$(uci -q get network.wgclient_rule_vpn_lan.in)" = lan ] || fail "VPN rule not limited to LAN traffic"
+uci -q get network.wgclient_rule_vpn >/dev/null && fail "router traffic still routed into the wrapped tunnel"
+[ "$(uci -q get network.wgclient_rule6_vpn_lan.in)" = lan ] || fail "IPv6 VPN rule not limited to LAN traffic"
 ubus call luci.wgclient get '{"id":"wgc_civpn"}' | jq -e '.conf | contains("MTU") | not' >/dev/null || fail "editor shows lowered MTU"
 ubus call luci.wgclient status | jq -e '.passwall.enabled' >/dev/null || fail "status does not show passwall on"
 
@@ -140,6 +143,9 @@ uci show passwall | cmp -s - "$WORK/passwall.orig" || { uci show passwall | diff
 cmp -s /etc/passwall/rules/proxy_ip "$WORK/proxy_ip.orig" || fail "proxy list not restored"
 cmp -s /etc/passwall/rules/direct_ip "$WORK/direct_ip.orig" || fail "direct list not restored"
 uci -q get network.wgc_civpn.mtu >/dev/null && fail "MTU not restored"
+[ "$(uci -q get network.wgclient_rule_vpn.lookup)" = 51820 ] || fail "VPN rule for all traffic not restored"
+uci -q get network.wgclient_rule_vpn.in >/dev/null && fail "VPN rule still limited to LAN"
+uci -q get network.wgclient_rule_vpn_lan >/dev/null && fail "LAN-only VPN rule left behind"
 grep -qx disable /tmp/passwall-init.log || fail "passwall service not disabled again"
 
 echo "== remove"

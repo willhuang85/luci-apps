@@ -90,6 +90,7 @@ With Passwall (not Passwall 2) installed, the app shows a **Tunnel through Passw
 - removes the VPN server's port from Passwall's blocked UDP ports, if it was there
 - lowers the tunnel MTU to 1280 for the proxy overhead
 - enables and restarts the Passwall service
+- routes only traffic from LAN devices into the tunnel; the router's own traffic, including Passwall's DNS and the proxy's lookup of its server name, stays outside it (otherwise the proxy carrying the tunnel would wait for the tunnel to resolve its own server: a deadlock)
 
 Every value is saved first. Turning the switch off (or uninstalling the app) restores Passwall's settings, rule lists, service state and your MTUs. The card and the status panel show whether the tunnel is really wrapped, read from Passwall's mark on the connection.
 
@@ -105,7 +106,7 @@ To wrap the tunnel with Passwall by hand:
 
 Alternatively, point the profile's `Endpoint` at a local Xray `dokodemo-door` inbound (e.g. `127.0.0.1:51821`) that forwards to the real server through the proxy.
 
-Notes: traffic that Passwall itself proxies for LAN devices goes through Xray and therefore *not* through WireGuard; traffic Passwall sends *direct* goes through the VPN. The kill switch only blocks LAN traffic forwarded straight to WAN, so it does not interfere with Passwall. The routing table, rule priority and marks can be changed in `/etc/config/wgclient` if another app already uses them.
+Notes: when wrapping by hand, keep in mind that the router's own traffic, including DNS, is routed into the tunnel too; if the node's server is a hostname, Xray then cannot resolve it (the switch above avoids this by routing only LAN traffic into the tunnel). Traffic that Passwall itself proxies for LAN devices goes through Xray and therefore *not* through WireGuard; traffic Passwall sends *direct* goes through the VPN. The kill switch only blocks LAN traffic forwarded straight to WAN, so it does not interfere with Passwall. The routing table, rule priority and marks can be changed in `/etc/config/wgclient` if another app already uses them.
 
 ## How it works
 

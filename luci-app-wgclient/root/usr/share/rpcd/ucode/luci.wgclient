@@ -96,6 +96,26 @@ function settings(uci) {
 	};
 }
 
+function pw_installed(uci) {
+	return uci.get_all('passwall') != null && access('/etc/init.d/passwall') == true;
+}
+
+function pw_enabled(uci) {
+	return uci.get('wgclient', 'passwall', 'enabled') == '1';
+}
+
+// logical interfaces of the LAN firewall zone
+function lan_networks(uci, zone) {
+	let nets = [];
+
+	uci.foreach('firewall', 'zone', (s) => {
+		if (s.name == zone)
+			push(nets, ...as_list(s.network));
+	});
+
+	return length(nets) ? nets : [ 'lan' ];
+}
+
 function detect_proxy_apps(uci) {
 	let found = [];
 
@@ -244,27 +264,46 @@ function set_routing_opts(uci, id) {
 
 // Creates or removes the policy routing rules shared by all profiles and
 // makes sure every profile routes into the VPN table.
+//
+// Normally all unmarked traffic, the router's own included, uses the VPN.
+// While the tunnel is wrapped by Passwall only traffic coming in from the
+// LAN does: the proxy that carries the tunnel resolves its server name and
+// runs its DNS on the router, so routing the router's own traffic into the
+// tunnel would make the proxy wait for itself.
 function sync_routing(uci) {
 	const s = settings(uci);
 	const ids = profile_ids(uci);
+	const lan_only = pw_installed(uci) && pw_enabled(uci);
+	let stale = [];
 
-	for (let t, sids in RULE_SIDS) {
-		if (!length(ids)) {
-			for (let sid in sids)
-				uci.delete('network', sid);
+	for (let t in keys(RULE_SIDS))
+		uci.foreach('network', t, (r) => {
+			if (index(r['.name'], 'wgclient_rule') == 0)
+				push(stale, r['.name']);
+		});
 
-			continue;
+	for (let sid in stale)
+		uci.delete('network', sid);
+
+	if (length(ids)) {
+		for (let t, sids in RULE_SIDS) {
+			uci.set('network', sids[0], t);
+			uci.set('network', sids[0], 'lookup', 'main');
+			uci.set('network', sids[0], 'suppress_prefixlength', '0');
+			uci.set('network', sids[0], 'priority', `${s.rule_priority}`);
+
+			for (let net in (lan_only ? lan_networks(uci, s.lan_zone) : [ null ])) {
+				const sid = net ? `${sids[1]}_${replace(net, /[^A-Za-z0-9_]/g, '_')}` : sids[1];
+
+				uci.set('network', sid, t);
+				uci.set('network', sid, 'mark', sprintf('0x0/0x%x', s.bypass_mask));
+				uci.set('network', sid, 'lookup', `${s.route_table}`);
+				uci.set('network', sid, 'priority', `${s.rule_priority + 10}`);
+
+				if (net)
+					uci.set('network', sid, 'in', net);
+			}
 		}
-
-		uci.set('network', sids[0], t);
-		uci.set('network', sids[0], 'lookup', 'main');
-		uci.set('network', sids[0], 'suppress_prefixlength', '0');
-		uci.set('network', sids[0], 'priority', `${s.rule_priority}`);
-
-		uci.set('network', sids[1], t);
-		uci.set('network', sids[1], 'mark', sprintf('0x0/0x%x', s.bypass_mask));
-		uci.set('network', sids[1], 'lookup', `${s.route_table}`);
-		uci.set('network', sids[1], 'priority', `${s.rule_priority + 10}`);
 	}
 
 	for (let id in ids)
@@ -369,14 +408,6 @@ const PW_DISABLED = '# disabled by luci-app-wgclient: ';
 const PW_MTU = 1280;
 const UNSET = '__unset__';
 const PW_GLOBAL_OPTS = [ 'enabled', 'node', 'localhost_proxy', 'client_proxy', 'use_proxy_list' ];
-
-function pw_installed(uci) {
-	return uci.get_all('passwall') != null && access('/etc/init.d/passwall') == true;
-}
-
-function pw_enabled(uci) {
-	return uci.get('wgclient', 'passwall', 'enabled') == '1';
-}
 
 function first_section(uci, config, stype) {
 	let sid = null;
@@ -951,9 +982,9 @@ const methods = {
 				return { result: true };
 			}
 
+			sync_routing(uci);
 			uci.save('wgclient');
 			uci.save('passwall');
-			uci.save('network');
 			apply(uci, [ 'wgclient', 'passwall', 'network' ]);
 			pw_restart(start_service);
 

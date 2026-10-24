@@ -222,7 +222,7 @@ return view.extend({
 		const enabled = ev.target.checked;
 		const node = this.root.querySelector('select[name="wgc-pw-node"]')?.value ?? '';
 
-		if (enabled && !confirm(_('Passwall will be switched on with the selected node and set up to wrap the WireGuard tunnel: "Localhost Proxy" on, "Client Proxy" off, your VPN servers added to its proxy list (and taken out of its direct list), and the tunnel MTU lowered to 1280.\n\nTurning this off restores your previous Passwall settings. Continue?'))) {
+		if (enabled && !confirm(_('Passwall will be switched on with the selected node and set up to wrap the WireGuard tunnel: "Localhost Proxy" on, "Client Proxy" off, your VPN servers added to its proxy list (and taken out of its direct list), and the tunnel MTU lowered to 1280.\n\nTraffic from your LAN devices goes through the VPN; the router\'s own traffic and DNS are handled by Passwall, so the proxy never has to wait for the tunnel it carries.\n\nTurning this off restores your previous Passwall settings. Continue?'))) {
 			ev.target.checked = false;
 			return;
 		}
