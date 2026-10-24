@@ -105,6 +105,11 @@ jobs:
         run: |
           pkg=$(find bin/packages -name "${PKG_NAME}-*.apk" -o -name "${PKG_NAME}_*.ipk" | head -n1)
           [ -n "$pkg" ] || { echo "Package not found"; find bin -type f; exit 1; }
+          # rpcd ignores world-writable plugins, so never ship such files
+          stage=$(find build_dir -type d -path "*/ipkg-*/${PKG_NAME}" | head -n1)
+          ls -lR "$stage"
+          bad=$(find "$stage" ! -type l -perm -0002)
+          [ -z "$bad" ] || { echo "World-writable files in package:"; echo "$bad"; exit 1; }
           mkdir -p "$GITHUB_WORKSPACE/dist"
           cp "$pkg" "$GITHUB_WORKSPACE/dist/"
           echo "name=$(basename "$pkg")" >> "$GITHUB_OUTPUT"

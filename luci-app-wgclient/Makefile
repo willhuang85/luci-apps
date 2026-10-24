@@ -4,7 +4,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-wgclient
 PKG_VERSION:=1.0.0
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_LICENSE:=Apache-2.0
 PKG_MAINTAINER:=willhuang85
@@ -34,11 +34,14 @@ endef
 define Build/Compile
 endef
 
+# Copy the trees and normalise permissions: cp -p keeps the modes of the
+# checkout, and rpcd refuses to load world-writable ucode plugins.
 define Package/luci-app-wgclient/install
 	$(INSTALL_DIR) $(1)/www
 	$(CP) ./htdocs/* $(1)/www/
-	$(INSTALL_DIR) $(1)/
 	$(CP) ./root/* $(1)/
+	find $(1) -type d -exec chmod 0755 {} +
+	find $(1) -type f -exec chmod 0644 {} +
 endef
 
 define Package/luci-app-wgclient/postinst
