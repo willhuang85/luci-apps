@@ -698,16 +698,11 @@ function pw_apply_mode(uci, mode, node) {
 	let service = null;
 
 	if (mode == 'off') {
-		// switch Passwall off, keeping its saved original for later
+		// only flip Passwall's main switch; everything else stays as it is.
+		// The original is saved so VPN mode can still restore it.
 		if (installed && g) {
 			pw_save_baseline(uci, g, fw);
-			pw_restore_baseline(uci, g, fw);
 			uci.set('passwall', g, 'enabled', '0');
-
-			// keep the picked node selected, so Passwall's page and the
-			// app still show it while off
-			if (pw_chosen_node(uci))
-				uci.set('passwall', g, 'node', pw_chosen_node(uci));
 		}
 	}
 	else if (mode != 'vpn') {
@@ -755,10 +750,11 @@ function pw_apply_mode(uci, mode, node) {
 
 	uci.set('wgclient', 'settings', 'mode', mode);
 
+	// Off leaves the (disconnected) profiles alone; the next mode sets them up
 	for (let id in profile_ids(uci)) {
 		if (mode == 'vpn_passwall')
 			pw_apply_mtu(uci, id);
-		else
+		else if (mode != 'off')
 			pw_restore_mtu(uci, id);
 	}
 
@@ -766,7 +762,8 @@ function pw_apply_mode(uci, mode, node) {
 	if (installed)
 		pw_sync_rules(uci);
 
-	relay_sync(uci);
+	if (mode != 'off')
+		relay_sync(uci);
 
 	if (mode == 'vpn') {
 		uci.delete('wgclient', 'passwall');

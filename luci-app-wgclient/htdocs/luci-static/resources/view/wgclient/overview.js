@@ -245,7 +245,7 @@ return view.extend({
 		const msg = {
 			vpn: _('Switch to VPN mode?\n\nPasswall goes back to exactly the settings it had before you first used a Passwall mode, and your last VPN profile connects.'),
 			vpn_passwall: _('Switch to "VPN through Passwall"?\n\nPasswall is switched on with the selected node and "Client Proxy" off. WireGuard reaches your VPN server through Passwall\'s SOCKS port via a small relay on the router, with the tunnel MTU at 1280. Traffic from your LAN devices goes through the VPN; the router\'s own traffic and DNS are handled by Passwall.\n\nYour current Passwall settings are saved and restored when you switch back to VPN mode.'),
-			off: _('Turn everything off?\n\nThe VPN is disconnected, Passwall is switched off and the kill switch is paused, so your devices use your regular internet connection. Pick any other mode (or press Connect on a profile) to turn things back on.'),
+			off: _('Turn everything off?\n\nThe VPN is disconnected, Passwall\'s main switch is turned off (its other settings stay as they are) and the kill switch is paused, so your devices use your regular internet connection. Pick any other mode (or press Connect on a profile) to turn things back on.'),
 			passwall: _('Switch to "Passwall only"?\n\nThe VPN is disconnected and Passwall proxies your LAN devices with the selected node ("Client Proxy" on, default proxy modes set to Proxy). The kill switch is paused in this mode.\n\nYour current Passwall settings are saved and restored when you switch back to VPN mode.')
 		}[mode];
 

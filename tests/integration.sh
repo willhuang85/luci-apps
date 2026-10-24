@@ -190,10 +190,10 @@ ubus call luci.wgclient status | jq -e '.mode == "passwall" and .killswitch_paus
 echo "== mode: Off"
 ubus call luci.wgclient set_mode '{"mode":"off"}' | jq -e '.mode == "off"' >/dev/null || fail "set off"
 [ "$(uci -q get passwall.@global[0].enabled)" = 0 ] || fail "passwall not switched off"
-[ "$(uci -q get passwall.@global[0].client_proxy)" = 1 ] || fail "passwall settings not back to original in off mode"
+[ "$(uci -q get passwall.@global[0].client_proxy)" = 1 ] || fail "off mode changed Client Proxy"
+[ "$(uci -q get passwall.@global[0].tcp_proxy_mode)" = proxy ] || fail "off mode changed the proxy mode"
 [ "$(uci -q get network.wgc_civpn.auto)" = 0 ] || fail "profile not disconnected in off mode"
 [ "$(uci -q get firewall.wgclient_killswitch.enabled)" = 0 ] || fail "kill switch not paused in off mode"
-uci show network | grep -q "wgclient_orig_host" && fail "relay endpoint left in off mode"
 [ "$(uci -q get network.wgclient_rule_vpn.lookup)" = 51820 ] || fail "normal VPN rule missing in off mode"
 ubus call luci.wgclient connect '{"id":"wgc_civpn"}' | jq -e '.error' >/dev/null || fail "connect allowed in off mode"
 ubus call luci.wgclient status | jq -e '.mode == "off" and .killswitch_paused and .last_mode == "passwall"' >/dev/null || fail "status off mode"
@@ -202,6 +202,16 @@ ubus call luci.wgclient status | jq -e '.passwall.node == "hy2node"' >/dev/null 
 
 echo "== mode: back to VPN through Passwall"
 ubus call luci.wgclient set_mode '{"mode":"vpn_passwall"}' >/dev/null || fail "set vpn_passwall again (remembered node)"
+check_wrapped
+
+echo "== mode: Off straight from VPN through Passwall"
+ubus call luci.wgclient set_mode '{"mode":"off"}' >/dev/null || fail "set off"
+[ "$(uci -q get passwall.@global[0].enabled)" = 0 ] || fail "passwall not switched off"
+[ "$(uci -q get passwall.@global[0].node)" = hy2node ] || fail "off mode changed the node"
+[ "$(uci -q get passwall.@global[0].client_proxy)" = 0 ] || fail "off mode changed Client Proxy"
+uci show network | grep -q "wgclient_orig_host='1.2.3.4'" || fail "off mode touched the relay endpoint"
+[ "$(uci -q get network.wgc_civpn.auto)" = 0 ] || fail "profile not disconnected in off mode"
+ubus call luci.wgclient set_mode '{"mode":"vpn_passwall"}' >/dev/null || fail "back on from off"
 check_wrapped
 
 echo "== mode: VPN restores Passwall"
