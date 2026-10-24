@@ -128,7 +128,7 @@ cat > /etc/init.d/firewall <<'FW'
 echo "firewall-$1" >> /tmp/order.log
 FW
 chmod +x /etc/init.d/firewall
-rm -f /tmp/order.log
+rm -f /tmp/order.log /tmp/passwall-init.log
 chmod +x /etc/init.d/passwall
 cat > /etc/init.d/wgpasswall <<'WG'
 #!/bin/sh
@@ -233,6 +233,8 @@ uci show network | grep -q "wgpasswall_orig_host" && fail "relay options left be
 uci -q get network.wgpasswall_rule_vpn.in >/dev/null && fail "VPN rule still limited to LAN"
 uci -q get network.wgpasswall_rule_vpn_lan >/dev/null && fail "LAN-only VPN rule left behind"
 [ "$(uci -q get firewall.wgpasswall_killswitch.enabled)" = 1 ] || fail "kill switch not resumed"
+# Passwall commands run in the background, queued behind earlier restarts
+for i in $(seq 1 30); do grep -qx disable /tmp/passwall-init.log && break; sleep 0.5; done
 grep -qx disable /tmp/passwall-init.log || fail "passwall service not disabled again"
 
 echo "== firewall reloads and Passwall restarts never overlap"
