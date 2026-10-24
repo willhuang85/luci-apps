@@ -13,7 +13,13 @@ const callRemove = rpc.declare({ object: 'luci.wgclient', method: 'remove', para
 const callConnect = rpc.declare({ object: 'luci.wgclient', method: 'connect', params: [ 'id' ] });
 const callDisconnect = rpc.declare({ object: 'luci.wgclient', method: 'disconnect', params: [ 'id' ] });
 const callSetKillswitch = rpc.declare({ object: 'luci.wgclient', method: 'set_killswitch', params: [ 'enabled' ] });
-const callSetPasswall = rpc.declare({ object: 'luci.wgclient', method: 'set_passwall', params: [ 'enabled', 'node' ] });
+const callSetMode = rpc.declare({ object: 'luci.wgclient', method: 'set_mode', params: [ 'mode', 'node', 'id' ] });
+
+const MODE_INFO = {
+	vpn: { icon: '🔒', title: _('VPN'), desc: _('All devices use the WireGuard VPN.') },
+	vpn_passwall: { icon: '🔀', title: _('VPN through Passwall'), desc: _('The VPN, hidden inside a Passwall proxy connection.') },
+	passwall: { icon: '🌐', title: _('Passwall only'), desc: _('No VPN; Passwall proxies your devices.') }
+};
 
 // A handshake older than this means the peer is not answering anymore.
 const HANDSHAKE_TIMEOUT = 180;
@@ -61,6 +67,16 @@ const CSS = `
 	border: 1px solid var(--wgc-line); vertical-align: middle; font-weight: normal; }
 .wgc-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .wgc-actions .btn, .wgc-actions .cbi-button { margin: 0; }
+.wgc-modes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 12px; }
+.wgc-mode { display: flex; flex-direction: column; justify-content: flex-start; text-align: left; border: 2px solid var(--wgc-line);
+	border-radius: 10px; padding: 12px; background: transparent; color: inherit; cursor: pointer; font: inherit; }
+.wgc-actions .btn:disabled { opacity: .45; cursor: not-allowed; }
+.wgc-mode:hover { border-color: var(--wgc-muted); }
+.wgc-mode.active { border-color: var(--wgc-ok); background: rgba(26,156,74,.08); }
+.wgc-mode:disabled { opacity: .5; cursor: not-allowed; }
+.wgc-mode-title { font-weight: 600; margin-top: 4px; }
+.wgc-mode-icon { font-size: 22px; line-height: 1; }
+@media (max-width: 600px) { .wgc-modes { grid-template-columns: 1fr; } }
 .wgc-drop { border: 2px dashed var(--wgc-line); border-radius: 12px; padding: 32px 16px; text-align: center; cursor: pointer;
 	transition: border-color .15s, background .15s; }
 .wgc-drop:hover, .wgc-drop.over { border-color: var(--wgc-ok); background: rgba(26,156,74,.06); }
@@ -218,29 +234,29 @@ return view.extend({
 		return this.act(_('Disconnecting from %s…').format(p.label), () => callDisconnect(p.id));
 	},
 
-	handlePasswall(ev) {
-		const enabled = ev.target.checked;
+	handleMode(mode) {
+		const cur = this.data?.mode ?? 'vpn';
 		const node = this.root.querySelector('select[name="wgc-pw-node"]')?.value ?? '';
+		const msg = {
+			vpn: _('Switch to VPN mode?\n\nPasswall goes back to exactly the settings it had before you first used a Passwall mode, and your last VPN profile connects.'),
+			vpn_passwall: _('Switch to "VPN through Passwall"?\n\nPasswall is switched on with the selected node and set up to carry the WireGuard tunnel: "Localhost Proxy" on, "Client Proxy" off, your VPN servers added to its proxy list (and taken out of its direct list), tunnel MTU 1280. Traffic from your LAN devices goes through the VPN; the router\'s own traffic and DNS are handled by Passwall.\n\nYour current Passwall settings are saved and restored when you switch back to VPN mode.'),
+			passwall: _('Switch to "Passwall only"?\n\nThe VPN is disconnected and Passwall proxies your LAN devices with the selected node ("Client Proxy" on, default proxy modes set to Proxy). The kill switch is paused in this mode.\n\nYour current Passwall settings are saved and restored when you switch back to VPN mode.')
+		}[mode];
 
-		if (enabled && !confirm(_('Passwall will be switched on with the selected node and set up to wrap the WireGuard tunnel: "Localhost Proxy" on, "Client Proxy" off, your VPN servers added to its proxy list (and taken out of its direct list), and the tunnel MTU lowered to 1280.\n\nTraffic from your LAN devices goes through the VPN; the router\'s own traffic and DNS are handled by Passwall, so the proxy never has to wait for the tunnel it carries.\n\nTurning this off restores your previous Passwall settings. Continue?'))) {
-			ev.target.checked = false;
+		if (mode == cur || !confirm(msg))
 			return;
-		}
 
-		if (!enabled && !confirm(_('Restore the Passwall settings from before "Tunnel through Passwall" was turned on?'))) {
-			ev.target.checked = true;
-			return;
-		}
-
-		return this.act(enabled ? _('Setting up Passwall…') : _('Restoring Passwall settings…'),
-			() => callSetPasswall(enabled, node));
+		return this.act(_('Switching to %s…').format(MODE_INFO[mode].title),
+			() => callSetMode(mode, node, this.data?.last_profile ?? ''));
 	},
 
-	handlePasswallNode(ev) {
-		if (!this.data?.passwall?.enabled)
+	handleModeNode(ev) {
+		const mode = this.data?.mode;
+
+		if (mode != 'vpn_passwall' && mode != 'passwall')
 			return;
 
-		return this.act(_('Switching Passwall node…'), () => callSetPasswall(true, ev.target.value));
+		return this.act(_('Switching Passwall node…'), () => callSetMode(mode, ev.target.value, ''));
 	},
 
 	handleKillswitch(ev) {
@@ -419,7 +435,7 @@ return view.extend({
 			input.click();
 		} }, [ _('Load from file…') ]);
 
-		if (isNew)
+		if (isNew && this.data?.mode != 'passwall')
 			buttons.push(E('button', { 'class': 'btn cbi-button cbi-button-positive', click: () => save(true) }, [ _('Save & connect') ]));
 
 		buttons.push(E('button', { 'class': 'btn cbi-button cbi-button-action' + (isNew ? '' : ' important'), click: () => save(false) }, [ _('Save') ]));
@@ -449,6 +465,22 @@ return view.extend({
 	renderHero(data) {
 		const profiles = data.profiles;
 		const live = profiles.find((p) => p.up) ?? profiles.find((p) => p.auto);
+
+		if (data.mode == 'passwall') {
+			const pw = data.passwall;
+			const node = pw.nodes.find((n) => n.id == pw.node);
+
+			return E('div', { 'class': 'wgc-card' }, [
+				E('div', { 'class': 'wgc-hero' }, [
+					E('div', { 'class': 'wgc-orb ' + (pw.running ? 'ok' : 'warn') }, pw.running ? '🌐' : '…'),
+					E('div', { 'class': 'wgc-hero-text' }, [
+						E('div', { 'class': 'wgc-hero-title' }, pw.running ? _('Passwall only') : _('Passwall is starting…')),
+						E('div', { 'class': 'wgc-sub' }, _('Your devices go through Passwall (%s). The VPN is off.').format(node?.label ?? _('no node')))
+					]),
+					E('button', { 'class': 'btn cbi-button cbi-button-action', click: () => this.handleMode('vpn') }, [ _('Switch to VPN') ])
+				])
+			]);
+		}
 
 		if (!live) {
 			return E('div', { 'class': 'wgc-card' }, [
@@ -488,7 +520,7 @@ return view.extend({
 				this.renderStat(_('Uptime'), formatUptime(live.uptime)),
 				this.renderStat(_('Downloaded'), formatBytes(live.rx_bytes)),
 				this.renderStat(_('Uploaded'), formatBytes(live.tx_bytes)),
-				data.passwall?.enabled
+				data.mode == 'vpn_passwall'
 					? this.renderStat(_('Route'), live.proxied === true ? '✓ ' + _('Via Passwall') : live.proxied === false ? '⚠ ' + _('Direct') : _('Checking…'))
 					: ''
 			])
@@ -507,7 +539,9 @@ return view.extend({
 		const connected = data.profiles.some((p) => profileState(p).cls == 'ok');
 		let note = '';
 
-		if (!data.lan_zone_ok || !data.wan_zone_ok)
+		if (data.killswitch_paused)
+			note = E('div', { 'class': 'wgc-note' }, _('Paused while in "Passwall only" mode, because Passwall sends some traffic directly on purpose. It comes back when you switch to a VPN mode.'));
+		else if (!data.lan_zone_ok || !data.wan_zone_ok)
 			note = E('div', { 'class': 'wgc-note bad' }, _('The kill switch needs the firewall zones "%s" and "%s", but at least one of them does not exist.').format(s.lan_zone, s.wan_zone));
 		else if (data.killswitch_active && !connected)
 			note = E('div', { 'class': 'wgc-note bad' }, _('No VPN is connected, so LAN devices currently have no internet access.'));
@@ -535,56 +569,53 @@ return view.extend({
 		]);
 	},
 
-	// "Tunnel through Passwall": one switch that configures Passwall.
-	renderPasswall(data) {
+	// Mode picker: VPN / VPN through Passwall / Passwall only.
+	renderMode(data) {
 		const pw = data.passwall;
+		const mode = data.mode ?? 'vpn';
 		const live = data.profiles.find((p) => p.up);
 		let note = '';
 
 		if (!pw.nodes.length) {
 			note = E('div', { 'class': 'wgc-note' }, [
-				_('Add a node in Passwall first, then come back here. '),
+				_('Add a node in Passwall to use the Passwall modes. '),
 				E('a', { href: L.url('admin/services/passwall') }, _('Open Passwall'))
 			]);
 		}
-		else if (pw.enabled && !pw.running) {
+		else if (mode != 'vpn' && !pw.running) {
 			note = E('div', { 'class': 'wgc-note' }, _('Passwall is starting… this can take up to a minute.'));
 		}
-		else if (pw.enabled && live?.proxied === true) {
+		else if (mode == 'vpn_passwall' && live?.proxied === true) {
 			note = E('div', { 'class': 'wgc-note ok' }, _('Wrapped: WireGuard\'s traffic to the VPN server is going through Passwall.'));
 		}
-		else if (pw.enabled && live?.proxied === false) {
+		else if (mode == 'vpn_passwall' && live?.proxied === false) {
 			note = E('div', { 'class': 'wgc-note bad' }, _('Not wrapped yet: the tunnel still goes out directly. This normally fixes itself within 30 seconds of Passwall starting; if it doesn\'t, Disconnect and Connect the profile, and check that the Passwall node supports UDP.'));
 		}
-		else if (pw.enabled && live) {
+		else if (mode == 'vpn_passwall' && live) {
 			note = E('div', { 'class': 'wgc-note' }, _('Checking whether the tunnel is wrapped…'));
 		}
+
+		const buttons = Object.keys(MODE_INFO).map((m) => E('button', {
+			'class': 'wgc-mode' + (m == mode ? ' active' : ''),
+			'aria-pressed': (m == mode) ? 'true' : 'false',
+			disabled: (m != 'vpn' && !pw.nodes.length) ? '' : null,
+			click: () => this.handleMode(m)
+		}, [
+			E('div', { 'class': 'wgc-mode-icon' }, MODE_INFO[m].icon),
+			E('div', { 'class': 'wgc-mode-title' }, MODE_INFO[m].title),
+			E('div', { 'class': 'wgc-sub' }, MODE_INFO[m].desc)
+		]));
 
 		const nodeSelect = E('select', {
 			'class': 'cbi-input-select',
 			name: 'wgc-pw-node',
 			style: 'max-width:100%',
-			change: ui.createHandlerFn(this, 'handlePasswallNode')
+			change: ui.createHandlerFn(this, 'handleModeNode')
 		}, pw.nodes.map((n) => E('option', { value: n.id, selected: (n.id == pw.node) ? '' : null }, n.label)));
 
 		return E('div', { 'class': 'wgc-card' }, [
-			E('div', { 'class': 'wgc-row' }, [
-				E('div', { 'class': 'wgc-grow' }, [
-					E('p', { 'class': 'wgc-h' }, '🔀 ' + _('Tunnel through Passwall')),
-					E('div', { 'class': 'wgc-sub' }, _('Hide the VPN inside a Passwall proxy connection, e.g. where WireGuard is blocked or throttled.'))
-				]),
-				E('label', { 'class': 'wgc-switch', title: _('Tunnel through Passwall') }, [
-					E('input', {
-						type: 'checkbox',
-						role: 'switch',
-						'aria-label': _('Tunnel through Passwall'),
-						checked: pw.enabled ? '' : null,
-						disabled: pw.nodes.length ? null : '',
-						change: ui.createHandlerFn(this, 'handlePasswall')
-					}),
-					E('span', { 'class': 'wgc-slider' })
-				])
-			]),
+			E('p', { 'class': 'wgc-h' }, _('Mode')),
+			E('div', { 'class': 'wgc-modes' }, buttons),
 			pw.nodes.length ? E('div', { 'class': 'wgc-row', style: 'margin-top:12px; flex-wrap:wrap; gap:8px' }, [
 				E('span', { 'class': 'wgc-sub', style: 'margin:0' }, _('Passwall node')),
 				nodeSelect
@@ -596,7 +627,7 @@ return view.extend({
 	// Shown when a transparent proxy app is installed next to this one.
 	renderProxyInfo(data) {
 		if (data.passwall?.installed)
-			return this.renderPasswall(data);
+			return this.renderMode(data);
 
 		const apps = data.proxy_apps ?? [];
 
@@ -618,6 +649,7 @@ return view.extend({
 	renderProfile(p) {
 		const state = profileState(p);
 		const isOn = p.up || p.auto;
+		const pwOnly = this.data?.mode == 'passwall';
 
 		return E('div', { 'class': 'wgc-card wgc-profile' + (isOn ? ' active' : '') }, [
 			E('span', { 'class': 'wgc-dot ' + state.cls, title: state.text }),
@@ -633,7 +665,12 @@ return view.extend({
 			E('div', { 'class': 'wgc-actions' }, [
 				isOn
 					? E('button', { 'class': 'btn cbi-button cbi-button-negative', click: ui.createHandlerFn(this, 'handleDisconnect', p) }, [ _('Disconnect') ])
-					: E('button', { 'class': 'btn cbi-button cbi-button-positive', click: ui.createHandlerFn(this, 'handleConnect', p) }, [ _('Connect') ]),
+					: E('button', {
+						'class': 'btn cbi-button cbi-button-positive',
+						disabled: pwOnly ? '' : null,
+						title: pwOnly ? _('Switch the mode to VPN to connect') : null,
+						click: ui.createHandlerFn(this, 'handleConnect', p)
+					}, [ _('Connect') ]),
 				E('button', { 'class': 'btn cbi-button', title: _('Edit'), click: ui.createHandlerFn(this, 'handleEdit', p) }, [ _('Edit') ]),
 				E('button', { 'class': 'btn cbi-button', title: _('Download .conf'), click: ui.createHandlerFn(this, 'handleExport', p) }, [ _('Export') ]),
 				E('button', { 'class': 'btn cbi-button cbi-button-remove', title: _('Delete'), click: ui.createHandlerFn(this, 'handleDelete', p) }, [ _('Delete') ])

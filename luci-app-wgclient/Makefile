@@ -4,7 +4,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-wgclient
 PKG_VERSION:=1.0.0
-PKG_RELEASE:=6
+PKG_RELEASE:=7
 
 PKG_LICENSE:=Apache-2.0
 PKG_MAINTAINER:=willhuang85
@@ -62,8 +62,8 @@ endef
 define Package/luci-app-wgclient/prerm
 #!/bin/sh
 [ -n "$${IPKG_INSTROOT}" ] || {
-	# put Passwall back the way it was before "Tunnel through Passwall"
-	ubus call luci.wgclient set_passwall '{"enabled":false}' >/dev/null 2>&1
+	# put Passwall back the way it was before any Passwall mode was used
+	ubus call luci.wgclient set_mode '{"mode":"vpn","connect":false}' >/dev/null 2>&1
 	uci -q set wgclient.settings.killswitch='0'
 	uci -q commit wgclient
 	if uci -q get firewall.wgclient_killswitch >/dev/null; then

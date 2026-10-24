@@ -9,7 +9,7 @@
 		},
 		"write": {
 			"ubus": {
-				"luci.wgclient": [ "save", "remove", "connect", "disconnect", "set_killswitch", "set_passwall" ]
+				"luci.wgclient": [ "save", "remove", "connect", "disconnect", "set_killswitch", "set_mode" ]
 			},
 			"uci": [ "wgclient" ]
 		}

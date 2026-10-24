@@ -81,18 +81,22 @@ How it stays out of the proxy's way:
 - The ip rules use priority 30100/30110, after Passwall's TPROXY rule (priority 999).
 - Passwall only intercepts *new* connections, and at boot WireGuard is up long before Passwall starts. The `wgclient` service therefore watches Passwall's nftables rules and, whenever Passwall (re)starts, moves each tunnel to a new random source port. That starts a fresh connection Passwall can catch; the server follows the new port automatically.
 
-### One switch: "Tunnel through Passwall"
+### Modes: VPN, VPN through Passwall, Passwall only
 
-With Passwall (not Passwall 2) installed, the app shows a **Tunnel through Passwall** card. Pick a node and turn it on, and the app:
+With Passwall (not Passwall 2) installed, the app shows a **Mode** picker and a Passwall node selector, so day to day you don't need to open Passwall at all. You still use Passwall itself to add or subscribe to nodes, read its logs and tune its own rules (direct/proxy/block lists, DNS, access control).
 
-- switches Passwall on with that node, sets **Localhost Proxy** on and **Client Proxy** off (LAN traffic goes into WireGuard, WireGuard's packets go into the proxy), and makes sure **Use Proxy List** is on
-- adds your VPN servers' IPs to Passwall's proxy list (`/etc/passwall/rules/proxy_ip`, under a marker line) and comments them out of its direct list
-- removes the VPN server's port from Passwall's blocked UDP ports, if it was there
-- lowers the tunnel MTU to 1280 for the proxy overhead
-- enables and restarts the Passwall service
-- routes only traffic from LAN devices into the tunnel; the router's own traffic, including Passwall's DNS and the proxy's lookup of its server name, stays outside it (otherwise the proxy carrying the tunnel would wait for the tunnel to resolve its own server: a deadlock)
+| Mode | WireGuard | Passwall |
+|---|---|---|
+| **VPN** | connected | exactly as you had it before you first picked a Passwall mode |
+| **VPN through Passwall** | connected, wrapped by Passwall | on with the chosen node, Localhost Proxy on, Client Proxy off, your VPN servers in its proxy list (taken out of its direct list), VPN port unblocked |
+| **Passwall only** | disconnected | on with the chosen node, Client Proxy on, TCP/UDP default proxy mode Proxy |
 
-Every value is saved first. Turning the switch off (or uninstalling the app) restores Passwall's settings, rule lists, service state and your MTUs. The card and the status panel show whether the tunnel is really wrapped, read from Passwall's mark on the connection.
+Details:
+
+- Passwall's settings (and whether its service starts at boot) are saved the first time you leave **VPN** mode and restored when you return to it. Switching between the two Passwall modes keeps that saved copy. Passwall's own page shows whatever the current mode set, e.g. its main switch is ticked in both Passwall modes.
+- In **VPN through Passwall** only traffic from LAN devices goes into the tunnel; the router's own traffic, including Passwall's DNS and the proxy's lookup of its server name, stays outside it (otherwise the proxy carrying the tunnel would wait for the tunnel to resolve its own server: a deadlock). The tunnel MTU is lowered to 1280 for the proxy overhead, and the status panel shows whether the tunnel is really wrapped.
+- In **Passwall only** the kill switch is paused, since Passwall sends some traffic directly on purpose; Connect is disabled until you pick a VPN mode.
+- Uninstalling the app switches back to **VPN** mode first, so Passwall is restored.
 
 ### Manual setup
 
