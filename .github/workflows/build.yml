@@ -1,0 +1,140 @@
+name: Build package
+
+on:
+  push:
+    branches: [ '**' ]
+    tags: [ 'v*' ]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      openwrt_version:
+        description: OpenWrt release to build against
+        default: '25.12.2'
+
+env:
+  OPENWRT_VERSION: ${{ inputs.openwrt_version || '25.12.2' }}
+  # The package is architecture independent (PKGARCH:=all), so the SDK of any
+  # target produces a package that installs on every router.
+  SDK_TARGET: x86/64
+  PKG_NAME: luci-app-wgclient
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake libjson-c-dev
+
+      - name: Build ucode
+        run: |
+          git clone --depth 1 https://github.com/jow-/ucode.git "$RUNNER_TEMP/ucode"
+          cmake -S "$RUNNER_TEMP/ucode" -B "$RUNNER_TEMP/ucode/build" \
+            -DUBUS_SUPPORT=OFF -DUCI_SUPPORT=OFF -DULOOP_SUPPORT=OFF -DRTNL_SUPPORT=OFF \
+            -DNL80211_SUPPORT=OFF -DDIGEST_SUPPORT=OFF -DSOCKET_SUPPORT=OFF -DLOG_SUPPORT=OFF
+          make -C "$RUNNER_TEMP/ucode/build" -j"$(nproc)"
+
+      - name: Run tests
+        run: UCODE_DIR="$RUNNER_TEMP/ucode/build" ./tests/run.sh
+
+      - name: Syntax check JavaScript
+        run: |
+          for f in $(find luci-app-wgclient/htdocs -name '*.js'); do node --check "$f"; done
+          for f in $(find luci-app-wgclient/root -name '*.json'); do python3 -m json.tool "$f" >/dev/null; done
+
+  build:
+    needs: test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SDK dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang flex bison g++ gawk gettext git \
+            libncurses-dev libssl-dev python3 python3-setuptools rsync swig unzip zlib1g-dev \
+            file wget zstd xz-utils
+
+      - name: Locate SDK
+        id: sdk
+        run: |
+          base="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/${SDK_TARGET}"
+          file=$(curl -fsSL "$base/sha256sums" | grep -oE 'openwrt-sdk-[^ ]+\.tar\.(zst|xz)' | head -n1)
+          [ -n "$file" ] || { echo "No SDK found for OpenWrt ${OPENWRT_VERSION}"; exit 1; }
+          echo "url=$base/$file" >> "$GITHUB_OUTPUT"
+          echo "file=$file" >> "$GITHUB_OUTPUT"
+          echo "Using $file"
+
+      - name: Cache SDK
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/${{ steps.sdk.outputs.file }}
+          key: ${{ steps.sdk.outputs.file }}
+
+      - name: Download and unpack SDK
+        run: |
+          archive="$RUNNER_TEMP/${{ steps.sdk.outputs.file }}"
+          [ -f "$archive" ] || wget -q -O "$archive" "${{ steps.sdk.outputs.url }}"
+          base="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/${SDK_TARGET}"
+          expected=$(curl -fsSL "$base/sha256sums" | grep " \*${{ steps.sdk.outputs.file }}\$" | cut -d' ' -f1)
+          echo "$expected  $archive" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/sdk"
+          tar -xf "$archive" -C "$RUNNER_TEMP/sdk" --strip-components=1
+
+      - name: Prepare feeds
+        working-directory: ${{ runner.temp }}/sdk
+        run: |
+          # Feeds are only needed so the build system knows our dependencies
+          # (luci-base, wireguard-tools, ...) and records them in the package.
+          ./scripts/feeds update base luci
+          ./scripts/feeds install -a -p base
+          ./scripts/feeds install luci-base
+          ln -s "$GITHUB_WORKSPACE/$PKG_NAME" "package/$PKG_NAME"
+          make defconfig
+
+      - name: Build package
+        working-directory: ${{ runner.temp }}/sdk
+        run: make "package/$PKG_NAME/compile" V=s -j1
+
+      - name: Collect package
+        id: pkg
+        working-directory: ${{ runner.temp }}/sdk
+        run: |
+          pkg=$(find bin/packages -name "${PKG_NAME}-*.apk" -o -name "${PKG_NAME}_*.ipk" | head -n1)
+          [ -n "$pkg" ] || { echo "Package not found"; find bin -type f; exit 1; }
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          cp "$pkg" "$GITHUB_WORKSPACE/dist/"
+          echo "name=$(basename "$pkg")" >> "$GITHUB_OUTPUT"
+          # show metadata (dependencies) in the build log
+          if [ -x staging_dir/host/bin/apk ]; then
+            staging_dir/host/bin/apk adbdump "$pkg" | sed -n '1,/^paths:/p' || true
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PKG_NAME }}-openwrt-${{ env.OPENWRT_VERSION }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

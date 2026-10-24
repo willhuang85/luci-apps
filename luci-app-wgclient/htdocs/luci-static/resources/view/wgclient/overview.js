@@ -1,0 +1,590 @@
+'use strict';
+'require view';
+'require rpc';
+'require ui';
+'require poll';
+'require dom';
+
+const callStatus = rpc.declare({ object: 'luci.wgclient', method: 'status' });
+const callParse = rpc.declare({ object: 'luci.wgclient', method: 'parse', params: [ 'conf' ] });
+const callGet = rpc.declare({ object: 'luci.wgclient', method: 'get', params: [ 'id' ] });
+const callSave = rpc.declare({ object: 'luci.wgclient', method: 'save', params: [ 'id', 'label', 'conf', 'connect' ] });
+const callRemove = rpc.declare({ object: 'luci.wgclient', method: 'remove', params: [ 'id' ] });
+const callConnect = rpc.declare({ object: 'luci.wgclient', method: 'connect', params: [ 'id' ] });
+const callDisconnect = rpc.declare({ object: 'luci.wgclient', method: 'disconnect', params: [ 'id' ] });
+const callSetKillswitch = rpc.declare({ object: 'luci.wgclient', method: 'set_killswitch', params: [ 'enabled' ] });
+
+// A handshake older than this means the peer is not answering anymore.
+const HANDSHAKE_TIMEOUT = 180;
+
+const CSS = `
+.wgc { --wgc-ok: #1a9c4a; --wgc-warn: #d68b00; --wgc-bad: #d23f31; --wgc-muted: rgba(127,127,127,.85);
+	--wgc-line: rgba(127,127,127,.25); --wgc-tint: rgba(127,127,127,.07); max-width: 960px; }
+.wgc * { box-sizing: border-box; }
+.wgc-card { border: 1px solid var(--wgc-line); border-radius: 12px; padding: 20px; margin: 0 0 16px; background: var(--wgc-tint); }
+.wgc-hero { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+.wgc-orb { width: 64px; height: 64px; border-radius: 50%; flex: none; display: flex; align-items: center; justify-content: center;
+	font-size: 30px; color: #fff; background: var(--wgc-muted); }
+.wgc-orb.ok { background: var(--wgc-ok); box-shadow: 0 0 0 6px rgba(26,156,74,.18); }
+.wgc-orb.warn { background: var(--wgc-warn); box-shadow: 0 0 0 6px rgba(214,139,0,.18); }
+.wgc-orb.bad { background: var(--wgc-bad); box-shadow: 0 0 0 6px rgba(210,63,49,.18); }
+.wgc-hero-text { flex: 1 1 240px; min-width: 0; }
+.wgc-hero-title { font-size: 1.5em; font-weight: 600; line-height: 1.2; }
+.wgc-sub { color: var(--wgc-muted); margin-top: 4px; overflow-wrap: anywhere; }
+.wgc-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; margin-top: 16px; }
+.wgc-stat { border: 1px solid var(--wgc-line); border-radius: 8px; padding: 10px 12px; }
+.wgc-stat-label { font-size: .8em; color: var(--wgc-muted); text-transform: uppercase; letter-spacing: .04em; }
+.wgc-stat-value { font-size: 1.1em; font-weight: 600; margin-top: 2px; overflow-wrap: anywhere; }
+.wgc-row { display: flex; align-items: center; gap: 16px; }
+.wgc-grow { flex: 1 1 auto; min-width: 0; }
+.wgc-h { font-size: 1.1em; font-weight: 600; margin: 0; }
+.wgc-switch { position: relative; display: inline-block; width: 52px; height: 30px; flex: none; cursor: pointer; }
+.wgc-switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+.wgc-slider { position: absolute; inset: 0; border-radius: 30px; background: var(--wgc-muted); transition: background .2s; }
+.wgc-slider::before { content: ""; position: absolute; width: 24px; height: 24px; left: 3px; top: 3px; border-radius: 50%;
+	background: #fff; transition: transform .2s; box-shadow: 0 1px 3px rgba(0,0,0,.3); }
+.wgc-switch input:checked + .wgc-slider { background: var(--wgc-ok); }
+.wgc-switch input:checked + .wgc-slider::before { transform: translateX(22px); }
+.wgc-switch input:focus-visible + .wgc-slider { outline: 2px solid var(--wgc-ok); outline-offset: 2px; }
+.wgc-switch input:disabled + .wgc-slider { opacity: .5; cursor: wait; }
+.wgc-note { margin-top: 12px; padding: 10px 12px; border-radius: 8px; border-left: 4px solid var(--wgc-warn); background: rgba(214,139,0,.1); }
+.wgc-note.bad { border-left-color: var(--wgc-bad); background: rgba(210,63,49,.1); }
+.wgc-note.ok { border-left-color: var(--wgc-ok); background: rgba(26,156,74,.1); }
+.wgc-list-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 24px 0 12px; flex-wrap: wrap; }
+.wgc-profile { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.wgc-profile.active { border-color: var(--wgc-ok); box-shadow: inset 4px 0 0 var(--wgc-ok); }
+.wgc-dot { width: 12px; height: 12px; border-radius: 50%; background: var(--wgc-muted); flex: none; }
+.wgc-dot.ok { background: var(--wgc-ok); } .wgc-dot.warn { background: var(--wgc-warn); } .wgc-dot.bad { background: var(--wgc-bad); }
+.wgc-name { font-weight: 600; font-size: 1.05em; overflow-wrap: anywhere; }
+.wgc-badge { display: inline-block; font-size: .75em; padding: 1px 8px; border-radius: 10px; margin-left: 8px;
+	border: 1px solid var(--wgc-line); vertical-align: middle; font-weight: normal; }
+.wgc-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.wgc-actions .btn, .wgc-actions .cbi-button { margin: 0; }
+.wgc-drop { border: 2px dashed var(--wgc-line); border-radius: 12px; padding: 32px 16px; text-align: center; cursor: pointer;
+	transition: border-color .15s, background .15s; }
+.wgc-drop:hover, .wgc-drop.over { border-color: var(--wgc-ok); background: rgba(26,156,74,.06); }
+.wgc-drop-icon { font-size: 36px; line-height: 1; margin-bottom: 8px; }
+.wgc-modal label.wgc-field { display: block; font-weight: 600; margin: 14px 0 6px; }
+.wgc-modal input[type=text], .wgc-modal textarea { width: 100%; }
+.wgc-modal textarea { font-family: monospace; font-size: 12px; min-height: 220px; resize: vertical; }
+.wgc-preview { margin-top: 12px; min-height: 1.5em; }
+.wgc-preview ul { margin: 6px 0 0 18px; padding: 0; }
+.wgc-kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin-top: 8px; }
+.wgc-kv > div:nth-child(odd) { color: var(--wgc-muted); }
+.wgc-kv > div { overflow-wrap: anywhere; }
+@media (max-width: 600px) {
+	.wgc-card { padding: 14px; }
+	.wgc-profile .wgc-actions { width: 100%; }
+	.wgc-profile .wgc-actions > * { flex: 1 1 auto; }
+}
+`;
+
+function formatBytes(n) {
+	const units = [ 'B', 'KiB', 'MiB', 'GiB', 'TiB' ];
+	let i = 0;
+
+	n = +n || 0;
+
+	while (n >= 1024 && i < units.length - 1) {
+		n /= 1024;
+		i++;
+	}
+
+	return n.toFixed(i ? 1 : 0) + ' ' + units[i];
+}
+
+function formatAge(sec) {
+	if (sec == null)
+		return _('Never');
+
+	if (sec < 5)
+		return _('Just now');
+
+	if (sec < 60)
+		return _('%d seconds ago').format(sec);
+
+	if (sec < 3600)
+		return _('%d minutes ago').format(Math.floor(sec / 60));
+
+	return _('%d hours ago').format(Math.floor(sec / 3600));
+}
+
+function formatUptime(sec) {
+	if (!sec)
+		return '-';
+
+	const d = Math.floor(sec / 86400), h = Math.floor(sec / 3600) % 24, m = Math.floor(sec / 60) % 60;
+
+	if (d)
+		return '%dd %dh %dm'.format(d, h, m);
+
+	if (h)
+		return '%dh %dm'.format(h, m);
+
+	return '%dm %ds'.format(m, sec % 60);
+}
+
+// Derives a single user facing state for a profile.
+function profileState(p) {
+	if (p.up && p.handshake_age != null && p.handshake_age < HANDSHAKE_TIMEOUT)
+		return { cls: 'ok', text: _('Connected') };
+
+	if (p.up)
+		return { cls: 'warn', text: p.latest_handshake ? _('Connection lost, retrying…') : _('Connecting…') };
+
+	if (p.auto && p.pending)
+		return { cls: 'warn', text: _('Connecting…') };
+
+	if (p.auto && p.error)
+		return { cls: 'bad', text: _('Failed to start (%s)').format(p.error) };
+
+	if (p.auto)
+		return { cls: 'warn', text: _('Starting…') };
+
+	return { cls: '', text: _('Disconnected') };
+}
+
+function readFile(file) {
+	return new Promise((resolve, reject) => {
+		if (file.size > 65536)
+			return reject(new Error(_('This file is too large to be a WireGuard configuration.')));
+
+		const reader = new FileReader();
+		reader.onload = () => resolve(reader.result);
+		reader.onerror = () => reject(reader.error);
+		reader.readAsText(file);
+	});
+}
+
+function labelFromFilename(name) {
+	return (name || '').replace(/\.(conf|txt)$/i, '').replace(/[_-]+/g, ' ').trim().substring(0, 64);
+}
+
+function notifyError(err) {
+	ui.addNotification(null, E('p', {}, err?.message ?? String(err)), 'danger');
+}
+
+return view.extend({
+	handleSaveApply: null,
+	handleSave: null,
+	handleReset: null,
+
+	busy: false,
+
+	load() {
+		return callStatus();
+	},
+
+	refresh() {
+		return callStatus().then((data) => {
+			this.data = data;
+
+			if (!this.busy)
+				dom.content(this.root, this.renderContent(data));
+		});
+	},
+
+	// Runs an action with all controls disabled and refreshes afterwards.
+	act(label, fn) {
+		if (this.busy)
+			return Promise.resolve();
+
+		this.busy = true;
+		this.root.querySelectorAll('button, input').forEach((el) => el.disabled = true);
+
+		if (label)
+			ui.showModal(null, [ E('p', { 'class': 'spinning' }, label) ]);
+
+		return Promise.resolve().then(fn).then((res) => {
+			if (res?.error)
+				throw new Error(res.error);
+
+			return res;
+		}).catch(notifyError).finally(() => {
+			if (label)
+				ui.hideModal();
+
+			this.busy = false;
+			return this.refresh();
+		});
+	},
+
+	handleConnect(p) {
+		return this.act(_('Connecting to %s…').format(p.label), () => callConnect(p.id));
+	},
+
+	handleDisconnect(p) {
+		return this.act(_('Disconnecting from %s…').format(p.label), () => callDisconnect(p.id));
+	},
+
+	handleKillswitch(ev) {
+		const enabled = ev.target.checked;
+		const active = (this.data?.profiles ?? []).some((p) => profileState(p).cls == 'ok');
+
+		if (enabled && !active &&
+		    !confirm(_('No VPN is connected right now. Turning on the kill switch will cut internet access for all LAN devices until a VPN connects. Continue?'))) {
+			ev.target.checked = false;
+			return;
+		}
+
+		return this.act(null, () => callSetKillswitch(enabled));
+	},
+
+	handleDelete(p) {
+		if (!confirm(_('Delete the profile "%s"? This cannot be undone.').format(p.label)))
+			return;
+
+		return this.act(_('Deleting %s…').format(p.label), () => callRemove(p.id));
+	},
+
+	handleExport(p) {
+		return callGet(p.id).then((res) => {
+			if (res?.error)
+				throw new Error(res.error);
+
+			const blob = new Blob([ res.conf ], { type: 'text/plain' });
+			const a = E('a', {
+				href: URL.createObjectURL(blob),
+				download: (res.label.replace(/[^A-Za-z0-9._-]+/g, '_') || p.id) + '.conf'
+			});
+
+			document.body.appendChild(a);
+			a.click();
+			setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+		}).catch(notifyError);
+	},
+
+	handleEdit(p) {
+		return callGet(p.id).then((res) => {
+			if (res?.error)
+				throw new Error(res.error);
+
+			this.showEditor({ id: p.id, label: res.label, conf: res.conf });
+		}).catch(notifyError);
+	},
+
+	handleFiles(files) {
+		const file = files?.[0];
+
+		if (!file)
+			return;
+
+		return readFile(file).then((text) => {
+			this.showEditor({ label: labelFromFilename(file.name), conf: text });
+		}).catch(notifyError);
+	},
+
+	pickFile() {
+		const input = E('input', { type: 'file', accept: '.conf,.txt,text/plain', style: 'display:none' });
+
+		input.addEventListener('change', () => {
+			this.handleFiles(input.files);
+			input.remove();
+		});
+
+		document.body.appendChild(input);
+		input.click();
+	},
+
+	// Import / edit dialog: name + raw .conf text with a live validated preview.
+	showEditor(opts) {
+		const isNew = !opts.id;
+		const nameInput = E('input', { type: 'text', 'class': 'cbi-input-text', maxlength: 64,
+			placeholder: _('e.g. Home, Office, Mullvad Zurich'), value: opts.label ?? '' });
+		const confInput = E('textarea', { 'class': 'cbi-input-textarea', spellcheck: 'false',
+			placeholder: '[Interface]\nPrivateKey = …\nAddress = 10.0.0.2/32\nDNS = 10.0.0.1\n\n[Peer]\nPublicKey = …\nAllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = vpn.example.com:51820' }, [ opts.conf ?? '' ]);
+		const preview = E('div', { 'class': 'wgc-preview' });
+		const buttons = [];
+		let valid = false, timer = null, seq = 0;
+
+		const setButtons = () => buttons.forEach((b) => b.disabled = !valid || !nameInput.value.trim());
+
+		const validate = () => {
+			const text = confInput.value;
+			const mine = ++seq;
+
+			if (!text.trim()) {
+				valid = false;
+				dom.content(preview, E('div', { 'class': 'wgc-sub' }, _('Paste the contents of your .conf file above or load it from a file.')));
+				return setButtons();
+			}
+
+			return callParse(text).then((res) => {
+				if (mine != seq)
+					return;
+
+				valid = !res.error;
+
+				if (res.error) {
+					dom.content(preview, E('div', { 'class': 'wgc-note bad' }, [ E('strong', {}, _('Invalid configuration: ')), res.error ]));
+				}
+				else {
+					dom.content(preview, E('div', { 'class': 'wgc-note ok' }, [
+						E('strong', {}, '✓ ' + _('Looks good')),
+						E('div', { 'class': 'wgc-kv' }, [
+							E('div', {}, _('Server')), E('div', {}, res.endpoint ?? _('none')),
+							E('div', {}, _('Tunnel address')), E('div', {}, res.addresses.join(', ')),
+							E('div', {}, _('DNS')), E('div', {}, res.dns.length ? res.dns.join(', ') : _('not set')),
+							E('div', {}, _('Routing')), E('div', {}, res.full_tunnel
+								? _('All internet traffic goes through the VPN')
+								: _('Only %s through the VPN').format(res.allowed_ips.join(', ') || _('nothing')))
+						]),
+						res.warnings?.length ? E('ul', {}, res.warnings.map((w) => E('li', {}, w))) : ''
+					]));
+				}
+
+				setButtons();
+			});
+		};
+
+		confInput.addEventListener('input', () => {
+			clearTimeout(timer);
+			timer = setTimeout(validate, 300);
+		});
+		nameInput.addEventListener('input', setButtons);
+
+		const save = (connect) => {
+			const label = nameInput.value.trim();
+			const conf = confInput.value;
+
+			let failed = false;
+
+			ui.hideModal();
+
+			return this.act(connect ? _('Saving and connecting…') : _('Saving…'), () =>
+				callSave(opts.id ?? '', label, conf, connect).then((res) => {
+					failed = !!res?.error;
+
+					if (!failed && res?.warnings?.length)
+						ui.addNotification(null, E('div', {}, [
+							E('p', {}, _('Profile saved with notes:')),
+							E('ul', {}, res.warnings.map((w) => E('li', {}, w)))
+						]), 'warning');
+
+					return res;
+				}, (err) => { failed = true; throw err; })
+			).then(() => {
+				// keep the user's input if saving did not work out
+				if (failed)
+					this.showEditor(Object.assign({}, opts, { label, conf }));
+			});
+		};
+
+		const loadBtn = E('button', { 'class': 'btn cbi-button', click: (ev) => {
+			ev.preventDefault();
+			const input = E('input', { type: 'file', accept: '.conf,.txt,text/plain', style: 'display:none' });
+			input.addEventListener('change', () => {
+				const file = input.files?.[0];
+				input.remove();
+
+				if (!file)
+					return;
+
+				readFile(file).then((text) => {
+					confInput.value = text;
+
+					if (!nameInput.value.trim())
+						nameInput.value = labelFromFilename(file.name);
+
+					validate();
+				}).catch(notifyError);
+			});
+			document.body.appendChild(input);
+			input.click();
+		} }, [ _('Load from file…') ]);
+
+		if (isNew)
+			buttons.push(E('button', { 'class': 'btn cbi-button cbi-button-positive', click: () => save(true) }, [ _('Save & connect') ]));
+
+		buttons.push(E('button', { 'class': 'btn cbi-button cbi-button-action' + (isNew ? '' : ' important'), click: () => save(false) }, [ _('Save') ]));
+
+		ui.showModal(isNew ? _('Import WireGuard configuration') : _('Edit %s').format(opts.label), [
+			E('div', { 'class': 'wgc wgc-modal' }, [
+				E('label', { 'class': 'wgc-field' }, _('Name')),
+				nameInput,
+				E('div', { 'class': 'wgc-row', style: 'margin-top:14px' }, [
+					E('label', { 'class': 'wgc-field wgc-grow', style: 'margin:0' }, _('Configuration')),
+					loadBtn
+				]),
+				E('div', { style: 'margin-top:6px' }, confInput),
+				preview
+			]),
+			E('div', { 'class': 'right', style: 'margin-top:16px; display:flex; gap:8px; justify-content:flex-end; flex-wrap:wrap' }, [
+				E('button', { 'class': 'btn cbi-button', click: ui.hideModal }, [ _('Cancel') ]),
+				...buttons
+			])
+		], 'cbi-modal');
+
+		setButtons();
+		validate();
+		(nameInput.value ? confInput : nameInput).focus();
+	},
+
+	renderHero(data) {
+		const profiles = data.profiles;
+		const live = profiles.find((p) => p.up) ?? profiles.find((p) => p.auto);
+
+		if (!live) {
+			return E('div', { 'class': 'wgc-card' }, [
+				E('div', { 'class': 'wgc-hero' }, [
+					E('div', { 'class': 'wgc-orb' + (data.killswitch_active ? ' bad' : '') }, data.killswitch_active ? '⛔' : '⏻'),
+					E('div', { 'class': 'wgc-hero-text' }, [
+						E('div', { 'class': 'wgc-hero-title' }, _('Not connected')),
+						E('div', { 'class': 'wgc-sub' }, data.killswitch_active
+							? _('The kill switch is blocking internet access for LAN devices until a VPN connects.')
+							: profiles.length
+								? _('Your traffic is using your regular internet connection. Pick a profile below to connect.')
+								: _('Import a WireGuard configuration file to get started.'))
+					])
+				])
+			]);
+		}
+
+		const state = profileState(live);
+
+		return E('div', { 'class': 'wgc-card' }, [
+			E('div', { 'class': 'wgc-hero' }, [
+				E('div', { 'class': 'wgc-orb ' + state.cls }, state.cls == 'ok' ? '🔒' : '…'),
+				E('div', { 'class': 'wgc-hero-text' }, [
+					E('div', { 'class': 'wgc-hero-title' }, state.cls == 'ok'
+						? _('Connected to %s').format(live.label)
+						: '%s — %s'.format(live.label, state.text)),
+					E('div', { 'class': 'wgc-sub' }, live.full_tunnel
+						? _('All internet traffic from your network is going through the VPN.')
+						: _('Only traffic for %s is going through the VPN.').format(live.allowed_ips.join(', ')))
+				]),
+				E('button', { 'class': 'btn cbi-button cbi-button-negative', click: ui.createHandlerFn(this, 'handleDisconnect', live) }, [ _('Disconnect') ])
+			]),
+			E('div', { 'class': 'wgc-stats' }, [
+				this.renderStat(_('Server'), live.endpoint ?? '-'),
+				this.renderStat(_('Tunnel IP'), live.addresses.join(', ')),
+				this.renderStat(_('Last handshake'), formatAge(live.handshake_age)),
+				this.renderStat(_('Uptime'), formatUptime(live.uptime)),
+				this.renderStat(_('Downloaded'), formatBytes(live.rx_bytes)),
+				this.renderStat(_('Uploaded'), formatBytes(live.tx_bytes))
+			])
+		]);
+	},
+
+	renderStat(label, value) {
+		return E('div', { 'class': 'wgc-stat' }, [
+			E('div', { 'class': 'wgc-stat-label' }, label),
+			E('div', { 'class': 'wgc-stat-value' }, value)
+		]);
+	},
+
+	renderKillswitch(data) {
+		const s = data.settings;
+		const connected = data.profiles.some((p) => profileState(p).cls == 'ok');
+		let note = '';
+
+		if (!data.lan_zone_ok || !data.wan_zone_ok)
+			note = E('div', { 'class': 'wgc-note bad' }, _('The kill switch needs the firewall zones "%s" and "%s", but at least one of them does not exist.').format(s.lan_zone, s.wan_zone));
+		else if (data.killswitch_active && !connected)
+			note = E('div', { 'class': 'wgc-note bad' }, _('No VPN is connected, so LAN devices currently have no internet access.'));
+		else if (data.killswitch_active)
+			note = E('div', { 'class': 'wgc-note ok' }, _('Protected: if the VPN drops, LAN devices are cut off instead of leaking traffic.'));
+
+		return E('div', { 'class': 'wgc-card' }, [
+			E('div', { 'class': 'wgc-row' }, [
+				E('div', { 'class': 'wgc-grow' }, [
+					E('p', { 'class': 'wgc-h' }, '🛡 ' + _('Kill switch')),
+					E('div', { 'class': 'wgc-sub' }, _('Block all internet traffic from LAN devices that does not go through the VPN.'))
+				]),
+				E('label', { 'class': 'wgc-switch', title: _('Kill switch') }, [
+					E('input', {
+						type: 'checkbox',
+						role: 'switch',
+						'aria-label': _('Kill switch'),
+						checked: s.killswitch ? '' : null,
+						change: ui.createHandlerFn(this, 'handleKillswitch')
+					}),
+					E('span', { 'class': 'wgc-slider' })
+				])
+			]),
+			note
+		]);
+	},
+
+	renderProfile(p) {
+		const state = profileState(p);
+		const isOn = p.up || p.auto;
+
+		return E('div', { 'class': 'wgc-card wgc-profile' + (isOn ? ' active' : '') }, [
+			E('span', { 'class': 'wgc-dot ' + state.cls, title: state.text }),
+			E('div', { 'class': 'wgc-grow' }, [
+				E('div', { 'class': 'wgc-name' }, [
+					p.label,
+					E('span', { 'class': 'wgc-badge' }, p.full_tunnel ? _('Full tunnel') : _('Split tunnel'))
+				]),
+				E('div', { 'class': 'wgc-sub' }, [
+					state.text, ' · ', p.endpoint ?? _('no server'), ' · ', p.addresses.join(', ')
+				])
+			]),
+			E('div', { 'class': 'wgc-actions' }, [
+				isOn
+					? E('button', { 'class': 'btn cbi-button cbi-button-negative', click: ui.createHandlerFn(this, 'handleDisconnect', p) }, [ _('Disconnect') ])
+					: E('button', { 'class': 'btn cbi-button cbi-button-positive', click: ui.createHandlerFn(this, 'handleConnect', p) }, [ _('Connect') ]),
+				E('button', { 'class': 'btn cbi-button', title: _('Edit'), click: ui.createHandlerFn(this, 'handleEdit', p) }, [ _('Edit') ]),
+				E('button', { 'class': 'btn cbi-button', title: _('Download .conf'), click: ui.createHandlerFn(this, 'handleExport', p) }, [ _('Export') ]),
+				E('button', { 'class': 'btn cbi-button cbi-button-remove', title: _('Delete'), click: ui.createHandlerFn(this, 'handleDelete', p) }, [ _('Delete') ])
+			])
+		]);
+	},
+
+	renderDropZone(big) {
+		const zone = E('div', {
+			'class': 'wgc-drop',
+			role: 'button',
+			tabindex: 0,
+			click: () => this.pickFile(),
+			keydown: (ev) => { if (ev.key == 'Enter' || ev.key == ' ') { ev.preventDefault(); this.pickFile(); } }
+		}, [
+			E('div', { 'class': 'wgc-drop-icon' }, '📄'),
+			E('div', { 'class': 'wgc-h' }, big ? _('Import your first WireGuard configuration') : _('Drop a .conf file here')),
+			E('div', { 'class': 'wgc-sub' }, _('Drag and drop a .conf file from your VPN provider, or click to choose one.')),
+			E('div', { style: 'margin-top:12px' }, [
+				E('button', { 'class': 'btn cbi-button', click: (ev) => { ev.stopPropagation(); this.showEditor({}); } }, [ _('Paste configuration instead') ])
+			])
+		]);
+
+		zone.addEventListener('dragover', (ev) => { ev.preventDefault(); zone.classList.add('over'); });
+		zone.addEventListener('dragleave', () => zone.classList.remove('over'));
+		zone.addEventListener('drop', (ev) => {
+			ev.preventDefault();
+			zone.classList.remove('over');
+			this.handleFiles(ev.dataTransfer?.files);
+		});
+
+		return zone;
+	},
+
+	renderContent(data) {
+		const profiles = data.profiles ?? [];
+
+		return [
+			this.renderHero(data),
+			this.renderKillswitch(data),
+			E('div', { 'class': 'wgc-list-head' }, [
+				E('p', { 'class': 'wgc-h' }, _('VPN profiles')),
+				profiles.length ? E('button', { 'class': 'btn cbi-button cbi-button-add', click: () => this.showEditor({}) }, [ '+ ' + _('Import') ]) : ''
+			]),
+			...profiles.map((p) => this.renderProfile(p)),
+			this.renderDropZone(!profiles.length)
+		];
+	},
+
+	render(data) {
+		this.data = data;
+		this.root = E('div', { 'class': 'wgc' }, this.renderContent(data));
+
+		poll.add(() => this.refresh(), 5);
+
+		return E([], [
+			E('style', {}, CSS),
+			E('h2', {}, _('WireGuard VPN Client')),
+			E('div', { 'class': 'cbi-map-descr', style: 'margin-bottom:16px' }, _('Connect your whole network to a WireGuard VPN. Import the configuration file from your VPN provider and press Connect.')),
+			this.root
+		]);
+	}
+});

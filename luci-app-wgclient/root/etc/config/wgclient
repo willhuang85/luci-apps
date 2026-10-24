@@ -1,0 +1,5 @@
+
+config settings 'settings'
+	option killswitch '0'
+	option lan_zone 'lan'
+	option wan_zone 'wan'

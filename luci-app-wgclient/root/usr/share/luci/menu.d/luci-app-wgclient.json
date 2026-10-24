@@ -1,0 +1,13 @@
+{
+	"admin/vpn/wgclient": {
+		"title": "WireGuard Client",
+		"order": 90,
+		"action": {
+			"type": "view",
+			"path": "wgclient/overview"
+		},
+		"depends": {
+			"acl": [ "luci-app-wgclient" ]
+		}
+	}
+}
