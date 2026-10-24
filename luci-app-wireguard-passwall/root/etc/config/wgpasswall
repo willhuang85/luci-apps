@@ -1,0 +1,16 @@
+
+config settings 'settings'
+	option killswitch '0'
+	option lan_zone 'lan'
+	option wan_zone 'wan'
+	# Policy routing (only change if it clashes with other apps):
+	# routing table holding the VPN routes
+	option route_table '51820'
+	# priority of the two ip rules (uses this value and +10); keep > 999 so
+	# Passwall's TPROXY rule (priority 999) is evaluated first
+	option rule_priority '30100'
+	# packets with any of these mark bits set skip the VPN (proxy cores
+	# such as Xray/sing-box in Passwall mark their sockets with 255)
+	option bypass_mask '0xff'
+	# fwmark of WireGuard's own encrypted packets
+	option wg_fwmark '0xca6c'

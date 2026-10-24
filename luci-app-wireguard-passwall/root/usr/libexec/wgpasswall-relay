@@ -1,0 +1,285 @@
+#!/usr/bin/ucode
+// SPDX-License-Identifier: Apache-2.0
+//
+// UDP relay that carries WireGuard through a local SOCKS5 proxy, used for
+// the "VPN through Passwall" mode: each tunnel's endpoint points at
+// 127.0.0.1:<listen>, and every datagram is forwarded with SOCKS5 UDP
+// ASSOCIATE to the proxy (Passwall's node SOCKS port), which sends it to
+// the real VPN server over the proxy connection.
+//
+// This avoids transparent interception of WireGuard's own packets, which
+// conntrack does not handle: replies injected by the proxy become new
+// "server opened" connections, after which the proxy treats WireGuard's
+// packets as replies and lets them out directly.
+//
+// The relays are read from /etc/config/network: every WireGuard peer with
+// "wgpasswall_orig_host" set (by the app, while in that mode) is relayed from
+// 127.0.0.1:<endpoint_port> to its original endpoint. The SOCKS port is
+// Passwall's "node_socks_port". For tests, WGPASSWALL_RELAY_CONFIG can point
+// to a JSON file instead:
+//   { "socks": { "host": "127.0.0.1", "port": 1070 },
+//     "relays": [ { "listen": 51821, "host": "vpn.example.com", "port": 51820 } ] }
+// Status: /var/run/wgpasswall/relay-status.json
+
+'use strict';
+
+import * as socket from 'socket';
+import * as uloop from 'uloop';
+import { readfile, writefile, rename, mkdir } from 'fs';
+import { cursor } from 'uci';
+
+const STATUS = getenv('WGPASSWALL_RELAY_STATUS') ?? '/var/run/wgpasswall/relay-status.json';
+const RETRY_MS = 3000;
+
+function load_config() {
+	if (getenv('WGPASSWALL_RELAY_CONFIG'))
+		return json(readfile(getenv('WGPASSWALL_RELAY_CONFIG')) ?? 'null');
+
+	const uci = cursor();
+	let relays = [], socks_port = 1070;
+
+	uci.foreach('passwall', 'global', (s) => {
+		socks_port = +(s.node_socks_port || 1070);
+	});
+
+	uci.foreach('network', null, (s) => {
+		if (index(s['.type'], 'wireguard_wgc_') == 0 && s.wgpasswall_orig_host && s.endpoint_port)
+			push(relays, { listen: +s.endpoint_port, host: s.wgpasswall_orig_host, port: +(s.wgpasswall_orig_port || 51820) });
+	});
+
+	return { socks: { host: '127.0.0.1', port: socks_port }, relays };
+}
+
+const cfg = load_config();
+
+if (!cfg || !length(cfg.relays)) {
+	warn('wgpasswall-relay: no tunnels to relay\n');
+	exit(0);
+}
+
+mkdir(replace(STATUS, /\/[^\/]+$/, ''));
+
+uloop.init();
+
+const socks_host = cfg.socks?.host ?? '127.0.0.1';
+const socks_port = +(cfg.socks?.port ?? 1070);
+
+function u16(n) {
+	return chr((n >> 8) & 255, n & 255);
+}
+
+// SOCKS5 address field (ATYP + address + port) for a destination
+function socks_addr(host, port) {
+	const ip = iptoarr(host);
+
+	if (ip && length(ip) == 4)
+		return chr(1, ...ip) + u16(port);
+
+	if (ip && length(ip) == 16)
+		return chr(4, ...ip) + u16(port);
+
+	return chr(3, length(host)) + host + u16(port);
+}
+
+// length of the address field at offset `off` of a SOCKS5 reply/header
+function socks_addr_len(data, off) {
+	switch (ord(data, off)) {
+	case 1: return 1 + 4 + 2;
+	case 4: return 1 + 16 + 2;
+	case 3: return 1 + 1 + ord(data, off + 1) + 2;
+	}
+
+	return null;
+}
+
+function recv_exact(sock, n) {
+	let buf = '';
+
+	while (length(buf) < n) {
+		const chunk = sock.recv(n - length(buf));
+
+		if (!length(chunk))
+			return null;
+
+		buf += chunk;
+	}
+
+	return buf;
+}
+
+// Opens the TCP control connection and requests a UDP association.
+// Returns { ctrl, relay } or { error }.
+function associate() {
+	const ctrl = socket.create(socket.AF_INET, socket.SOCK_STREAM);
+
+	if (!ctrl)
+		return { error: 'cannot create socket' };
+
+	ctrl.setopt(socket.SOL_SOCKET, socket.SO_RCVTIMEO, { sec: 5, usec: 0 });
+	ctrl.setopt(socket.SOL_SOCKET, socket.SO_SNDTIMEO, { sec: 5, usec: 0 });
+
+	if (!ctrl.connect(socks_host, socks_port)) {
+		ctrl.close();
+		return { error: `SOCKS proxy ${socks_host}:${socks_port} not reachable (is Passwall running?)` };
+	}
+
+	ctrl.send(chr(5, 1, 0));
+
+	const greet = recv_exact(ctrl, 2);
+
+	if (!greet || ord(greet, 0) != 5 || ord(greet, 1) != 0) {
+		ctrl.close();
+		return { error: 'SOCKS proxy refused the handshake' };
+	}
+
+	ctrl.send(chr(5, 3, 0) + socks_addr('0.0.0.0', 0));
+
+	const head = recv_exact(ctrl, 4);
+
+	if (!head || ord(head, 1) != 0) {
+		ctrl.close();
+		return { error: 'SOCKS proxy refused UDP (does the node support UDP?)' };
+	}
+
+	const rest = recv_exact(ctrl, ord(head, 3) == 1 ? 6 : ord(head, 3) == 4 ? 18 : 0);
+
+	if (!rest || ord(head, 3) == 3) {
+		ctrl.close();
+		return { error: 'unexpected SOCKS reply' };
+	}
+
+	let addr, port;
+
+	if (ord(head, 3) == 1) {
+		addr = arrtoip([ ord(rest, 0), ord(rest, 1), ord(rest, 2), ord(rest, 3) ]);
+		port = (ord(rest, 4) << 8) | ord(rest, 5);
+	}
+	else {
+		let a = [];
+		for (let i = 0; i < 16; i++)
+			push(a, ord(rest, i));
+		addr = arrtoip(a);
+		port = (ord(rest, 16) << 8) | ord(rest, 17);
+	}
+
+	// "any" address means: same host as the TCP connection
+	if (addr == '0.0.0.0' || addr == '::')
+		addr = socks_host;
+
+	ctrl.setopt(socket.SOL_SOCKET, socket.SO_RCVTIMEO, { sec: 0, usec: 0 });
+
+	return { ctrl, relay: { address: addr, port } };
+}
+
+let relays = [];
+let connect_relay;	// defined below, needed by the retry timer
+
+function set_down(r, error) {
+	if (r.ctrl_handle) r.ctrl_handle.delete();
+	if (r.ctrl) r.ctrl.close();
+
+	r.ctrl = r.ctrl_handle = r.relay = null;
+	r.up = false;
+	r.error = error;
+
+	if (!r.retry)
+		r.retry = uloop.timer(RETRY_MS, () => { r.retry = null; connect_relay(r); });
+}
+
+connect_relay = function(r) {
+	const a = associate();
+
+	if (a.error)
+		return set_down(r, a.error);
+
+	r.ctrl = a.ctrl;
+	r.relay = a.relay;
+	r.up = true;
+	r.error = null;
+	r.since = time();
+
+	// the association lives as long as the TCP connection
+	r.ctrl_handle = uloop.handle(r.ctrl, () => {
+		const d = r.ctrl.recv(512);
+
+		if (!length(d))
+			set_down(r, 'SOCKS proxy closed the association');
+	}, uloop.ULOOP_READ);
+};
+
+for (let c in cfg.relays) {
+	const r = {
+		listen: +c.listen, host: c.host, port: +c.port,
+		header: chr(0, 0, 0) + socks_addr(c.host, +c.port),
+		client: null, up: false, error: 'starting', rx: 0, tx: 0
+	};
+
+	r.local = socket.create(socket.AF_INET, socket.SOCK_DGRAM);
+	r.out = socket.create(socket.AF_INET, socket.SOCK_DGRAM);
+
+	if (!r.local || !r.local.bind({ address: '127.0.0.1', port: r.listen }) ||
+	    !r.out || !r.out.bind({ address: '127.0.0.1', port: 0 })) {
+		warn(`wgpasswall-relay: cannot listen on 127.0.0.1:${r.listen}\n`);
+		exit(1);
+	}
+
+	// WireGuard -> proxy
+	r.local_handle = uloop.handle(r.local, () => {
+		const from = {};
+		const d = r.local.recv(65535, 0, from);
+
+		if (!length(d))
+			return;
+
+		r.client = { address: from.address, port: from.port };
+
+		if (r.up && r.out.send(r.header + d, 0, r.relay) != null)
+			r.tx += length(d);
+	}, uloop.ULOOP_READ);
+
+	// proxy -> WireGuard
+	r.out_handle = uloop.handle(r.out, () => {
+		const d = r.out.recv(65535);
+
+		if (length(d) < 4 || !r.client)
+			return;
+
+		const alen = socks_addr_len(d, 3);
+
+		if (alen == null || length(d) <= 3 + alen)
+			return;
+
+		const payload = substr(d, 3 + alen);
+
+		if (r.local.send(payload, 0, r.client) != null)
+			r.rx += length(payload);
+	}, uloop.ULOOP_READ);
+
+	push(relays, r);
+}
+
+function write_status() {
+	let st = [];
+
+	for (let r in relays)
+		push(st, {
+			listen: r.listen, host: r.host, port: r.port, up: r.up,
+			error: r.error, since: r.since, rx_bytes: r.rx, tx_bytes: r.tx
+		});
+
+	writefile(STATUS + '.tmp', sprintf('%J', { updated: time(), relays: st }));
+	rename(STATUS + '.tmp', STATUS);
+}
+
+for (let r in relays)
+	connect_relay(r);
+
+write_status();
+
+let status_timer;
+status_timer = uloop.timer(2000, function() {
+	write_status();
+	status_timer.set(2000);
+});
+
+uloop.run();

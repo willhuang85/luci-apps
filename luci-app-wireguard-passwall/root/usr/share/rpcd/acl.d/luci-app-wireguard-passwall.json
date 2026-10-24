@@ -1,0 +1,17 @@
+{
+	"luci-app-wireguard-passwall": {
+		"description": "Grant access to the WireGuard VPN client",
+		"read": {
+			"ubus": {
+				"luci.wgpasswall": [ "status", "parse", "get" ]
+			},
+			"uci": [ "wgpasswall" ]
+		},
+		"write": {
+			"ubus": {
+				"luci.wgpasswall": [ "save", "remove", "connect", "disconnect", "set_killswitch", "set_mode" ]
+			},
+			"uci": [ "wgpasswall" ]
+		}
+	}
+}

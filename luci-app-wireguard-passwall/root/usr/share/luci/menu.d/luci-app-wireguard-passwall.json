@@ -1,0 +1,13 @@
+{
+	"admin/vpn/wgpasswall": {
+		"title": "WireGuard + Passwall",
+		"order": 90,
+		"action": {
+			"type": "view",
+			"path": "wgpasswall/overview"
+		},
+		"depends": {
+			"acl": [ "luci-app-wireguard-passwall" ]
+		}
+	}
+}
