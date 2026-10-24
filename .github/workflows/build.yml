@@ -158,13 +158,33 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  # Publishes the package (and, when signed, packages.adb and the public
+  # key wireguard-passwall.pem) as a GitHub release: on every push to main,
+  # tagged with the version from the Makefile (e.g. v1.1.0-r2), and on
+  # pushed v* tags. Re-running for an unchanged version replaces the files.
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then
+            tag="${GITHUB_REF_NAME}"
+          else
+            mk="$PKG_NAME/Makefile"
+            ver=$(sed -n 's/^PKG_VERSION:=//p' "$mk")
+            rel=$(sed -n 's/^PKG_RELEASE:=//p' "$mk")
+            tag="v${ver}-r${rel}"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Releasing $tag"
+
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -173,5 +193,10 @@ jobs:
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ env.PKG_NAME }} ${{ steps.version.outputs.tag }}
           files: dist/*
+          make_latest: true
+          overwrite_files: true
           generate_release_notes: true

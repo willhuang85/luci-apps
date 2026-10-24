@@ -41,22 +41,28 @@ openssl ecparam -name prime256v1 -genkey -noout -out apk-signing-key.pem
 
 GitHub → repository → *Settings → Secrets and variables → Actions → New repository secret*: name `APK_SIGNING_KEY`, value: the contents of `apk-signing-key.pem`. Keep the file somewhere safe and private. Every build after that is signed, and the artifact / release additionally contains `wireguard-passwall.pem` (the public key) and `packages.adb` (a signed package index).
 
-**Once, on the router:** trust the public key (copy `wireguard-passwall.pem` from the artifact):
+**Releases:** every merge into `main` publishes a GitHub release named after the version in the Makefile (e.g. `v1.1.0-r2`, so bump `PKG_RELEASE` for each new release), containing the signed `.apk`, `packages.adb` and the public key `wireguard-passwall.pem`. The latest release's files are always at:
 
-```sh
-scp -O wireguard-passwall.pem root@192.168.1.1:/etc/apk/keys/
+```
+https://github.com/willhuang85/luci-wireguard/releases/latest/download/<file>
 ```
 
-From then on, install and upgrade from **System → Software → Upload Package…** with no extra flags.
-
-**Optional, if the repository is public:** use the GitHub release as a package feed, so the app shows up (and updates) in *System → Software* like any other package:
+**Once, on the router:** trust the public key.
 
 ```sh
-wget -O /etc/apk/keys/wireguard-passwall.pem https://github.com/willhuang85/luci-wireguard/releases/latest/download/wireguard-passwall.pem
+wget -O /etc/apk/keys/wireguard-passwall.pem \
+  https://github.com/willhuang85/luci-wireguard/releases/latest/download/wireguard-passwall.pem
+```
+
+Then install from **System → Software → Upload Package…** (download the `.apk` from the release first) with no extra flags. Or, to have the app show up and update in *System → Software* like any other package, add the release as a package feed:
+
+```sh
 echo "https://github.com/willhuang85/luci-wireguard/releases/latest/download/packages.adb" >> /etc/apk/repositories.d/customfeeds.list
 ```
 
-Then *System → Software → Update lists*, search for `luci-app-wireguard-passwall` and install. Release files of a private repository need a GitHub login, which the router does not have, so this route needs a public repository; the upload route works either way.
+and use *System → Software → Update lists*, search for `luci-app-wireguard-passwall`, *Install*.
+
+> The `wget` and feed commands need the repository to be **public**: GitHub only serves a private repository's release files to logged-in users, and the router cannot log in. With a private repository, download `wireguard-passwall.pem` and the `.apk` from the release page in your browser, then `scp -O wireguard-passwall.pem root@192.168.1.1:/etc/apk/keys/` and use *Upload Package…*.
 
 ### Troubleshooting
 
@@ -163,7 +169,7 @@ The GitHub Actions workflow (`.github/workflows/build.yml`) runs on every push:
 
 1. **test** – builds ucode, rpcd and friends at the exact revisions of the OpenWrt release, loads the backend into a real rpcd and walks through all modes, runs the parser and backend tests, tests the relay end to end against a stub SOCKS5 proxy, syntax-checks JS/JSON.
 2. **build** – downloads the official OpenWrt 25.12.2 SDK, builds the package and uploads the `.apk` as an artifact. The package is architecture independent, so one build works on every router.
-3. **release** – on a `v*` tag (e.g. `git tag v1.1.0 && git push --tags`), attaches the `.apk` (plus, when signed, `packages.adb` and the public key) to a GitHub release.
+3. **release** – on every push to `main` (and on pushed `v*` tags), publishes the `.apk` (plus, when signed, `packages.adb` and the public key) as a GitHub release tagged with the Makefile version.
 
 Build for another OpenWrt release via *Actions → Build package → Run workflow* and enter the version.
 
