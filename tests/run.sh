@@ -27,3 +27,5 @@ TETHER_SYSFS=$(mktemp -d)
 TETHER_USBMUXD="$TETHER_SYSFS/usbmuxd" TETHER_SYSFS="$TETHER_SYSFS" \
 	"$UCODE" ${UCODE_DIR:+-L "$UCODE_DIR/*.so"} -L "$MOCKS" tests/tether_test.uc
 rm -rf "$TETHER_SYSFS"
+echo "== WireGuard + Passwall"
+UCODE_DIR="$UCODE_DIR" ./tests/wgpasswall/run.sh

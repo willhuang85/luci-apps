@@ -9,85 +9,17 @@ A simple WireGuard VPN **client** for OpenWrt's LuCI web interface that can also
 - Edit, export and delete profiles; works on desktop and phone
 - **Modes** (with Passwall installed): VPN, VPN carried through a Passwall node, Passwall only, and Off, switched with one click (see below)
 
-Built and tested for **OpenWrt 25.12** (apk package manager).
+Menu: **VPN → WireGuard + Passwall**. Installation: see the [main README](../README.md).
 
 <p align="center">
-  <img src="docs/screenshots/overview.png" alt="Connected in VPN through Passwall mode" width="720">
+  <img src="../docs/screenshots/wgpasswall/overview.png" alt="Connected in VPN through Passwall mode" width="720">
 </p>
 
 | Import with a live check | Everything off | On a phone |
 |---|---|---|
-| <img src="docs/screenshots/import.png" alt="Import dialog" width="280"> | <img src="docs/screenshots/mode-off.png" alt="Off mode" width="280"> | <img src="docs/screenshots/mobile.png" alt="Phone layout" width="180"> |
+| <img src="../docs/screenshots/wgpasswall/import.png" alt="Import dialog" width="280"> | <img src="../docs/screenshots/wgpasswall/mode-off.png" alt="Off mode" width="280"> | <img src="../docs/screenshots/wgpasswall/mobile.png" alt="Phone layout" width="180"> |
 
 <sub>Screenshots show sample data; colours and fonts follow your LuCI theme.</sub>
-
-## Install on your router
-
-1. Get the package
-   - From the [Releases](../../releases) page (a release is published on every merge into `main`), or
-   - From the **Actions** tab → latest *Build package* run → artifact `luci-app-wireguard-passwall-openwrt-25.12.2` (it's a zip with the `.apk` inside).
-2. Copy it to the router (`-O` is needed because OpenWrt has no SFTP server by default):
-   ```sh
-   scp -O luci-app-wireguard-passwall-*.apk root@192.168.1.1:/tmp/
-   ```
-3. Install it on the router. The package is built by CI, not signed by OpenWrt, so allow it explicitly:
-   ```sh
-   ssh root@192.168.1.1
-   apk update
-   apk add --allow-untrusted /tmp/luci-app-wireguard-passwall-*.apk
-   ```
-   `apk update` lets apk pull the dependencies it doesn't find on the router (`wireguard-tools`, `kmod-wireguard`, the ucode modules, ...) from the official feeds, so the router needs internet access for the install.
-4. **Log out of LuCI and log back in**, then open **VPN → WireGuard + Passwall**. LuCI decides which menu entries you may see when you log in, so an already open session won't show the new entry.
-
-### Installing from LuCI (signed packages)
-
-OpenWrt only trusts packages signed with a key in `/etc/apk/keys`. Unsigned self-built packages fail with `UNTRUSTED signature` unless `--allow-untrusted` is passed, which LuCI's **Upload Package…** dialog cannot do. CI therefore signs the package with your own key:
-
-**Once, on GitHub:** create a signing key on your computer and store it as a repository secret.
-
-```sh
-openssl ecparam -name prime256v1 -genkey -noout -out apk-signing-key.pem
-```
-
-GitHub → repository → *Settings → Secrets and variables → Actions → New repository secret*: name `APK_SIGNING_KEY`, value: the contents of `apk-signing-key.pem`. Keep the file somewhere safe and private. Every build after that is signed, and the artifact / release additionally contains `wireguard-passwall.pem` (the public key) and `packages.adb` (a signed package index).
-
-**Releases:** every merge into `main` publishes a GitHub release `v<PKG_VERSION>-r<N>` (e.g. `v1.1.0-r45`), where `N` is the number of commits on `main`, set automatically by CI; only bump `PKG_VERSION` in the Makefile for a new version. Each release contains the signed `.apk`, `packages.adb` (the signed package list a router reads when the release is used as a feed) and the public key `wireguard-passwall.pem`. The latest release's files are always at:
-
-```
-https://github.com/willhuang85/luci-wireguard-passwall-client/releases/latest/download/<file>
-```
-
-**Once, on the router:** trust the public key.
-
-```sh
-wget -O /etc/apk/keys/wireguard-passwall.pem \
-  https://github.com/willhuang85/luci-wireguard-passwall-client/releases/latest/download/wireguard-passwall.pem
-```
-
-Then install from **System → Software → Upload Package…** (download the `.apk` from the release first) with no extra flags. Or, to have the app show up and update in *System → Software* like any other package, add the release as a package feed:
-
-```sh
-echo "https://github.com/willhuang85/luci-wireguard-passwall-client/releases/latest/download/packages.adb" >> /etc/apk/repositories.d/customfeeds.list
-```
-
-and use *System → Software → Update lists*, search for `luci-app-wireguard-passwall`, *Install*.
-
-> If you ever make the repository private again, the `wget` and feed commands stop working (GitHub only serves a private repository's release files to logged-in users). Then download `wireguard-passwall.pem` and the `.apk` from the release page in your browser, `scp -O wireguard-passwall.pem root@192.168.1.1:/etc/apk/keys/` and use *Upload Package…*.
-
-### Troubleshooting
-
-- **Installed but no menu entry** – log out of LuCI and back in (and reload the page with Ctrl+F5). Still nothing? Check `apk info -e luci-app-wireguard-passwall`, run `/etc/init.d/rpcd restart` and verify `ubus list luci.wgpasswall` prints the object.
-- **`UNTRUSTED signature`** – the package is unsigned (no `APK_SIGNING_KEY` secret) or the router lacks the public key in `/etc/apk/keys`; see *Installing from LuCI* above, or use `apk add --allow-untrusted`.
-- **`wget ... Failed to send request: Operation not permitted`** during `apk update` – the router itself cannot reach the package mirror; a firewall rule is dropping the router's own outgoing traffic (not related to this app). `apk` needs the mirror to fetch `wireguard-tools` and `kmod-wireguard`. Check with:
-  ```sh
-  ping -c 3 1.1.1.1                 # basic connectivity
-  nslookup downloads.openwrt.org    # DNS
-  ip rule                           # look for "prohibit"/"blackhole"
-  nft list ruleset | grep -inE 'drop|reject' | head -30
-  ```
-  If a proxy app such as Passwall runs with "Localhost proxy", stop it briefly (`/etc/init.d/passwall stop`), run `apk update`, install, then start it again.
-
-To uninstall: `apk del luci-app-wireguard-passwall` (the kill switch is turned off automatically so you don't lose internet access).
 
 ## Using it
 
@@ -173,32 +105,6 @@ luci-app-wireguard-passwall/
     └── etc/init.d/wgpasswall                        runs the relay
 ```
 
-## Building
+## Uninstalling
 
-The GitHub Actions workflow (`.github/workflows/build.yml`) runs on every push:
-
-1. **test** – builds ucode, rpcd and friends at the exact revisions of the OpenWrt release, loads the backend into a real rpcd and walks through all modes, runs the parser and backend tests, tests the relay end to end against a stub SOCKS5 proxy, syntax-checks JS/JSON.
-2. **build** – downloads the official OpenWrt 25.12.2 SDK, builds the package and uploads the `.apk` as an artifact. The package is architecture independent, so one build works on every router.
-3. **release** – on every push to `main` (and on pushed `v*` tags), publishes the `.apk` (plus, when signed, `packages.adb` and the public key) as a GitHub release `v<PKG_VERSION>-r<commit count>`.
-
-Build for another OpenWrt release via *Actions → Build package → Run workflow* and enter the version.
-
-Build locally with an OpenWrt SDK:
-
-```sh
-ln -s "$PWD/luci-app-wireguard-passwall" /path/to/openwrt-sdk/package/
-cd /path/to/openwrt-sdk
-make defconfig && make package/luci-app-wireguard-passwall/compile V=s
-```
-
-Run the tests (needs a [ucode](https://github.com/jow-/ucode) build, ideally the revision your OpenWrt release ships):
-
-```sh
-UCODE_DIR=/path/to/ucode/build ./tests/run.sh
-```
-
-`tests/integration.sh` builds libubox, ubus, uci, ucode and rpcd at the revisions used by the OpenWrt release and drives the real plugin over ubus. It installs into `/usr` and `/etc/config`, so only run it on a throwaway machine or container (CI does this on every push).
-
-## License
-
-Apache-2.0
+`apk del luci-app-wireguard-passwall` switches back to VPN mode first (so Passwall is restored) and turns the kill switch off, so you don't lose internet access.

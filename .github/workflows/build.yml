@@ -16,7 +16,7 @@ env:
   # The packages are architecture independent (PKGARCH:=all), so the SDK of
   # any target produces packages that install on every router.
   SDK_TARGET: x86/64
-  PACKAGES: luci-app-wifisetup luci-app-tether
+  PACKAGES: luci-app-wifisetup luci-app-tether luci-app-wireguard-passwall
 
 permissions:
   contents: read
@@ -30,16 +30,25 @@ jobs:
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y cmake libjson-c-dev jq qrencode
 
-      # Builds libubox, ubus, uci, ucode and rpcd at the exact revisions of
-      # the OpenWrt release and loads the plugin into a real rpcd, with fake
-      # iwinfo / network.wireless / hostapd objects standing in for Wi-Fi. Newer ucode
-      # accepts syntax that the router's ucode rejects, so testing against
-      # upstream HEAD is not enough.
-      - name: Integration test (real rpcd, release versions)
-        run: sudo -E ./tests/integration.sh
+      # libubox, ubus, uci, ucode and rpcd at the exact revisions of the
+      # OpenWrt release: newer ucode accepts syntax that the router's ucode
+      # rejects, so testing against upstream HEAD is not enough.
+      - name: Build OpenWrt ubus/uci/ucode/rpcd
+        run: sudo -E ./tests/lib/build-stack.sh
+
+      # Load the plugins into a real rpcd; fake iwinfo / network.wireless /
+      # network.interface / hostapd objects stand in for Wi-Fi hardware.
+      - name: Integration test (Wi-Fi Setup, iPhone Tethering)
+        run: sudo -E SKIP_BUILD=1 ./tests/integration.sh
+
+      - name: Integration test (WireGuard + Passwall)
+        run: sudo -E SKIP_BUILD=1 ./tests/wgpasswall/integration.sh
 
       - name: Unit tests (release ucode)
         run: ./tests/run.sh
+
+      - name: Relay test (stub SOCKS5 proxy)
+        run: ./tests/wgpasswall/relay_test.sh
 
       - name: Syntax check JavaScript, JSON and shell
         run: |
@@ -106,7 +115,7 @@ jobs:
         working-directory: ${{ runner.temp }}/sdk
         run: |
           # No feeds on purpose: the packages only ship scripts, and the
-          # dependencies (luci-base, qrencode, usbmuxd, ...) are recorded from
+          # dependencies (luci-base, qrencode, wireguard-tools, ...) are recorded from
           # DEPENDS verbatim. Installing feeds would make the SDK compile all
           # of them, including kernel modules, from source.
           for p in $PACKAGES; do ln -s "$GITHUB_WORKSPACE/$p" "package/$p"; done
@@ -159,27 +168,27 @@ jobs:
           keys="$RUNNER_TEMP/keys"
           mkdir -p "$keys"
           (umask 077; printf '%s\n' "$APK_SIGNING_KEY" > "$RUNNER_TEMP/signing-key.pem")
-          openssl ec -in "$RUNNER_TEMP/signing-key.pem" -pubout -out "$keys/luci-tether.pem"
+          openssl ec -in "$RUNNER_TEMP/signing-key.pem" -pubout -out "$keys/luci-apps.pem"
           cd "$GITHUB_WORKSPACE/dist"
           "$APK" adbsign --allow-untrusted --sign-key "$RUNNER_TEMP/signing-key.pem" ./*.apk
           "$APK" verify --keys-dir "$keys" ./*.apk
           "$APK" mkndx --keys-dir "$keys" --sign-key "$RUNNER_TEMP/signing-key.pem" --output packages.adb ./*.apk
-          cp "$keys/luci-tether.pem" .
+          cp "$keys/luci-apps.pem" .
           rm -f "$RUNNER_TEMP/signing-key.pem"
           ls -l
           # the public key is not secret; print it so it can be copied
-          echo "Public key (luci-tether.pem):"
-          cat luci-tether.pem
+          echo "Public key (luci-apps.pem):"
+          cat luci-apps.pem
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: luci-tether-openwrt-${{ env.OPENWRT_VERSION }}
+          name: luci-apps-openwrt-${{ env.OPENWRT_VERSION }}
           path: dist/*
           if-no-files-found: error
 
   # Publishes the packages (and, when signed, packages.adb and the public
-  # key luci-tether.pem) as a GitHub release: on every push to main,
+  # key luci-apps.pem) as a GitHub release: on every push to main,
   # tagged r<commit count> (e.g. r45), and on pushed v* tags. Re-running a
   # build of the same commit replaces the files.
   release:
@@ -214,7 +223,7 @@ jobs:
         with:
           tag_name: ${{ steps.version.outputs.tag }}
           target_commitish: ${{ github.sha }}
-          name: luci-tether ${{ steps.version.outputs.tag }}
+          name: luci-apps ${{ steps.version.outputs.tag }}
           files: dist/*
           make_latest: true
           overwrite_files: true

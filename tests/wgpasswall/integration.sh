@@ -5,33 +5,25 @@
 # meant for throwaway CI machines.
 #
 #   OPENWRT_VERSION=25.12.2 sudo -E ./tests/wgpasswall/integration.sh
+#
+# Set SKIP_BUILD=1 when the stack is already installed (tests/lib/build-stack.sh).
 set -e
 
-OPENWRT_VERSION="${OPENWRT_VERSION:-25.12.2}"
+export OPENWRT_VERSION="${OPENWRT_VERSION:-25.12.2}"
 SRC="$(cd "$(dirname "$0")/../.." && pwd)"
 WORK="${WORK:-$(mktemp -d)}"
-RAW="https://raw.githubusercontent.com/openwrt/openwrt/v${OPENWRT_VERSION}"
+[ -n "$SKIP_BUILD" ] || "$SRC/tests/lib/build-stack.sh"
 
-# name, GitHub repo, Makefile path in openwrt.git, extra cmake flags
-build() {
-	name="$1" repo="$2" mk="$3"; shift 3
-	rev=$(curl -fsSL "$RAW/$mk" | sed -n 's/^PKG_SOURCE_VERSION:=//p')
-	[ -n "$rev" ] || { echo "Cannot find $name revision for OpenWrt $OPENWRT_VERSION"; exit 1; }
-	echo "== $name @ $rev"
-	git init -q "$WORK/$name"
-	git -C "$WORK/$name" fetch -q --depth 1 "https://github.com/$repo.git" "$rev"
-	git -C "$WORK/$name" checkout -q FETCH_HEAD
-	cmake -S "$WORK/$name" -B "$WORK/$name/build" -DCMAKE_INSTALL_PREFIX=/usr "$@" >/dev/null
-	make -C "$WORK/$name/build" -j"$(nproc)" install >/dev/null
-	ldconfig
+# stop the daemons this script starts, so the next test script can run
+PIDS=""
+cleanup() {
+	status=$?
+	[ -n "$PIDS" ] && kill $PIDS 2>/dev/null
+	sleep 1
+	rm -f /var/run/ubus/ubus.sock
+	exit $status
 }
-
-build libubox openwrt/libubox package/libs/libubox/Makefile -DBUILD_LUA=OFF -DBUILD_EXAMPLES=OFF
-build ubus openwrt/ubus package/system/ubus/Makefile -DBUILD_LUA=OFF -DBUILD_EXAMPLES=OFF
-build uci openwrt/uci package/system/uci/Makefile -DBUILD_LUA=OFF
-build ucode jow-/ucode package/utils/ucode/Makefile -DUBUS_SUPPORT=ON -DUCI_SUPPORT=ON -DULOOP_SUPPORT=ON \
-	-DSOCKET_SUPPORT=ON -DRTNL_SUPPORT=OFF -DNL80211_SUPPORT=OFF -DDIGEST_SUPPORT=OFF -DLOG_SUPPORT=OFF
-build rpcd openwrt/rpcd package/system/rpcd/Makefile -DUCODE_SUPPORT=ON -DFILE_SUPPORT=OFF -DIWINFO_SUPPORT=OFF -DRPCSYS_SUPPORT=OFF
+trap cleanup EXIT
 
 R="$SRC/luci-app-wireguard-passwall/root"
 
@@ -44,8 +36,10 @@ printf "config zone\n\toption name 'lan'\n\nconfig zone\n\toption name 'wan'\n" 
 mkdir -p /var/run
 
 ubusd >"$WORK/ubusd.log" 2>&1 &
+PIDS="$PIDS $!"
 sleep 1
 rpcd >"$WORK/rpcd.log" 2>&1 &
+PIDS="$PIDS $!"
 
 for i in 1 2 3 4 5 6 7 8 9 10; do
 	ubus list luci.wgpasswall >/dev/null 2>&1 && break
