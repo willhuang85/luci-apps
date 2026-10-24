@@ -374,7 +374,26 @@ function sync_firewall(uci) {
 	uci.save('firewall');
 }
 
-function apply(uci, packages) {
+// Firewall reloads and Passwall restarts of all luci-apps go through this
+// lock, one at a time: a firewall reload in the middle of a Passwall
+// restart re-adds Passwall's rules (its firewall include) after Passwall
+// removed them, and they then stay behind while Passwall is off, cutting
+// off the router's own connections. Runs in the background, as a Passwall
+// restart can take long and rpcd must not wait for it.
+const FW_LOCK = '/var/lock/luci-apps-firewall.lock';
+
+function run_locked(cmds) {
+	if (!length(cmds))
+		return;
+
+	system(`(mkdir -p /var/lock; flock ${FW_LOCK} sh -c ${shell_quote(join('; ', cmds))}) >/dev/null 2>&1 &`);
+}
+
+// Commits, reloads the network and then, under the lock, the firewall and
+// any Passwall commands in `after`.
+function apply(uci, packages, after) {
+	let cmds = [];
+
 	for (let pkg in packages)
 		if (pkg != 'passwall' || uci.get_all('passwall') != null)
 			uci.commit(pkg);
@@ -383,7 +402,9 @@ function apply(uci, packages) {
 		ubus.call('network', 'reload', {});
 
 	if ('firewall' in packages)
-		system('/etc/init.d/firewall reload >/dev/null 2>&1');
+		push(cmds, '/etc/init.d/firewall reload');
+
+	run_locked([ ...cmds, ...(after ?? []) ]);
 }
 
 function iface_up(id) {
@@ -556,10 +577,11 @@ function pw_restore_mtu(uci, id) {
 	uci.delete('wgpasswall', id, 'mtu_backup');
 }
 
+// Commands to (re)start Passwall, for apply(); `start` also enables it
 function pw_restart(start) {
-	system(start
-		? '(/etc/init.d/passwall enable; /etc/init.d/passwall restart) >/dev/null 2>&1 &'
-		: '/etc/init.d/passwall restart >/dev/null 2>&1 &');
+	return start
+		? [ '/etc/init.d/passwall enable', '/etc/init.d/passwall restart' ]
+		: [ '/etc/init.d/passwall restart' ];
 }
 
 // The node picked for the Passwall modes, if it still exists.
@@ -1036,11 +1058,24 @@ const methods = {
 				uci.set('wgpasswall', 'settings', 'last_profile', id);
 			}
 
+			let pw = [];
+
+			if (mode == 'off') {
+				if (pw_installed(uci))
+					pw = pw_restart(false);	// stops it, enabled is 0 now
+			}
+			else if (mode != 'vpn') {
+				pw = pw_restart(true);
+			}
+			else if (prev != 'vpn' && pw_installed(uci)) {
+				pw = (r.service == '0') ? [ '/etc/init.d/passwall disable', ...pw_restart(false) ] : pw_restart(false);
+			}
+
 			sync_routing(uci);
 			sync_firewall(uci);
 			uci.save('wgpasswall');
 			uci.save('passwall');
-			apply(uci, [ 'wgpasswall', 'passwall', 'network', 'firewall' ]);
+			apply(uci, [ 'wgpasswall', 'passwall', 'network', 'firewall' ], pw);
 
 			for (let other in down)
 				iface_down(other);
@@ -1050,20 +1085,6 @@ const methods = {
 
 			// starts the relay in VPN through Passwall mode, stops it otherwise
 			relay_restart();
-
-			if (mode == 'off') {
-				if (pw_installed(uci))
-					pw_restart(false);	// stops it, enabled is 0 now
-			}
-			else if (mode != 'vpn') {
-				pw_restart(true);
-			}
-			else if (prev != 'vpn' && pw_installed(uci)) {
-				if (r.service == '0')
-					system('/etc/init.d/passwall disable >/dev/null 2>&1');
-
-				pw_restart(false);
-			}
 
 			return { result: true, mode };
 		}

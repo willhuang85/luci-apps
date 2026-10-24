@@ -76,6 +76,7 @@ echo "https://github.com/willhuang85/luci-apps/releases/latest/download/packages
   nft list ruleset | grep -inE 'drop|reject' | head -30
   ```
   If a proxy app such as Passwall runs with "Localhost proxy", stop it briefly (`/etc/init.d/passwall stop`), run `apk update`, install, then start it again.
+  If Passwall is already off but `ping 1.1.1.1` works while `apk update` fails, Passwall's rules for the router's own traffic were left behind (its table is still listed by `nft list tables`): `nft delete table inet passwall` removes them, and Passwall recreates the table on its next start. These apps run their firewall reloads and Passwall restarts one at a time to avoid this; toggling Passwall from its own page at the same moment can still cause it.
 - App specific: see the [Wi-Fi Setup](luci-app-wifisetup/README.md#troubleshooting) and [Phone Tethering](luci-app-tether/README.md#troubleshooting) READMEs.
 
 ## Building

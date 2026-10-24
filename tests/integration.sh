@@ -85,6 +85,10 @@ config wifi-iface 'default_radio1'
 	option encryption 'none'
 WL
 mkdir -p /var/run /etc/crontabs
+# firewall reloads run in the background under a lock; log them
+printf '#!/bin/sh\necho "firewall-$1" >> /tmp/order.log\n' > /etc/init.d/firewall
+chmod +x /etc/init.d/firewall
+rm -f /tmp/order.log
 printf '0 4 * * * /bin/true # keep me\n' > /etc/crontabs/root
 
 ubusd >"$WORK/ubusd.log" 2>&1 &
@@ -191,6 +195,11 @@ ubus -t 10 call luci.tether start '{"method":"usb"}' | jq -e '.method == "usb"' 
 [ "$(uci -q get network.wan.metric)" = 1000 ] || fail "wan not deprioritised"
 [ "$(uci -q get network.wan6.auto)" = 0 ] || fail "wan6 not paused"
 ubus -t 10 call luci.tether check_main | jq -e '.interface == "wan"' >/dev/null || fail "check_main"
+
+# creating the guest network and adding the tether interfaces to the WAN
+# zone changed the firewall: the locked background reload must have run
+sleep 3
+grep -q firewall-reload /tmp/order.log || fail "firewall not reloaded in the background"
 
 echo "== tether: switch to Wi-Fi, then stop"
 ubus -t 10 call luci.tether start '{"method":"wifi"}' | jq -e '.method == "wifi"' >/dev/null || fail "start wifi"

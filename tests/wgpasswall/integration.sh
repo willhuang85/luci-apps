@@ -107,12 +107,28 @@ PW
 mkdir -p /etc/passwall/rules
 printf '8.8.4.4\n' > /etc/passwall/rules/proxy_ip
 printf '223.5.5.5\n1.2.3.4\n' > /etc/passwall/rules/direct_ip
+# Passwall's restart takes a while (stop, then start); a firewall reload in
+# the middle of it can leave Passwall's rules behind while Passwall is off,
+# which cuts off the router's own connections. The stubs log when restarts
+# begin and end and when the firewall reloads, so the test can check that
+# the app never lets those overlap.
 cat > /etc/init.d/passwall <<'PW'
 #!/bin/sh
 echo "$1" >> /tmp/passwall-init.log
 [ "$1" = enabled ] && exit 1
+if [ "$1" = restart ]; then
+	echo "restart-begin" >> /tmp/order.log
+	sleep 1
+	echo "restart-end" >> /tmp/order.log
+fi
 exit 0
 PW
+cat > /etc/init.d/firewall <<'FW'
+#!/bin/sh
+echo "firewall-$1" >> /tmp/order.log
+FW
+chmod +x /etc/init.d/firewall
+rm -f /tmp/order.log
 chmod +x /etc/init.d/passwall
 cat > /etc/init.d/wgpasswall <<'WG'
 #!/bin/sh
@@ -218,6 +234,25 @@ uci -q get network.wgpasswall_rule_vpn.in >/dev/null && fail "VPN rule still lim
 uci -q get network.wgpasswall_rule_vpn_lan >/dev/null && fail "LAN-only VPN rule left behind"
 [ "$(uci -q get firewall.wgpasswall_killswitch.enabled)" = 1 ] || fail "kill switch not resumed"
 grep -qx disable /tmp/passwall-init.log || fail "passwall service not disabled again"
+
+echo "== firewall reloads and Passwall restarts never overlap"
+# quick mode changes, as when toggling in the UI
+ubus call luci.wgpasswall set_mode '{"mode":"vpn_passwall"}' >/dev/null
+ubus call luci.wgpasswall set_mode '{"mode":"off"}' >/dev/null
+ubus call luci.wgpasswall set_killswitch '{"enabled":false}' >/dev/null
+ubus call luci.wgpasswall set_mode '{"mode":"passwall"}' >/dev/null
+ubus call luci.wgpasswall set_mode '{"mode":"vpn","connect":false}' >/dev/null
+for i in $(seq 1 30); do
+	[ "$(grep -c restart-begin /tmp/order.log)" = "$(grep -c restart-end /tmp/order.log)" ] && \
+		[ "$(grep -c restart-begin /tmp/order.log)" -ge 4 ] && break
+	sleep 1
+done
+sleep 2
+awk '/restart-begin/ { if (busy) { print "restarts overlap at line " NR; bad = 1 } busy = 1 }
+     /restart-end/ { busy = 0 }
+     /firewall-/ { if (busy) { print "firewall reload during a Passwall restart at line " NR; bad = 1 } }
+     END { exit bad }' /tmp/order.log || { cat /tmp/order.log; fail "firewall reloads / Passwall restarts overlapped"; }
+grep -q firewall-reload /tmp/order.log || fail "firewall never reloaded"
 
 echo "== remove"
 ubus call luci.wgpasswall remove '{"id":"wgc_civpn"}' >/dev/null || fail "remove"

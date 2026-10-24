@@ -26,6 +26,14 @@ if grep -nE "ubus\.call\(\s*['\"\`](iwinfo|session|uci|file|luci|luci-rpc|rc)['\
 fi
 echo ok
 
+echo "== firewall reloads and Passwall restarts only under the shared lock"
+# overlapping ones leave Passwall's rules behind (see run_locked)
+if grep -nE "system\(.*/etc/init\.d/(firewall|passwall) (reload|restart|start|stop|enable|disable)([^a-z]|$)" luci-app-*/root/usr/share/rpcd/ucode/*; then
+	echo "FAIL: use run_locked() for firewall reloads and Passwall restarts"
+	exit 1
+fi
+echo ok
+
 echo "== schedule"
 "$UCODE" ${UCODE_DIR:+-L "$UCODE_DIR/*.so"} -L "$SRC" tests/schedule_test.uc
 echo "== rpcd backend"

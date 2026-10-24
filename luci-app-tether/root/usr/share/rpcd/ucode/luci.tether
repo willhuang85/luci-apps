@@ -299,10 +299,28 @@ function restore_main(uci) {
 	return resume;
 }
 
+function shell_quote(s) {
+	return "'" + replace(`${s}`, "'", "'\\''") + "'";
+}
+
+// Firewall reloads (and Passwall restarts) of all luci-apps go through this
+// lock, one at a time: a firewall reload in the middle of a Passwall restart
+// re-adds Passwall's rules after Passwall removed them, and they then stay
+// behind while Passwall is off, cutting off the router's own connections.
+const FW_LOCK = '/var/lock/luci-apps-firewall.lock';
+
+// Runs `cmds` in the background under the lock, after `delay` seconds.
+function run_locked(cmds, delay) {
+	if (!length(cmds))
+		return;
+
+	system(`(${delay ? `sleep ${delay}; ` : ''}mkdir -p /var/lock; flock ${FW_LOCK} sh -c ${shell_quote(join('; ', cmds))}) >/dev/null 2>&1 &`);
+}
+
 // Commits and applies the changes shortly after the reply was sent (a
 // change on a radio drops Wi-Fi clients, maybe the browser).
 function apply(uci, packages, up, down) {
-	let cmds = [ 'sleep 1' ];
+	let cmds = [];
 
 	for (let pkg in packages)
 		uci.commit(pkg);
@@ -319,7 +337,7 @@ function apply(uci, packages, up, down) {
 	for (let i in up ?? [])
 		push(cmds, `ubus call network.interface up '{"interface":"${i}"}'`);
 
-	system(`(${join('; ', cmds)}) >/dev/null 2>&1 &`);
+	run_locked(cmds, 1);
 }
 
 /* --- Wi-Fi hotspot */
@@ -535,14 +553,16 @@ const methods = {
 			for (let pkg in packages)
 				uci.save(pkg);
 
-			if (live)
+			if (live) {
 				apply(uci, packages, [ WIFI_NET ], []);
-			else
+			}
+			else {
 				for (let pkg in packages)
 					uci.commit(pkg);
 
-			if (changed.firewall)
-				system('/etc/init.d/firewall reload >/dev/null 2>&1 &');
+				if (changed.firewall)
+					run_locked([ '/etc/init.d/firewall reload' ], 0);
+			}
 
 			return { result: true };
 		}
