@@ -4,7 +4,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-wgclient
 PKG_VERSION:=1.0.0
-PKG_RELEASE:=9
+PKG_RELEASE:=10
 
 PKG_LICENSE:=Apache-2.0
 PKG_MAINTAINER:=willhuang85
@@ -17,7 +17,7 @@ define Package/luci-app-wgclient
   SUBMENU:=3. Applications
   TITLE:=Easy WireGuard VPN client with kill switch
   DEPENDS:=+luci-base +rpcd +rpcd-mod-ucode +ucode-mod-fs +ucode-mod-uci +ucode-mod-ubus \
-	+wireguard-tools +kmod-wireguard
+	+ucode-mod-socket +ucode-mod-uloop +wireguard-tools +kmod-wireguard
   PKGARCH:=all
 endef
 
@@ -49,10 +49,16 @@ define Package/luci-app-wgclient/postinst
 #!/bin/sh
 [ -n "$${IPKG_INSTROOT}" ] || {
 	rm -f /tmp/luci-indexcache* /tmp/luci-modulecache/* 2>/dev/null
-	/etc/init.d/rpcd reload
+	/etc/init.d/rpcd restart
 	# OpenWrt only enables new init scripts on fresh installs, not upgrades
 	/etc/init.d/wgclient enable
-	/etc/init.d/wgclient start
+	# re-apply a Passwall mode so changes in how it is set up take effect
+	mode=$$(uci -q get wgclient.settings.mode)
+	if [ "$$mode" = vpn_passwall ] || [ "$$mode" = passwall ]; then
+		ubus -t 15 wait_for luci.wgclient 2>/dev/null &&
+			ubus call luci.wgclient set_mode "{\"mode\":\"$$mode\",\"connect\":false}" >/dev/null 2>&1
+	fi
+	/etc/init.d/wgclient restart
 	echo "luci-app-wgclient: log out of LuCI and back in, then open VPN -> WireGuard Client"
 }
 exit 0

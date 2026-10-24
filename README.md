@@ -7,7 +7,7 @@ A simple WireGuard VPN **client** for OpenWrt's LuCI web interface.
 - **Live status**: handshake, uptime, traffic, server and tunnel address
 - **Kill switch** toggle: LAN devices can only reach the internet through the VPN
 - Edit, export and delete profiles; works on desktop and phone
-- **Works with Passwall / Xray / sing-box**, which can even wrap the WireGuard tunnel (see below)
+- **Works with Passwall / Xray / sing-box**, with modes for VPN, VPN carried through a Passwall node, and Passwall only (see below)
 
 Built and tested for **OpenWrt 25.12** (apk package manager).
 
@@ -71,15 +71,7 @@ The router itself can still reach the internet (it needs that to contact the VPN
 
 ## Using it together with Passwall / Xray
 
-The app is built to run next to transparent proxies (Passwall, Passwall 2, HomeProxy, OpenClash) and lets them **wrap the WireGuard tunnel**, i.e. send WireGuard's encrypted UDP packets through an Xray/sing-box proxy (useful when WireGuard is blocked or throttled).
-
-How it stays out of the proxy's way:
-
-- The VPN routes live in their own routing table (`51820`) instead of replacing the default route.
-- Only *unmarked* traffic is routed into the VPN. Passwall's Xray and sing-box mark their own connections with `255`, so the proxy's connection to its server always leaves via WAN and never loops into the tunnel.
-- WireGuard's own packets carry the mark `0xca6c`. That also keeps them out of the VPN table, and because the low byte isn't `0xff`, Passwall's router-traffic rules still pick them up and can wrap them.
-- The ip rules use priority 30100/30110, after Passwall's TPROXY rule (priority 999).
-- Passwall only intercepts *new* connections, and at boot WireGuard is up long before Passwall starts. The `wgclient` service therefore watches Passwall's nftables rules and, whenever Passwall (re)starts, moves each tunnel to a new random source port. That starts a fresh connection Passwall can catch; the server follows the new port automatically.
+The app runs next to transparent proxies (Passwall, Passwall 2, HomeProxy, OpenClash) without them getting in each other's way: the VPN routes live in their own routing table (`51820`) and only *unmarked* traffic uses it, so a proxy core's own connections (Xray and sing-box mark them with `255`) never loop into the tunnel.
 
 ### Modes: VPN, VPN through Passwall, Passwall only
 
@@ -88,29 +80,20 @@ With Passwall (not Passwall 2) installed, the app shows a **Mode** picker and a 
 | Mode | WireGuard | Passwall |
 |---|---|---|
 | **VPN** | connected | exactly as you had it before you first picked a Passwall mode |
-| **VPN through Passwall** | connected, wrapped by Passwall | on with the chosen node, Localhost Proxy on, Client Proxy off, your VPN servers in its proxy list (taken out of its direct list), VPN port unblocked |
+| **VPN through Passwall** | connected, carried through Passwall | on with the chosen node, Client Proxy off |
 | **Passwall only** | disconnected | on with the chosen node, Client Proxy on, TCP/UDP default proxy mode Proxy |
+
+How **VPN through Passwall** works: each tunnel's endpoint is pointed at a small relay on the router (`127.0.0.1:51821`, `51822`, …), which forwards WireGuard's packets through Passwall's node SOCKS port (`node_socks_port`, default 1070) to the real VPN server, so your ISP only sees the proxy connection. The real server stays in the profile (the editor and status show it) and comes back when you leave the mode. Only traffic from LAN devices goes into the tunnel; the router's own traffic, including Passwall's DNS and the proxy's lookup of its server name, stays outside it, otherwise the proxy carrying the tunnel would wait for the tunnel to resolve its own server. The tunnel MTU is lowered to 1280 for the proxy overhead. The node must support UDP.
 
 Details:
 
 - Passwall's settings (and whether its service starts at boot) are saved the first time you leave **VPN** mode and restored when you return to it. Switching between the two Passwall modes keeps that saved copy. Passwall's own page shows whatever the current mode set, e.g. its main switch is ticked in both Passwall modes.
-- In **VPN through Passwall** only traffic from LAN devices goes into the tunnel; the router's own traffic, including Passwall's DNS and the proxy's lookup of its server name, stays outside it (otherwise the proxy carrying the tunnel would wait for the tunnel to resolve its own server: a deadlock). The tunnel MTU is lowered to 1280 for the proxy overhead, and the status panel shows whether the tunnel is really wrapped.
 - In **Passwall only** the kill switch is paused, since Passwall sends some traffic directly on purpose; Connect is disabled until you pick a VPN mode.
 - Uninstalling the app switches back to **VPN** mode first, so Passwall is restored.
 
-### Manual setup
+### Why not Passwall's "Localhost Proxy"?
 
-To wrap the tunnel with Passwall by hand:
-
-1. Import and connect your WireGuard profile here as usual.
-2. In Passwall enable **Localhost proxy** (proxy the router's own traffic) with UDP proxying turned on, and pick a node that supports UDP (VLESS, VMess, Trojan, Shadowsocks, ...).
-3. Make sure the WireGuard server's address goes through the proxy. In *Global* mode it does; in rule-based modes add the server IP/domain to the proxy list, and keep it out of the direct list.
-4. If some sites stall, set `MTU = 1280` in the profile (Edit) because the proxy adds overhead.
-5. Check it (the app's status panel does this for you): `grep <server-ip> /proc/net/nf_conntrack` should show the WireGuard connection with `mark=1347639089` (Passwall's mark). `mark=0` means it still goes out directly; run `/etc/init.d/wgclient restart` or Disconnect/Connect the profile.
-
-Alternatively, point the profile's `Endpoint` at a local Xray `dokodemo-door` inbound (e.g. `127.0.0.1:51821`) that forwards to the real server through the proxy.
-
-Notes: when wrapping by hand, keep in mind that the router's own traffic, including DNS, is routed into the tunnel too; if the node's server is a hostname, Xray then cannot resolve it (the switch above avoids this by routing only LAN traffic into the tunnel). Traffic that Passwall itself proxies for LAN devices goes through Xray and therefore *not* through WireGuard; traffic Passwall sends *direct* goes through the VPN. The kill switch only blocks LAN traffic forwarded straight to WAN, so it does not interfere with Passwall. The routing table, rule priority and marks can be changed in `/etc/config/wgclient` if another app already uses them.
+Letting Passwall intercept WireGuard's packets transparently (Localhost Proxy plus the server in the proxy list) looks like it should work, and the proxy log even shows the packets arriving, but it falls apart within seconds: the replies the proxy injects back to WireGuard create a new connection-tracking entry that looks like it was opened by the server, after which Passwall treats WireGuard's packets as replies and lets them out directly. The relay avoids interception altogether. Versions up to 1.0.0-r9 used interception; upgrading cleans up the proxy list entries they added.
 
 ## How it works
 
@@ -122,7 +105,7 @@ Each profile is a normal netifd WireGuard interface named `wgc_<name>` in `/etc/
 | `firewall.wgclient_fwd` | Forwarding `lan` → `wgclient` |
 | `firewall.wgclient_killswitch` | Rule `lan` → `wan` REJECT, enabled by the toggle |
 | `network.wgclient_rule_main` / `wgclient_rule6_main` | `lookup main suppress_prefixlength 0` keeps LAN and other specific routes |
-| `network.wgclient_rule_vpn` / `wgclient_rule6_vpn` | Unmarked traffic → VPN table 51820 |
+| `network.wgclient_rule_vpn` / `wgclient_rule6_vpn` | Unmarked traffic → VPN table 51820 (limited to LAN traffic in VPN through Passwall mode) |
 | `wgclient.<iface>` | Display name of each profile |
 
 Full-tunnel `AllowedIPs` (`0.0.0.0/0`, `::/0`) are stored as two `/1` halves so the tunnel can never replace a default route; exports turn them back into `/0`.
@@ -141,13 +124,15 @@ luci-app-wgclient/
         ├── rpcd/acl.d/luci-app-wgclient.json      permissions
         ├── rpcd/ucode/luci.wgclient               backend (ubus object luci.wgclient)
         └── ucode/wgclient/conf.uc                 .conf parser / writer
+    ├── usr/libexec/wgclient-relay                 WireGuard → SOCKS5 UDP relay (VPN through Passwall)
+    └── etc/init.d/wgclient                        runs the relay
 ```
 
 ## Building
 
 The GitHub Actions workflow (`.github/workflows/build.yml`) runs on every push:
 
-1. **test** – builds ucode, rpcd and friends at the exact revisions of the OpenWrt release, loads the backend into a real rpcd, runs the parser and backend tests, syntax-checks JS/JSON.
+1. **test** – builds ucode, rpcd and friends at the exact revisions of the OpenWrt release, loads the backend into a real rpcd and walks through all modes, runs the parser and backend tests, tests the relay end to end against a stub SOCKS5 proxy, syntax-checks JS/JSON.
 2. **build** – downloads the official OpenWrt 25.12.2 SDK, builds the package and uploads the `.apk` as an artifact. The package is architecture independent, so one build works on every router.
 3. **release** – on a `v*` tag (e.g. `git tag v1.0.0 && git push --tags`), attaches the `.apk` to a GitHub release.
 

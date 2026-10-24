@@ -19,9 +19,12 @@
 //    sent to the VPN table; proxy cores mark their own sockets (Xray and
 //    sing-box in Passwall use mark 255), so their upstream connections leave
 //    via WAN instead of looping into the tunnel
-//  - WireGuard's own UDP packets carry fwmark 0xca6c: they bypass the VPN
-//    table too, and since the low byte is not 0xff a proxy's OUTPUT rules can
-//    still intercept them, which is what "wrapping" the tunnel means
+//  - WireGuard's own UDP packets carry fwmark 0xca6c and bypass the VPN
+//    table too
+//
+// "VPN through Passwall" mode points each tunnel's endpoint at a local relay
+// (/usr/libexec/wgclient-relay) that forwards WireGuard's packets through
+// Passwall's SOCKS port to the real server.
 
 'use strict';
 
@@ -29,7 +32,6 @@ import { access, popen, readfile, writefile } from 'fs';
 import { connect } from 'ubus';
 import { cursor } from 'uci';
 import * as conf from 'wgclient.conf';
-import { wrapped_state } from 'wgclient.proxy';
 
 const PREFIX = 'wgc_';
 const ZONE = 'wgclient';
@@ -193,8 +195,10 @@ function load_profile(uci, id) {
 		push(peers, {
 			public_key: s.public_key,
 			preshared_key: s.preshared_key,
-			endpoint_host: s.endpoint_host,
-			endpoint_port: s.endpoint_port ? +s.endpoint_port : null,
+			// while relayed, the real server is kept in wgclient_orig_*
+			endpoint_host: s.wgclient_orig_host ?? s.endpoint_host,
+			endpoint_port: (s.wgclient_orig_host ? s.wgclient_orig_port : s.endpoint_port)
+				? +(s.wgclient_orig_host ? s.wgclient_orig_port : s.endpoint_port) : null,
 			allowed_ips: as_list(s.allowed_ips),
 			persistent_keepalive: s.persistent_keepalive ? +s.persistent_keepalive : null
 		});
@@ -420,8 +424,9 @@ function runtime_status() {
  * feature off restores the previous state exactly.
  */
 const PW_RULES = '/etc/passwall/rules';
-const PW_MARK = 1347639089;	// Passwall's FWMARK 0x50535731
 const PW_TAG = '# luci-app-wgclient: VPN server, removed when leaving "VPN through Passwall" mode';
+const RELAY_BASE_PORT = 51821;
+const RELAY_STATUS = '/var/run/wgclient/relay-status.json';
 const PW_DISABLED = '# disabled by luci-app-wgclient: ';
 const PW_MTU = 1280;
 const UNSET = '__unset__';
@@ -458,31 +463,6 @@ function pw_running() {
 	return length(run('nft list chain inet passwall PSW_OUTPUT_MANGLE 2>/dev/null | head -n 1') ?? '') > 0;
 }
 
-// Resolved IPs and ports of all profiles' VPN servers.
-function vpn_servers(uci) {
-	let ips = {}, ports = {};
-
-	for (let id in profile_ids(uci)) {
-		uci.foreach('network', `wireguard_${id}`, (s) => {
-			if (!s.endpoint_host)
-				return;
-
-			ports[s.endpoint_port || '51820'] = true;
-
-			if (iptoarr(s.endpoint_host)) {
-				ips[s.endpoint_host] = true;
-				return;
-			}
-
-			for (let ip in split(run(`resolveip -t 3 ${shell_quote(s.endpoint_host)}`) ?? '', '\n'))
-				if (iptoarr(trim(ip)))
-					ips[trim(ip)] = true;
-		});
-	}
-
-	return { ips: sort(keys(ips)), ports: keys(ports) };
-}
-
 function read_lines(path) {
 	const data = readfile(path);
 
@@ -493,10 +473,11 @@ function write_lines(path, lines) {
 	writefile(path, length(lines) ? join('\n', lines) + '\n' : '');
 }
 
-// Puts exactly the current VPN server IPs into Passwall's proxy list and
-// comments them out of its direct list. Returns true if a file changed.
+// Removes VPN server entries that versions up to 1.0.0-r9 put into
+// Passwall's proxy and direct lists (they wrapped WireGuard by transparent
+// interception). Returns true if a file changed.
 function pw_sync_rules(uci) {
-	const want = pw_enabled(uci) ? vpn_servers(uci).ips : [];
+	const want = [];
 	const added = as_list(uci.get('wgclient', 'passwall', 'added_ip'));
 	let changed = false;
 
@@ -548,6 +529,72 @@ function pw_sync_rules(uci) {
 	}
 
 	return changed;
+}
+
+// Points every peer at the local relay while in "VPN through Passwall"
+// mode, and back at its real server otherwise.
+function relay_sync(uci) {
+	const relay = pw_enabled(uci);
+	let port = RELAY_BASE_PORT;
+
+	for (let id in profile_ids(uci)) {
+		let peers = [];
+
+		uci.foreach('network', `wireguard_${id}`, (s) => push(peers, s));
+
+		for (let s in peers) {
+			const sid = s['.name'];
+			const orig_host = s.wgclient_orig_host;
+
+			if (relay) {
+				const host = orig_host ?? s.endpoint_host;
+
+				if (!host)
+					continue;
+
+				if (!orig_host) {
+					uci.set('network', sid, 'wgclient_orig_host', host);
+					uci.set('network', sid, 'wgclient_orig_port', s.endpoint_port || '51820');
+				}
+
+				uci.set('network', sid, 'endpoint_host', '127.0.0.1');
+				uci.set('network', sid, 'endpoint_port', `${port++}`);
+			}
+			else if (orig_host) {
+				uci.set('network', sid, 'endpoint_host', orig_host);
+				uci.set('network', sid, 'endpoint_port', s.wgclient_orig_port || '51820');
+				uci.delete('network', sid, 'wgclient_orig_host');
+				uci.delete('network', sid, 'wgclient_orig_port');
+			}
+		}
+	}
+
+	uci.save('network');
+}
+
+function relay_restart() {
+	system('/etc/init.d/wgclient restart >/dev/null 2>&1 &');
+}
+
+// Relay state of the tunnel whose endpoint is 127.0.0.1:<port>: true if the
+// relay has a working association with the proxy, false if not, null if
+// unknown.
+function relay_up(endpoint) {
+	const m = match(endpoint ?? '', /^127\.0\.0\.1:([0-9]+)$/);
+
+	if (!m)
+		return false;
+
+	const st = json(readfile(RELAY_STATUS) ?? 'null');
+
+	if (!st || time() - st.updated > 10)
+		return null;
+
+	for (let r in st.relays)
+		if (r.listen == +m[1])
+			return r.up;
+
+	return null;
 }
 
 // Lowers a profile's MTU for the proxy overhead, remembering the original.
@@ -655,19 +702,9 @@ function pw_apply_mode(uci, mode, node) {
 		uci.set('passwall', g, 'node', node);
 
 		if (mode == 'vpn_passwall') {
-			uci.set('passwall', g, 'localhost_proxy', '1');	// wrap the router's own (WireGuard) traffic
-			uci.set('passwall', g, 'client_proxy', '0');		// LAN traffic goes into WireGuard, not straight to the proxy
-			uci.set('passwall', g, 'use_proxy_list', '1');
-
-			// Passwall rejects UDP to some ports (QUIC); never block the VPN server's port
-			const drop = fw ? uci.get('passwall', fw, 'udp_proxy_drop_ports') : null;
-
-			if (drop && drop != 'disable') {
-				const ports = vpn_servers(uci).ports;
-				const keep = filter(split(drop, ','), (p) => !(trim(p) in ports));
-
-				uci.set('passwall', fw, 'udp_proxy_drop_ports', length(keep) ? join(',', keep) : 'disable');
-			}
+			// LAN traffic goes into WireGuard, not straight to the proxy;
+			// WireGuard reaches the proxy through its SOCKS port (relay)
+			uci.set('passwall', g, 'client_proxy', '0');
 		}
 		else {
 			uci.set('passwall', g, 'client_proxy', '1');		// proxy the LAN devices
@@ -696,6 +733,8 @@ function pw_apply_mode(uci, mode, node) {
 	if (installed)
 		pw_sync_rules(uci);
 
+	relay_sync(uci);
+
 	if (mode == 'vpn') {
 		uci.delete('wgclient', 'passwall');
 		uci.set('wgclient', 'passwall', 'passwall');
@@ -712,20 +751,8 @@ function pw_after_profile_change(uci) {
 	for (let id in profile_ids(uci))
 		pw_apply_mtu(uci, id);
 
-	if (pw_sync_rules(uci))
-		pw_restart(false);
-}
-
-// Whether the tunnel's current connection to its server is wrapped by
-// Passwall, see wgclient/proxy.uc. IPv4 servers only.
-function pw_wrapped(endpoint, lport) {
-	const m = match(endpoint ?? '', /^([0-9.]+):([0-9]+)$/);
-
-	if (!m || !lport)
-		return null;
-
-	return wrapped_state(run(`grep -F ${shell_quote(m[1])} /proc/net/nf_conntrack`),
-		m[1], m[2], lport, PW_MARK);
+	relay_sync(uci);
+	relay_restart();
 }
 
 function local_pubkey(private_key) {
@@ -777,9 +804,10 @@ const methods = {
 					uptime: ifc?.uptime,
 					addresses: cfg.iface.addresses,
 					dns: cfg.iface.dns,
-					endpoint: endpoint ?? (peer.endpoint_host
+					// the configured server; the live endpoint is the relay in Passwall mode
+					endpoint: (pw_on || !endpoint) ? (peer.endpoint_host
 						? ((index(peer.endpoint_host, ':') >= 0) ? `[${peer.endpoint_host}]` : peer.endpoint_host) + `:${peer.endpoint_port ?? 51820}`
-						: null),
+						: null) : endpoint,
 					allowed_ips: allowed,
 					full_tunnel: conf.is_full_tunnel(allowed),
 					peer_count: length(cfg.peers),
@@ -788,7 +816,7 @@ const methods = {
 					handshake_age: handshake ? now - handshake : null,
 					rx_bytes: rx,
 					tx_bytes: tx,
-					proxied: (pw_on && ifc?.up) ? pw_wrapped(endpoint, wg?.listen_port) : null
+					proxied: (pw_on && ifc?.up) ? relay_up(endpoint) : null
 				});
 			}
 

@@ -30,14 +30,13 @@ build libubox openwrt/libubox package/libs/libubox/Makefile -DBUILD_LUA=OFF -DBU
 build ubus openwrt/ubus package/system/ubus/Makefile -DBUILD_LUA=OFF -DBUILD_EXAMPLES=OFF
 build uci openwrt/uci package/system/uci/Makefile -DBUILD_LUA=OFF
 build ucode jow-/ucode package/utils/ucode/Makefile -DUBUS_SUPPORT=ON -DUCI_SUPPORT=ON -DULOOP_SUPPORT=ON \
-	-DRTNL_SUPPORT=OFF -DNL80211_SUPPORT=OFF -DDIGEST_SUPPORT=OFF -DSOCKET_SUPPORT=OFF -DLOG_SUPPORT=OFF
+	-DSOCKET_SUPPORT=ON -DRTNL_SUPPORT=OFF -DNL80211_SUPPORT=OFF -DDIGEST_SUPPORT=OFF -DLOG_SUPPORT=OFF
 build rpcd openwrt/rpcd package/system/rpcd/Makefile -DUCODE_SUPPORT=ON -DFILE_SUPPORT=OFF -DIWINFO_SUPPORT=OFF -DRPCSYS_SUPPORT=OFF
 
 echo "== installing package files"
 R="$SRC/luci-app-wgclient/root"
 install -D -m 0644 "$R/usr/share/rpcd/ucode/luci.wgclient" /usr/share/rpcd/ucode/luci.wgclient
 install -D -m 0644 "$R/usr/share/ucode/wgclient/conf.uc" /usr/share/ucode/wgclient/conf.uc
-install -D -m 0644 "$R/usr/share/ucode/wgclient/proxy.uc" /usr/share/ucode/wgclient/proxy.uc
 install -D -m 0644 "$R/etc/config/wgclient" /etc/config/wgclient
 printf "config interface 'lan'\n\toption proto 'static'\n\nconfig interface 'wan'\n\toption proto 'dhcp'\n" > /etc/config/network
 printf "config zone\n\toption name 'lan'\n\nconfig zone\n\toption name 'wan'\n" > /etc/config/firewall
@@ -116,6 +115,12 @@ chmod +x /etc/init.d/passwall
 uci show passwall > "$WORK/passwall.orig"
 cp /etc/passwall/rules/proxy_ip "$WORK/proxy_ip.orig"
 cp /etc/passwall/rules/direct_ip "$WORK/direct_ip.orig"
+# entries a 1.0.0-r7 install added, which must be cleaned up
+printf '# luci-app-wgclient: VPN server, removed when leaving "VPN through Passwall" mode\n1.2.3.4\n' >> /etc/passwall/rules/proxy_ip
+sed -i 's/^1.2.3.4$/# disabled by luci-app-wgclient: 1.2.3.4/' /etc/passwall/rules/direct_ip
+uci set wgclient.passwall=passwall
+uci add_list wgclient.passwall.added_ip=1.2.3.4
+uci commit wgclient
 
 ubus call luci.wgclient status | jq -e '.passwall.installed and (.passwall.nodes[0].id == "hy2node") and .mode == "vpn"' >/dev/null || fail "passwall not detected"
 ubus call luci.wgclient set_mode '{"mode":"vpn","connect":false}' >/dev/null || fail "vpn mode while in vpn mode"
@@ -128,13 +133,16 @@ ubus call luci.wgclient set_mode '{"mode":"vpn_passwall","node":"hy2node","id":"
 check_wrapped() {
 	[ "$(uci -q get passwall.@global[0].enabled)" = 1 ] || fail "passwall not enabled"
 	[ "$(uci -q get passwall.@global[0].node)" = hy2node ] || fail "node not set"
-	[ "$(uci -q get passwall.@global[0].localhost_proxy)" = 1 ] || fail "localhost proxy not on"
 	[ "$(uci -q get passwall.@global[0].client_proxy)" = 0 ] || fail "client proxy not off"
-	[ "$(uci -q get passwall.@global_forwarding[0].udp_proxy_drop_ports)" = 443 ] || fail "VPN port still dropped"
-	grep -qx '8.8.4.4' /etc/passwall/rules/proxy_ip || fail "user proxy entry lost"
-	grep -qx '1.2.3.4' /etc/passwall/rules/proxy_ip || fail "server not in proxy list"
-	grep -qx '# disabled by luci-app-wgclient: 1.2.3.4' /etc/passwall/rules/direct_ip || fail "server not disabled in direct list"
-	grep -qx '223.5.5.5' /etc/passwall/rules/direct_ip || fail "user direct entry lost"
+	[ "$(uci -q get passwall.@global[0].localhost_proxy)" = 0 ] || fail "localhost proxy changed"
+	[ "$(uci -q get passwall.@global_forwarding[0].udp_proxy_drop_ports)" = 443,51820 ] || fail "drop ports changed"
+	cmp -s /etc/passwall/rules/proxy_ip "$WORK/proxy_ip.orig" || fail "proxy list modified / old entries not cleaned up"
+	cmp -s /etc/passwall/rules/direct_ip "$WORK/direct_ip.orig" || fail "direct list modified / old entries not cleaned up"
+	uci show network | grep -q "endpoint_host='127.0.0.1'" || fail "endpoint not pointed at the relay"
+	uci show network | grep -q "endpoint_port='51821'" || fail "relay port not set"
+	uci show network | grep -q "wgclient_orig_host='1.2.3.4'" || fail "original endpoint not kept"
+	ubus call luci.wgclient get '{"id":"wgc_civpn"}' | jq -e '.conf | contains("Endpoint = 1.2.3.4:51820")' >/dev/null || fail "editor does not show the real server"
+	ubus call luci.wgclient status | jq -e '.profiles[0].endpoint == "1.2.3.4:51820"' >/dev/null || fail "status does not show the real server"
 	[ "$(uci -q get network.wgc_civpn.mtu)" = 1280 ] || fail "MTU not lowered"
 	[ "$(uci -q get network.wgc_civpn.auto)" = 1 ] || fail "profile not connected"
 	[ "$(uci -q get network.wgclient_rule_vpn_lan.in)" = lan ] || fail "VPN rule not limited to LAN traffic"
@@ -157,6 +165,8 @@ ubus call luci.wgclient set_mode '{"mode":"passwall"}' | jq -e '.mode == "passwa
 cmp -s /etc/passwall/rules/proxy_ip "$WORK/proxy_ip.orig" || fail "proxy list still has VPN servers"
 cmp -s /etc/passwall/rules/direct_ip "$WORK/direct_ip.orig" || fail "direct list still modified"
 [ "$(uci -q get network.wgc_civpn.auto)" = 0 ] || fail "profile not disconnected"
+uci show network | grep -q "wgclient_orig_host" && fail "relay endpoint left in Passwall-only mode"
+[ "$(uci -q get network.@wireguard_wgc_civpn[0].endpoint_host)" = 1.2.3.4 ] || fail "endpoint not restored"
 uci -q get network.wgc_civpn.mtu >/dev/null && fail "MTU not restored"
 [ "$(uci -q get firewall.wgclient_killswitch.enabled)" = 0 ] || fail "kill switch not paused"
 [ "$(uci -q get network.wgclient_rule_vpn.lookup)" = 51820 ] || fail "normal VPN rule missing"
@@ -174,6 +184,9 @@ cmp -s /etc/passwall/rules/proxy_ip "$WORK/proxy_ip.orig" || fail "proxy list no
 cmp -s /etc/passwall/rules/direct_ip "$WORK/direct_ip.orig" || fail "direct list not restored"
 uci -q get network.wgc_civpn.mtu >/dev/null && fail "MTU not restored"
 [ "$(uci -q get network.wgc_civpn.auto)" = 1 ] || fail "profile not connected in VPN mode"
+[ "$(uci -q get network.@wireguard_wgc_civpn[0].endpoint_host)" = 1.2.3.4 ] || fail "endpoint not restored in VPN mode"
+[ "$(uci -q get network.@wireguard_wgc_civpn[0].endpoint_port)" = 51820 ] || fail "endpoint port not restored"
+uci show network | grep -q "wgclient_orig_host" && fail "relay options left behind"
 [ "$(uci -q get network.wgclient_rule_vpn.lookup)" = 51820 ] || fail "VPN rule for all traffic not restored"
 uci -q get network.wgclient_rule_vpn.in >/dev/null && fail "VPN rule still limited to LAN"
 uci -q get network.wgclient_rule_vpn_lan >/dev/null && fail "LAN-only VPN rule left behind"

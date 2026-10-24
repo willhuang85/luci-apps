@@ -1,13 +1,21 @@
 #!/bin/sh /etc/rc.common
-# Keeps WireGuard client tunnels wrapped by transparent proxies such as
-# Passwall, see /usr/libexec/wgclient-proxy-watch.
+# Runs the relay that carries WireGuard through Passwall's SOCKS port in
+# "VPN through Passwall" mode, see /usr/libexec/wgclient-relay.
 
 START=99
 USE_PROCD=1
 
 start_service() {
-	procd_open_instance
-	procd_set_param command /usr/libexec/wgclient-proxy-watch
-	procd_set_param respawn
+	[ "$(uci -q get wgclient.settings.mode)" = vpn_passwall ] || return 0
+	uci -q show network | grep -q '\.wgclient_orig_host=' || return 0
+
+	procd_open_instance relay
+	procd_set_param command /usr/bin/ucode /usr/libexec/wgclient-relay
+	procd_set_param respawn 3600 5 0
+	procd_set_param stderr 1
 	procd_close_instance
+}
+
+service_triggers() {
+	procd_add_reload_trigger wgclient
 }

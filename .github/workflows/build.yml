@@ -40,8 +40,8 @@ jobs:
       - name: Unit tests (release ucode)
         run: ./tests/run.sh
 
-      - name: Proxy watcher test (minimal busybox-like PATH)
-        run: ./tests/watch_test.sh
+      - name: Relay test (stub SOCKS5 proxy)
+        run: ./tests/relay_test.sh
 
       - name: Syntax check JavaScript
         run: |

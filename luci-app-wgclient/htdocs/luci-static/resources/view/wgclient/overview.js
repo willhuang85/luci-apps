@@ -239,7 +239,7 @@ return view.extend({
 		const node = this.root.querySelector('select[name="wgc-pw-node"]')?.value ?? '';
 		const msg = {
 			vpn: _('Switch to VPN mode?\n\nPasswall goes back to exactly the settings it had before you first used a Passwall mode, and your last VPN profile connects.'),
-			vpn_passwall: _('Switch to "VPN through Passwall"?\n\nPasswall is switched on with the selected node and set up to carry the WireGuard tunnel: "Localhost Proxy" on, "Client Proxy" off, your VPN servers added to its proxy list (and taken out of its direct list), tunnel MTU 1280. Traffic from your LAN devices goes through the VPN; the router\'s own traffic and DNS are handled by Passwall.\n\nYour current Passwall settings are saved and restored when you switch back to VPN mode.'),
+			vpn_passwall: _('Switch to "VPN through Passwall"?\n\nPasswall is switched on with the selected node and "Client Proxy" off. WireGuard reaches your VPN server through Passwall\'s SOCKS port via a small relay on the router, with the tunnel MTU at 1280. Traffic from your LAN devices goes through the VPN; the router\'s own traffic and DNS are handled by Passwall.\n\nYour current Passwall settings are saved and restored when you switch back to VPN mode.'),
 			passwall: _('Switch to "Passwall only"?\n\nThe VPN is disconnected and Passwall proxies your LAN devices with the selected node ("Client Proxy" on, default proxy modes set to Proxy). The kill switch is paused in this mode.\n\nYour current Passwall settings are saved and restored when you switch back to VPN mode.')
 		}[mode];
 
@@ -521,7 +521,7 @@ return view.extend({
 				this.renderStat(_('Downloaded'), formatBytes(live.rx_bytes)),
 				this.renderStat(_('Uploaded'), formatBytes(live.tx_bytes)),
 				data.mode == 'vpn_passwall'
-					? this.renderStat(_('Route'), live.proxied === true ? '✓ ' + _('Via Passwall') : live.proxied === false ? '⚠ ' + _('Direct') : _('Checking…'))
+					? this.renderStat(_('Route'), live.proxied === true ? '✓ ' + _('Via Passwall') : live.proxied === false ? '⚠ ' + _('Waiting for Passwall') : _('Starting…'))
 					: ''
 			])
 		]);
@@ -586,13 +586,13 @@ return view.extend({
 			note = E('div', { 'class': 'wgc-note' }, _('Passwall is starting… this can take up to a minute.'));
 		}
 		else if (mode == 'vpn_passwall' && live?.proxied === true) {
-			note = E('div', { 'class': 'wgc-note ok' }, _('Wrapped: WireGuard\'s traffic to the VPN server is going through Passwall.'));
+			note = E('div', { 'class': 'wgc-note ok' }, _('Wrapped: WireGuard reaches the VPN server through Passwall.'));
 		}
 		else if (mode == 'vpn_passwall' && live?.proxied === false) {
-			note = E('div', { 'class': 'wgc-note bad' }, _('Not wrapped yet: the tunnel still goes out directly. This normally fixes itself within 30 seconds of Passwall starting; if it doesn\'t, Disconnect and Connect the profile, and check that the Passwall node supports UDP.'));
+			note = E('div', { 'class': 'wgc-note bad' }, _('Waiting for Passwall: the relay cannot use Passwall\'s SOCKS port yet. It retries every few seconds; if this stays, check that Passwall is running and that its node supports UDP.'));
 		}
 		else if (mode == 'vpn_passwall' && live) {
-			note = E('div', { 'class': 'wgc-note' }, _('Checking whether the tunnel is wrapped…'));
+			note = E('div', { 'class': 'wgc-note' }, _('Starting the relay…'));
 		}
 
 		const buttons = Object.keys(MODE_INFO).map((m) => E('button', {
@@ -639,9 +639,7 @@ return view.extend({
 			E('div', { 'class': 'wgc-sub' }, _('The VPN uses its own routing table, so the proxy keeps working side by side:')),
 			E('ul', { style: 'margin:8px 0 0 18px; padding:0' }, [
 				E('li', {}, _('Connections made by the proxy core (Xray / sing-box) bypass the VPN, so they never loop into the tunnel.')),
-				E('li', {}, _('To send the WireGuard tunnel itself through the proxy, enable the proxy for the router\'s own traffic (Passwall: "Localhost proxy") and make sure the VPN server address is proxied, not direct.')),
-				E('li', {}, _('Whenever the proxy (re)starts, the tunnel moves to a new source port so the proxy picks it up, also after a reboot.')),
-				E('li', {}, _('A wrapped tunnel adds overhead: if pages stall, set MTU = 1280 in the profile.'))
+				E('li', {}, _('Install Passwall to also get the "VPN through Passwall" and "Passwall only" modes.'))
 			])
 		]);
 	},
