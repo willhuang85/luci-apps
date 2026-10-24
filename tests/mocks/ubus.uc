@@ -1,5 +1,5 @@
 // Minimal stand-in for the ucode "ubus" module, used by tests. Answers
-// iwinfo and network.wireless calls from global.__wifi.
+// iwinfo, network.wireless and network.interface calls from global.__wifi.
 'use strict';
 
 global.__ubus_calls ??= [];
@@ -14,6 +14,9 @@ export function connect() {
 			if (obj == 'network.wireless' && method == 'status')
 				return w.status ?? {};
 
+			if (obj == 'network.interface' && method == 'dump')
+				return { interface: w.ifaces ?? [] };
+
 			if (obj == 'iwinfo') {
 				const d = w.devices?.[args?.device] ?? {};
 
@@ -23,6 +26,7 @@ export function connect() {
 				case 'txpowerlist': return { results: d.txpowerlist ?? [] };
 				case 'countrylist': return { results: [ { code: 'US', iso3166: 'US', country: 'United States' }, { code: 'DE', iso3166: 'DE', country: 'Germany' } ] };
 				case 'assoclist': return { results: d.assoclist ?? [] };
+				case 'scan': return { results: d.scan ?? [] };
 				}
 			}
 

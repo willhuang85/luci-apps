@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // Wi-Fi schedule: turn Wi-Fi off at `off` on the selected days and back on
-// at `on`. Shared by the rpcd backend and /usr/libexec/tether-schedule.
+// at `on`. Shared by the rpcd backend and /usr/libexec/wifisetup-schedule.
 
 'use strict';
 
@@ -10,8 +10,8 @@ export const DAYS = [ 'mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun' ];
 // cron day of week numbers (Sunday = 0)
 const CRON_DOW = { mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6, sun: 0 };
 
-export const MARK = '# tether-schedule';
-export const TOOL = '/usr/libexec/tether-schedule';
+export const MARK = '# wifisetup-schedule';
+export const TOOL = '/usr/libexec/wifisetup-schedule';
 
 function as_list(v) {
 	if (v == null)
@@ -49,7 +49,7 @@ export function validate(a) {
 };
 
 export function load(uci) {
-	const s = uci.get_all('tether', 'schedule') ?? {};
+	const s = uci.get_all('wifisetup', 'schedule') ?? {};
 	const days = filter(as_list(s.days ?? DAYS), (d) => d in DAYS);
 
 	return {
@@ -61,13 +61,13 @@ export function load(uci) {
 };
 
 export function store(uci, a) {
-	if (uci.get('tether', 'schedule') == null)
-		uci.set('tether', 'schedule', 'schedule');
+	if (uci.get('wifisetup', 'schedule') == null)
+		uci.set('wifisetup', 'schedule', 'schedule');
 
-	uci.set('tether', 'schedule', 'enabled', a.enabled ? '1' : '0');
-	uci.set('tether', 'schedule', 'off', fmt_time(parse_time(a.off)));
-	uci.set('tether', 'schedule', 'on', fmt_time(parse_time(a.on)));
-	uci.set('tether', 'schedule', 'days', filter(DAYS, (d) => d in a.days));
+	uci.set('wifisetup', 'schedule', 'enabled', a.enabled ? '1' : '0');
+	uci.set('wifisetup', 'schedule', 'off', fmt_time(parse_time(a.off)));
+	uci.set('wifisetup', 'schedule', 'on', fmt_time(parse_time(a.on)));
+	uci.set('wifisetup', 'schedule', 'days', filter(DAYS, (d) => d in a.days));
 };
 
 // Crontab lines for the schedule. Wi-Fi turns off on the selected days and

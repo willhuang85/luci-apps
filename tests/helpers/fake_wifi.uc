@@ -1,6 +1,6 @@
 // Publishes stand-ins for the ubus objects a Wi-Fi router has (iwinfo,
-// network.wireless, hostapd.<ifname>) so the integration test can run the
-// plugin in a real rpcd without Wi-Fi hardware. Logs calls to $FAKE_LOG.
+// network.wireless, network.interface, hostapd.<ifname>) so the integration
+// tests can run the plugins in a real rpcd without Wi-Fi hardware or netifd. Logs calls to $FAKE_LOG.
 
 'use strict';
 
@@ -19,7 +19,8 @@ const RADIOS = {
 	radio0: {
 		info: { htmodes: [ 'HT20', 'HT40', 'HE20', 'HE40' ], hardware: { name: 'Fake 2.4 GHz' } },
 		freqlist: [ { band: 2, channel: 1, mhz: 2412, restricted: false }, { band: 2, channel: 6, mhz: 2437, restricted: false } ],
-		txpowerlist: [ { dbm: 17, mw: 50 }, { dbm: 20, mw: 100 } ]
+		txpowerlist: [ { dbm: 17, mw: 50 }, { dbm: 20, mw: 100 } ],
+		scan: [ { ssid: 'CI iPhone', signal: -45, channel: 6, encryption: { enabled: true, wpa: [ 2, 3 ], authentication: [ 'psk', 'sae' ] } } ]
 	},
 	radio1: {
 		info: { htmodes: [ 'HT20', 'HT40', 'VHT20', 'VHT40', 'VHT80', 'HE20', 'HE40', 'HE80' ], hardware: { name: 'Fake 5 GHz' } },
@@ -46,6 +47,7 @@ conn.publish('iwinfo', {
 	freqlist: { args: dev_args, call: (req) => ({ results: dev(req).freqlist ?? [] }) },
 	txpowerlist: { args: dev_args, call: (req) => ({ results: dev(req).txpowerlist ?? [] }) },
 	assoclist: { args: { device: '', mac: '' }, call: (req) => ({ results: dev(req).assoclist ?? [] }) },
+	scan: { args: dev_args, call: (req) => ({ results: dev(req).scan ?? [] }) },
 	countrylist: { args: dev_args, call: () => ({ results: [ { code: 'DE', iso3166: 'DE', country: 'Germany' }, { code: 'US', iso3166: 'US', country: 'United States' } ] }) }
 });
 
@@ -55,6 +57,15 @@ conn.publish('network.wireless', {
 			radio0: { up: true, interfaces: [ { section: 'default_radio0', ifname: 'phy0-ap0' } ] },
 			radio1: { up: true, interfaces: [ { section: 'default_radio1', ifname: 'phy1-ap0' } ] }
 		})
+	}
+});
+
+conn.publish('network.interface', {
+	dump: {
+		call: () => ({ interface: [
+			{ interface: 'wan', up: true, l3_device: 'lo', 'ipv4-address': [ { address: '127.0.0.1', mask: 8 } ] },
+			{ interface: 'wan6', up: true }
+		] })
 	}
 });
 

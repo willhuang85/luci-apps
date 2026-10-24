@@ -13,7 +13,7 @@ else
 	UCODE=ucode
 fi
 
-SRC="$PWD/luci-app-tether/root/usr/share/ucode/*.uc"
+SRC="$PWD/luci-app-wifisetup/root/usr/share/ucode/*.uc"
 MOCKS="$PWD/tests/mocks/*.uc"
 
 echo "== schedule"
@@ -21,4 +21,9 @@ echo "== schedule"
 echo "== rpcd backend"
 "$UCODE" ${UCODE_DIR:+-L "$UCODE_DIR/*.so"} -L "$MOCKS" -L "$SRC" tests/backend_test.uc
 echo "== schedule tool compiles"
-"$UCODE" ${UCODE_DIR:+-L "$UCODE_DIR/*.so"} -L "$SRC" -c -o /dev/null luci-app-tether/root/usr/libexec/tether-schedule
+"$UCODE" ${UCODE_DIR:+-L "$UCODE_DIR/*.so"} -L "$SRC" -c -o /dev/null luci-app-wifisetup/root/usr/libexec/wifisetup-schedule
+echo "== tether backend"
+TETHER_SYSFS=$(mktemp -d)
+TETHER_USBMUXD="$TETHER_SYSFS/usbmuxd" TETHER_SYSFS="$TETHER_SYSFS" \
+	"$UCODE" ${UCODE_DIR:+-L "$UCODE_DIR/*.so"} -L "$MOCKS" tests/tether_test.uc
+rm -rf "$TETHER_SYSFS"

@@ -1,15 +1,15 @@
 #!/usr/bin/ucode
 // SPDX-License-Identifier: Apache-2.0
 //
-// tether-schedule off|on   turn Wi-Fi off / on (run by cron)
-// tether-schedule sync     write the schedule from /etc/config/tether to cron
-// tether-schedule boot     sync, and turn Wi-Fi off if booted inside the off time
+// wifisetup-schedule off|on   turn Wi-Fi off / on (run by cron)
+// wifisetup-schedule sync     write the schedule from /etc/config/wifisetup to cron
+// wifisetup-schedule boot     sync, and turn Wi-Fi off if booted inside the off time
 
 'use strict';
 
 import { readfile, writefile, rename, access, mkdir } from 'fs';
 import { cursor } from 'uci';
-import * as schedule from 'tether.schedule';
+import * as schedule from 'wifisetup.schedule';
 
 const CRONTAB = '/etc/crontabs/root';
 
@@ -21,8 +21,8 @@ function sync(s) {
 		return;
 
 	mkdir('/etc/crontabs');
-	writefile(CRONTAB + '.tether', text);
-	rename(CRONTAB + '.tether', CRONTAB);
+	writefile(CRONTAB + '.wifisetup', text);
+	rename(CRONTAB + '.wifisetup', CRONTAB);
 
 	if (access('/etc/init.d/cron')) {
 		system('/etc/init.d/cron enable >/dev/null 2>&1');
@@ -35,14 +35,14 @@ const s = schedule.load(cursor());
 switch (ARGV[0]) {
 case 'off':
 	if (s.enabled) {
-		system('logger -t tether "Wi-Fi off (schedule)"');
+		system('logger -t wifisetup "Wi-Fi off (schedule)"');
 		system('/sbin/wifi down');
 	}
 	break;
 
 case 'on':
 	if (s.enabled) {
-		system('logger -t tether "Wi-Fi on (schedule)"');
+		system('logger -t wifisetup "Wi-Fi on (schedule)"');
 		system('/sbin/wifi up');
 	}
 	break;
@@ -55,12 +55,12 @@ case 'boot':
 	sync(s);
 
 	if (schedule.in_off_window(s, localtime())) {
-		system('logger -t tether "Wi-Fi off (schedule, after boot)"');
+		system('logger -t wifisetup "Wi-Fi off (schedule, after boot)"');
 		system('/sbin/wifi down');
 	}
 	break;
 
 default:
-	warn('usage: tether-schedule off|on|sync|boot\n');
+	warn('usage: wifisetup-schedule off|on|sync|boot\n');
 	exit(1);
 }

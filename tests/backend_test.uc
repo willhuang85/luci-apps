@@ -1,5 +1,5 @@
 // Exercises the rpcd plugin against in-memory uci/ubus mocks.
-// Run: ucode -L 'tests/mocks/*.uc' -L 'luci-app-tether/root/usr/share/ucode/*.uc' tests/backend_test.uc
+// Run: ucode -L 'tests/mocks/*.uc' -L 'luci-app-wifisetup/root/usr/share/ucode/*.uc' tests/backend_test.uc
 
 'use strict';
 
@@ -23,7 +23,7 @@ global.__uci_store = {
 		radio2: { '.type': 'wifi-device', '.name': 'radio2', '.index': 14, type: 'mac80211', band: '6g', channel: 'auto', htmode: 'HE160' },
 		sta: { '.type': 'wifi-iface', '.name': 'sta', '.index': 15, device: 'radio1', network: 'wwan', mode: 'sta', ssid: 'Upstream' }
 	},
-	tether: {
+	wifisetup: {
 		settings: { '.type': 'settings', '.name': 'settings', '.index': 20 }
 	}
 };
@@ -52,8 +52,8 @@ global.__wifi = {
 	}
 };
 
-const plugin = loadfile(sourcepath(0, true) + '/../luci-app-tether/root/usr/share/rpcd/ucode/luci.tether')();
-const m = plugin['luci.tether'];
+const plugin = loadfile(sourcepath(0, true) + '/../luci-app-wifisetup/root/usr/share/rpcd/ucode/luci.wifisetup')();
+const m = plugin['luci.wifisetup'];
 const st = global.__uci_store;
 const W = st.wireless;
 
@@ -103,8 +103,8 @@ r = call('set_network', { net: 'main', ssid: 'Home', key: 'correct horse', encry
 check('main saved', r.result && !r.error);
 check('main ssid', W.default_radio0.ssid == 'Home' && W.default_radio1.ssid == 'Home');
 check('main key', W.default_radio0.key == 'correct horse' && W.default_radio0.encryption == 'sae-mixed');
-check('6g main created', W.tether_main_radio2?.device == 'radio2' && W.tether_main_radio2?.network == 'lan' && W.tether_main_radio2?.mode == 'ap');
-check('6g forced wpa3', W.tether_main_radio2.encryption == 'sae' && W.tether_main_radio2.key == 'correct horse');
+check('6g main created', W.wifisetup_main_radio2?.device == 'radio2' && W.wifisetup_main_radio2?.network == 'lan' && W.wifisetup_main_radio2?.mode == 'ap');
+check('6g forced wpa3', W.wifisetup_main_radio2.encryption == 'sae' && W.wifisetup_main_radio2.key == 'correct horse');
 check('station untouched', W.sta.ssid == 'Upstream' && W.sta.encryption == null);
 
 r = call('get');
@@ -112,7 +112,7 @@ check('main read back', r.main.ssid == 'Home' && r.main.encryption == 'sae-mixed
 
 r = call('set_network', { net: 'main', ssid: 'Home', key: 'correct horse', encryption: 'sae-mixed', same_name: false,
 	ssids: { radio0: 'Home 2G', radio1: 'Home 5G' }, hidden: true });
-check('split names', W.default_radio0.ssid == 'Home 2G' && W.default_radio1.ssid == 'Home 5G' && W.tether_main_radio2.ssid == 'Home');
+check('split names', W.default_radio0.ssid == 'Home 2G' && W.default_radio1.ssid == 'Home 5G' && W.wifisetup_main_radio2.ssid == 'Home');
 check('hidden', W.default_radio0.hidden == '1');
 check('split read back', !call('get').main.same_name);
 call('set_network', { net: 'main', ssid: 'Home', key: 'correct horse', encryption: 'sae-mixed' });
@@ -122,7 +122,7 @@ W.default_radio0.ieee80211w = '0';
 call('set_network', { net: 'main', ssid: 'Open Cafe', key: '', encryption: 'none' });
 check('open network', W.default_radio0.encryption == 'none' && W.default_radio0.key == null);
 check('ieee80211w reset on change', W.default_radio0.ieee80211w == null);
-check('6g open -> owe', W.tether_main_radio2.encryption == 'owe');
+check('6g open -> owe', W.wifisetup_main_radio2.encryption == 'owe');
 call('set_network', { net: 'main', ssid: 'Home', key: 'correct horse', encryption: 'sae-mixed' });
 
 // --- radios
@@ -140,9 +140,9 @@ call('set_radio', { id: 'radio2', enabled: false });
 check('radio off', W.radio2.disabled == '1');
 
 // re-enabling a radio whose main access point is gone copies the settings
-delete W.tether_main_radio2;
+delete W.wifisetup_main_radio2;
 r = call('set_radio', { id: 'radio2', enabled: true });
-check('main recreated', !r.error && W.tether_main_radio2?.ssid == 'Home' && W.tether_main_radio2?.encryption == 'sae' && W.radio2.disabled == null);
+check('main recreated', !r.error && W.wifisetup_main_radio2?.ssid == 'Home' && W.wifisetup_main_radio2?.encryption == 'sae' && W.radio2.disabled == null);
 
 r = call('set_region', { country: 'de' });
 check('region', !r.error && W.radio0.country == 'DE' && W.radio2.country == 'DE' && call('get').country == 'DE');
@@ -151,17 +151,17 @@ check('bad region', call('set_region', { country: 'Germany' }).error != null);
 // --- guest network
 r = call('set_network', { net: 'guest', enabled: true, ssid: 'Home Guest', key: 'welcome123', encryption: 'sae-mixed', isolate: true, bands: [ 'radio0', 'radio1' ] });
 check('guest saved', r.result && !r.error);
-check('guest ifaces', W.tether_guest_radio0?.network == 'guestwifi' && W.tether_guest_radio1?.ssid == 'Home Guest' && W.tether_guest_radio0.isolate == '1');
-check('guest bands', W.tether_guest_radio0.disabled == null && W.tether_guest_radio2?.disabled == '1');
-check('guest 6g wpa3', W.tether_guest_radio2.encryption == 'sae');
-check('guest bridge', st.network.tether_guest_dev?.name == 'br-guestwifi' && st.network.tether_guest_dev?.type == 'bridge');
+check('guest ifaces', W.wifisetup_guest_radio0?.network == 'guestwifi' && W.wifisetup_guest_radio1?.ssid == 'Home Guest' && W.wifisetup_guest_radio0.isolate == '1');
+check('guest bands', W.wifisetup_guest_radio0.disabled == null && W.wifisetup_guest_radio2?.disabled == '1');
+check('guest 6g wpa3', W.wifisetup_guest_radio2.encryption == 'sae');
+check('guest bridge', st.network.wifisetup_guest_dev?.name == 'br-guestwifi' && st.network.wifisetup_guest_dev?.type == 'bridge');
 check('guest iface', st.network.guestwifi?.proto == 'static' && st.network.guestwifi?.device == 'br-guestwifi');
 check('guest subnet avoids lan and iot', st.network.guestwifi?.ipaddr == '192.168.4.1');
 check('guest dhcp', st.dhcp.guestwifi?.interface == 'guestwifi' && st.dhcp.guestwifi?.leasetime == '1h');
-check('guest zone', st.firewall.tether_guest_zone?.name == 'guestwifi' && st.firewall.tether_guest_zone?.input == 'REJECT' &&
-	st.firewall.tether_guest_zone?.forward == 'REJECT');
-check('guest forwarding', st.firewall.tether_guest_fwd?.src == 'guestwifi' && st.firewall.tether_guest_fwd?.dest == 'wan');
-check('guest rules', st.firewall.tether_guest_dhcp?.dest_port == '67-68' && st.firewall.tether_guest_dns?.dest_port == '53');
+check('guest zone', st.firewall.wifisetup_guest_zone?.name == 'guestwifi' && st.firewall.wifisetup_guest_zone?.input == 'REJECT' &&
+	st.firewall.wifisetup_guest_zone?.forward == 'REJECT');
+check('guest forwarding', st.firewall.wifisetup_guest_fwd?.src == 'guestwifi' && st.firewall.wifisetup_guest_fwd?.dest == 'wan');
+check('guest rules', st.firewall.wifisetup_guest_dhcp?.dest_port == '67-68' && st.firewall.wifisetup_guest_dns?.dest_port == '53');
 check('main not on guest', W.default_radio0.network == 'lan');
 
 r = call('get');
@@ -170,16 +170,16 @@ check('guest address', r.guest.address == '192.168.4.1');
 check('main still main', r.main.ssid == 'Home');
 
 r = call('set_network', { net: 'guest', enabled: false });
-check('guest off', W.tether_guest_radio0.disabled == '1' && W.tether_guest_radio1.disabled == '1' && W.tether_guest_radio0.ssid == 'Home Guest');
+check('guest off', W.wifisetup_guest_radio0.disabled == '1' && W.wifisetup_guest_radio1.disabled == '1' && W.wifisetup_guest_radio0.ssid == 'Home Guest');
 check('guest off read back', !call('get').guest.enabled && call('get').guest.ssid == 'Home Guest');
 call('set_network', { net: 'guest', enabled: true, ssid: 'Home Guest', key: '', encryption: 'none', isolate: false, bands: [] });
-check('guest all bands', W.tether_guest_radio2.disabled == null && W.tether_guest_radio0.encryption == 'none' && W.tether_guest_radio0.isolate == null);
-check('guest open 6g -> owe', W.tether_guest_radio2.encryption == 'owe');
+check('guest all bands', W.wifisetup_guest_radio2.disabled == null && W.wifisetup_guest_radio0.encryption == 'none' && W.wifisetup_guest_radio0.isolate == null);
+check('guest open 6g -> owe', W.wifisetup_guest_radio2.encryption == 'owe');
 check('guest bad band', call('set_network', { net: 'guest', enabled: true, ssid: 'G', key: '', encryption: 'none', bands: [ 'lan' ] }).error != null);
 
 // --- status and clients
 global.__wifi.status = {
-	radio0: { up: true, interfaces: [ { section: 'default_radio0', ifname: 'phy0-ap0' }, { section: 'tether_guest_radio0', ifname: 'phy0-ap1' } ] },
+	radio0: { up: true, interfaces: [ { section: 'default_radio0', ifname: 'phy0-ap0' }, { section: 'wifisetup_guest_radio0', ifname: 'phy0-ap1' } ] },
 	radio1: { up: true, interfaces: [ { section: 'default_radio1', ifname: 'phy1-ap0' } ] },
 	radio2: { up: false, interfaces: [] }
 };
@@ -199,7 +199,7 @@ check('kick bad mac', call('kick', { mac: 'nope' }).error != null);
 r = call('block', { mac: 'aa:bb:cc:dd:ee:02', name: 'Tablet' });
 check('block', !r.error && length(call('get').blocked) == 1 && call('get').blocked[0].name == 'Tablet');
 check('macfilter main', W.default_radio0.macfilter == 'deny' && W.default_radio1.maclist?.[0] == 'AA:BB:CC:DD:EE:02');
-check('macfilter guest', W.tether_guest_radio0.macfilter == 'deny');
+check('macfilter guest', W.wifisetup_guest_radio0.macfilter == 'deny');
 check('macfilter not on station', W.sta.macfilter == null);
 call('block', { mac: 'AA:BB:CC:DD:EE:02' });
 check('block idempotent', length(call('get').blocked) == 1);
@@ -221,7 +221,7 @@ check('schedule bad time', call('set_schedule', { enabled: true, off: '25:00', o
 check('schedule no days', call('set_schedule', { enabled: true, off: '23:00', on: '07:00', days: [] }).error != null);
 check('schedule same times', call('set_schedule', { enabled: true, off: '07:00', on: '7:00', days: [ 'mon' ] }).error != null);
 r = call('set_schedule', { enabled: true, off: '22:30', on: '6:15', days: [ 'sun', 'mon' ] });
-check('schedule saved', !r.error && st.tether.schedule?.enabled == '1' && st.tether.schedule?.on == '06:15');
+check('schedule saved', !r.error && st.wifisetup.schedule?.enabled == '1' && st.wifisetup.schedule?.on == '06:15');
 r = call('get').schedule;
 check('schedule read back', r.enabled && r.off == '22:30' && join(',', r.days) == 'mon,sun');
 

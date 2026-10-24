@@ -38,18 +38,29 @@ if [ -z "$SKIP_BUILD" ]; then
 	build rpcd openwrt/rpcd package/system/rpcd/Makefile -DUCODE_SUPPORT=ON -DFILE_SUPPORT=OFF -DIWINFO_SUPPORT=OFF -DRPCSYS_SUPPORT=OFF
 fi
 
-R="$SRC/luci-app-tether/root"
+R="$SRC/luci-app-wifisetup/root"
 
 echo "== installing package files"
-install -D -m 0644 "$R/usr/share/rpcd/ucode/luci.tether" /usr/share/rpcd/ucode/luci.tether
-install -D -m 0644 "$R/usr/share/ucode/tether/schedule.uc" /usr/share/ucode/tether/schedule.uc
-install -D -m 0755 "$R/usr/libexec/tether-schedule" /usr/libexec/tether-schedule
-install -D -m 0644 "$R/etc/config/tether" /etc/config/tether
+install -D -m 0644 "$R/usr/share/rpcd/ucode/luci.wifisetup" /usr/share/rpcd/ucode/luci.wifisetup
+install -D -m 0644 "$R/usr/share/ucode/wifisetup/schedule.uc" /usr/share/ucode/wifisetup/schedule.uc
+install -D -m 0755 "$R/usr/libexec/wifisetup-schedule" /usr/libexec/wifisetup-schedule
+install -D -m 0644 "$R/etc/config/wifisetup" /etc/config/wifisetup
+T="$SRC/luci-app-tether/root"
+install -D -m 0644 "$T/usr/share/rpcd/ucode/luci.tether" /usr/share/rpcd/ucode/luci.tether
+install -D -m 0644 "$T/etc/config/tether" /etc/config/tether
 # rc.common is not available here; call the tool the init script would call
-printf '#!/bin/sh\n[ "$1" = reload ] && exec /usr/libexec/tether-schedule sync\n' > /etc/init.d/tether
-chmod +x /etc/init.d/tether
-printf "config interface 'lan'\n\toption proto 'static'\n\toption ipaddr '192.168.1.1'\n\toption netmask '255.255.255.0'\n\nconfig interface 'wan'\n\toption proto 'dhcp'\n" > /etc/config/network
-printf "config zone\n\toption name 'lan'\n\nconfig zone\n\toption name 'wan'\n" > /etc/config/firewall
+printf '#!/bin/sh\n[ "$1" = reload ] && exec /usr/libexec/wifisetup-schedule sync\n' > /etc/init.d/wifisetup
+chmod +x /etc/init.d/wifisetup
+printf "config interface 'lan'\n\toption proto 'static'\n\toption ipaddr '192.168.1.1'\n\toption netmask '255.255.255.0'\n\nconfig interface 'wan'\n\toption proto 'dhcp'\n\nconfig interface 'wan6'\n\toption proto 'dhcpv6'\n\toption device '@wan'\n" > /etc/config/network
+printf "config zone\n\toption name 'lan'\n\tlist network 'lan'\n\nconfig zone\n\toption name 'wan'\n\tlist network 'wan'\n\tlist network 'wan6'\n" > /etc/config/firewall
+# a plugged in iPhone (ipheth network device eth9) in a fake /sys
+SYSFS="$WORK/sys"
+mkdir -p "$SYSFS/bus/usb/devices/1-1" "$SYSFS/bus/usb/drivers/ipheth" "$SYSFS/class/net/eth9/device" "$SYSFS/class/net/eth9/statistics" "$SYSFS/module/ipheth"
+echo 05ac > "$SYSFS/bus/usb/devices/1-1/idVendor"
+echo iPhone > "$SYSFS/bus/usb/devices/1-1/product"
+ln -s ../../../../bus/usb/drivers/ipheth "$SYSFS/class/net/eth9/device/driver"
+echo 1 > "$SYSFS/class/net/eth9/carrier"
+touch "$WORK/usbmuxd"
 printf "config dnsmasq\n\toption domainneeded '1'\n" > /etc/config/dhcp
 cat > /etc/config/wireless <<'WL'
 
@@ -87,10 +98,10 @@ printf '0 4 * * * /bin/true # keep me\n' > /etc/crontabs/root
 ubusd >"$WORK/ubusd.log" 2>&1 &
 sleep 1
 FAKE_LOG="$WORK/fake.log" ucode "$SRC/tests/helpers/fake_wifi.uc" >"$WORK/fake_wifi.out" 2>&1 &
-rpcd >"$WORK/rpcd.log" 2>&1 &
+TETHER_SYSFS="$SYSFS" TETHER_USBMUXD="$WORK/usbmuxd" rpcd >"$WORK/rpcd.log" 2>&1 &
 
 for i in 1 2 3 4 5 6 7 8 9 10; do
-	ubus list luci.tether >/dev/null 2>&1 && ubus list iwinfo >/dev/null 2>&1 && break
+	ubus list luci.wifisetup >/dev/null 2>&1 && ubus list luci.tether >/dev/null 2>&1 && ubus list iwinfo >/dev/null 2>&1 && break
 	sleep 1
 done
 
@@ -101,66 +112,96 @@ fail() {
 	exit 1
 }
 
-ubus list luci.tether >/dev/null 2>&1 || fail "rpcd did not register luci.tether"
+ubus list luci.wifisetup >/dev/null 2>&1 || fail "rpcd did not register luci.wifisetup"
 ubus list iwinfo >/dev/null 2>&1 || fail "fake iwinfo not running"
 
 echo "== get"
-ubus call luci.tether get | jq -e '(.radios | length == 2) and .main.ssid == "OpenWrt" and (.radios[1].widths | map(.htmode) == ["HE20","HE40","HE80"]) and (.radios[1].channels[1].dfs)' >/dev/null || fail "get"
+ubus call luci.wifisetup get | jq -e '(.radios | length == 2) and .main.ssid == "OpenWrt" and (.radios[1].widths | map(.htmode) == ["HE20","HE40","HE80"]) and (.radios[1].channels[1].dfs)' >/dev/null || fail "get"
 
 echo "== main network"
-ubus call luci.tether set_network '{"net":"main","ssid":"short","key":"x","encryption":"sae-mixed"}' | jq -e '.error' >/dev/null || fail "short password accepted"
-ubus call luci.tether set_network '{"net":"main","ssid":"CI Home","key":"correct horse","encryption":"sae-mixed","hidden":false}' | jq -e '.result' >/dev/null || fail "set main"
+ubus call luci.wifisetup set_network '{"net":"main","ssid":"short","key":"x","encryption":"sae-mixed"}' | jq -e '.error' >/dev/null || fail "short password accepted"
+ubus call luci.wifisetup set_network '{"net":"main","ssid":"CI Home","key":"correct horse","encryption":"sae-mixed","hidden":false}' | jq -e '.result' >/dev/null || fail "set main"
 [ "$(uci -q get wireless.default_radio0.ssid)" = "CI Home" ] || fail "ssid not written"
 [ "$(uci -q get wireless.default_radio1.key)" = "correct horse" ] || fail "key not written"
 [ "$(uci -q get wireless.default_radio1.encryption)" = sae-mixed ] || fail "encryption not written"
 
 echo "== bands"
-ubus call luci.tether set_radio '{"id":"radio1","enabled":true,"channel":"100","width":80,"txpower":0}' | jq -e '.result' >/dev/null || fail "set_radio"
+ubus call luci.wifisetup set_radio '{"id":"radio1","enabled":true,"channel":"100","width":80,"txpower":0}' | jq -e '.result' >/dev/null || fail "set_radio"
 [ "$(uci -q get wireless.radio1.channel)" = 100 ] || fail "channel"
 [ "$(uci -q get wireless.radio1.htmode)" = HE80 ] || fail "htmode"
 uci -q get wireless.radio1.disabled >/dev/null && fail "radio still disabled"
-ubus call luci.tether set_radio '{"id":"radio0","enabled":true,"channel":"auto","width":40,"txpower":17}' | jq -e '.result' >/dev/null || fail "set_radio 2g"
+ubus call luci.wifisetup set_radio '{"id":"radio0","enabled":true,"channel":"auto","width":40,"txpower":17}' | jq -e '.result' >/dev/null || fail "set_radio 2g"
 [ "$(uci -q get wireless.radio0.txpower)" = 17 ] || fail "txpower"
-ubus call luci.tether set_region '{"country":"DE"}' | jq -e '.result' >/dev/null || fail "set_region"
+ubus call luci.wifisetup set_region '{"country":"DE"}' | jq -e '.result' >/dev/null || fail "set_region"
 [ "$(uci -q get wireless.radio0.country)" = DE ] || fail "country"
 
 echo "== guest network"
-ubus call luci.tether set_network '{"net":"guest","enabled":true,"ssid":"CI Guest","key":"welcome123","encryption":"psk2","isolate":true,"bands":["radio0","radio1"]}' | jq -e '.result' >/dev/null || fail "set guest"
-[ "$(uci -q get wireless.tether_guest_radio1.network)" = guestwifi ] || fail "guest iface"
+ubus call luci.wifisetup set_network '{"net":"guest","enabled":true,"ssid":"CI Guest","key":"welcome123","encryption":"psk2","isolate":true,"bands":["radio0","radio1"]}' | jq -e '.result' >/dev/null || fail "set guest"
+[ "$(uci -q get wireless.wifisetup_guest_radio1.network)" = guestwifi ] || fail "guest iface"
 [ "$(uci -q get network.guestwifi.ipaddr)" = 192.168.3.1 ] || fail "guest subnet"
-[ "$(uci -q get network.tether_guest_dev.name)" = br-guestwifi ] || fail "guest bridge"
+[ "$(uci -q get network.wifisetup_guest_dev.name)" = br-guestwifi ] || fail "guest bridge"
 [ "$(uci -q get dhcp.guestwifi.interface)" = guestwifi ] || fail "guest dhcp"
-[ "$(uci -q get firewall.tether_guest_zone.input)" = REJECT ] || fail "guest zone"
-[ "$(uci -q get firewall.tether_guest_fwd.dest)" = wan ] || fail "guest forwarding"
-ubus call luci.tether get | jq -e '.guest.enabled and .guest.ssid == "CI Guest"' >/dev/null || fail "guest read back"
+[ "$(uci -q get firewall.wifisetup_guest_zone.input)" = REJECT ] || fail "guest zone"
+[ "$(uci -q get firewall.wifisetup_guest_fwd.dest)" = wan ] || fail "guest forwarding"
+ubus call luci.wifisetup get | jq -e '.guest.enabled and .guest.ssid == "CI Guest"' >/dev/null || fail "guest read back"
 
 echo "== status, kick, block"
-ubus call luci.tether status | jq -e '.radios.radio1.channel == 36 and .clients[0].mac == "AA:BB:CC:DD:EE:01" and .clients[0].network == "main"' >/dev/null || fail "status"
-ubus call luci.tether kick '{"mac":"aa:bb:cc:dd:ee:01"}' | jq -e '.result' >/dev/null || fail "kick"
+ubus call luci.wifisetup status | jq -e '.radios.radio1.channel == 36 and .clients[0].mac == "AA:BB:CC:DD:EE:01" and .clients[0].network == "main"' >/dev/null || fail "status"
+ubus call luci.wifisetup kick '{"mac":"aa:bb:cc:dd:ee:01"}' | jq -e '.result' >/dev/null || fail "kick"
 grep -q 'del_client aa:bb:cc:dd:ee:01' "$WORK/fake.log" || fail "hostapd del_client not called"
-ubus call luci.tether block '{"mac":"aa:bb:cc:dd:ee:01","name":"Laptop"}' | jq -e '.result' >/dev/null || fail "block"
+ubus call luci.wifisetup block '{"mac":"aa:bb:cc:dd:ee:01","name":"Laptop"}' | jq -e '.result' >/dev/null || fail "block"
 [ "$(uci -q get wireless.default_radio0.macfilter)" = deny ] || fail "macfilter"
-uci -q get wireless.tether_guest_radio0.maclist | grep -q AA:BB:CC:DD:EE:01 || fail "guest maclist"
-ubus call luci.tether unblock '{"mac":"AA:BB:CC:DD:EE:01"}' | jq -e '.result' >/dev/null || fail "unblock"
+uci -q get wireless.wifisetup_guest_radio0.maclist | grep -q AA:BB:CC:DD:EE:01 || fail "guest maclist"
+ubus call luci.wifisetup unblock '{"mac":"AA:BB:CC:DD:EE:01"}' | jq -e '.result' >/dev/null || fail "unblock"
 uci -q get wireless.default_radio0.macfilter >/dev/null && fail "macfilter left"
 
 echo "== schedule"
-ubus call luci.tether set_schedule '{"enabled":true,"off":"23:00","on":"06:30","days":["mon","fri"]}' | jq -e '.result' >/dev/null || fail "set_schedule"
-grep -qx '0 23 \* \* 1,5 /usr/libexec/tether-schedule off # tether-schedule' /etc/crontabs/root || { cat /etc/crontabs/root; fail "cron off line"; }
-grep -qx '30 6 \* \* \* /usr/libexec/tether-schedule on # tether-schedule' /etc/crontabs/root || fail "cron on line"
+ubus call luci.wifisetup set_schedule '{"enabled":true,"off":"23:00","on":"06:30","days":["mon","fri"]}' | jq -e '.result' >/dev/null || fail "set_schedule"
+grep -qx '0 23 \* \* 1,5 /usr/libexec/wifisetup-schedule off # wifisetup-schedule' /etc/crontabs/root || { cat /etc/crontabs/root; fail "cron off line"; }
+grep -qx '30 6 \* \* \* /usr/libexec/wifisetup-schedule on # wifisetup-schedule' /etc/crontabs/root || fail "cron on line"
 grep -q 'keep me' /etc/crontabs/root || fail "other cron lines lost"
-ubus call luci.tether set_schedule '{"enabled":false,"off":"23:00","on":"06:30","days":["mon"]}' >/dev/null || fail "disable schedule"
-grep -q tether-schedule /etc/crontabs/root && fail "cron lines left"
+ubus call luci.wifisetup set_schedule '{"enabled":false,"off":"23:00","on":"06:30","days":["mon"]}' >/dev/null || fail "disable schedule"
+grep -q wifisetup-schedule /etc/crontabs/root && fail "cron lines left"
 grep -q 'keep me' /etc/crontabs/root || fail "other cron lines lost on disable"
 
 echo "== qr code"
-ubus call luci.tether qrcode '{"net":"guest"}' | jq -e '.text == "WIFI:T:WPA;S:CI Guest;P:welcome123;;"' >/dev/null || fail "qr text"
+ubus call luci.wifisetup qrcode '{"net":"guest"}' | jq -e '.text == "WIFI:T:WPA;S:CI Guest;P:welcome123;;"' >/dev/null || fail "qr text"
 if [ -x /usr/bin/qrencode ]; then
-	ubus call luci.tether qrcode '{"net":"main"}' | jq -e '.svg | startswith("<?xml")' >/dev/null || fail "qr svg"
+	ubus call luci.wifisetup qrcode '{"net":"main"}' | jq -e '.svg | startswith("<?xml")' >/dev/null || fail "qr svg"
 fi
 
 echo "== guest off"
-ubus call luci.tether set_network '{"net":"guest","enabled":false}' | jq -e '.result' >/dev/null || fail "guest off"
-[ "$(uci -q get wireless.tether_guest_radio0.disabled)" = 1 ] || fail "guest not disabled"
+ubus call luci.wifisetup set_network '{"net":"guest","enabled":false}' | jq -e '.result' >/dev/null || fail "guest off"
+[ "$(uci -q get wireless.wifisetup_guest_radio0.disabled)" = 1 ] || fail "guest not disabled"
+
+echo "== tether: status"
+ubus list luci.tether >/dev/null 2>&1 || fail "rpcd did not register luci.tether"
+ubus call luci.tether status | jq -e '.active == false and .usb.supported and .usb.netdev == "eth9" and .usb.carrier and .usb.iphone.name == "iPhone" and (.main | map(.interface) == ["wan","wan6"])' >/dev/null || fail "tether status"
+
+echo "== tether: Wi-Fi hotspot"
+ubus call luci.tether scan | jq -e '.results[0].ssid == "CI iPhone" and .results[0].encryption == "sae-mixed" and .results[0].iphone' >/dev/null || fail "scan"
+ubus call luci.tether set_wifi '{"ssid":"CI iPhone","key":"hotspot-pass","encryption":"sae-mixed","radio":"radio0"}' | jq -e '.result' >/dev/null || fail "set_wifi"
+[ "$(uci -q get wireless.tether_sta.mode)" = sta ] || fail "sta not written"
+[ "$(uci -q get wireless.tether_sta.disabled)" = 1 ] || fail "sta enabled while off"
+uci -q get firewall.@zone[1].network | grep -q tether_wifi || fail "tether_wifi not in wan zone"
+
+echo "== tether: start USB"
+ubus call luci.tether start '{"method":"usb"}' | jq -e '.method == "usb"' >/dev/null || fail "start usb"
+[ "$(uci -q get network.tether_usb.device)" = eth9 ] || fail "usb device"
+[ "$(uci -q get network.tether_usb.auto)" = 1 ] || fail "usb not on"
+[ "$(uci -q get network.wan.metric)" = 1000 ] || fail "wan not deprioritised"
+[ "$(uci -q get network.wan6.auto)" = 0 ] || fail "wan6 not paused"
+ubus call luci.tether check_main | jq -e '.interface == "wan"' >/dev/null || fail "check_main"
+
+echo "== tether: switch to Wi-Fi, then stop"
+ubus call luci.tether start '{"method":"wifi"}' | jq -e '.method == "wifi"' >/dev/null || fail "start wifi"
+uci -q get wireless.tether_sta.disabled >/dev/null && fail "sta not enabled"
+[ "$(uci -q get network.tether_usb.auto)" = 0 ] || fail "usb not off"
+[ "$(uci -q get network.wan.metric)" = 1000 ] || fail "penalty stacked"
+ubus call luci.tether stop | jq -e '.result' >/dev/null || fail "stop"
+uci -q get network.wan.metric >/dev/null && fail "wan metric not restored"
+uci -q get network.wan6.auto >/dev/null && fail "wan6 not restored"
+[ "$(uci -q get wireless.tether_sta.disabled)" = 1 ] || fail "sta still on"
+[ "$(uci -q get tether.settings.active)" = 0 ] || fail "still active"
 
 echo "All integration checks passed"

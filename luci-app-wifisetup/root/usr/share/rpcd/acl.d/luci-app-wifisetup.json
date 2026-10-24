@@ -1,0 +1,17 @@
+{
+	"luci-app-wifisetup": {
+		"description": "Grant access to the Wi-Fi setup page",
+		"read": {
+			"ubus": {
+				"luci.wifisetup": [ "get", "status", "qrcode" ]
+			},
+			"uci": [ "wifisetup" ]
+		},
+		"write": {
+			"ubus": {
+				"luci.wifisetup": [ "set_network", "set_radio", "set_region", "kick", "block", "unblock", "set_schedule" ]
+			},
+			"uci": [ "wifisetup" ]
+		}
+	}
+}

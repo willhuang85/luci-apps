@@ -16,17 +16,17 @@ define Package/luci-app-tether
   SECTION:=luci
   CATEGORY:=LuCI
   SUBMENU:=3. Applications
-  TITLE:=Tether: simple Wi-Fi setup (name, password, guest network, devices)
+  TITLE:=Tether: use an iPhone (USB or Wi-Fi hotspot) as backup internet
   DEPENDS:=+luci-base +rpcd +rpcd-mod-ucode +rpcd-mod-iwinfo +ucode-mod-fs +ucode-mod-uci \
-	+ucode-mod-ubus +qrencode
+	+ucode-mod-ubus +kmod-usb-net-ipheth +usbmuxd
   PKGARCH:=all
 endef
 
 define Package/luci-app-tether/description
-  A clean, consumer-router style LuCI page for Wi-Fi: set the network name,
-  password and security for all bands at once, run an isolated guest
-  network, pick channels, width and power per band, see and block connected
-  devices, share the network with a QR code and turn Wi-Fi off on a schedule.
+  A simple LuCI page to switch the router's internet to an iPhone when the
+  main connection is down: over a USB cable or by joining the iPhone's
+  Personal Hotspot over Wi-Fi. Shows whether the main internet works again
+  and switches back with one click.
 endef
 
 define Package/luci-app-tether/conffiles
@@ -44,7 +44,6 @@ define Package/luci-app-tether/install
 	$(CP) ./root/* $(1)/
 	find $(1) -type d -exec chmod 0755 {} +
 	find $(1) -type f -exec chmod 0644 {} +
-	chmod 0755 $(1)/etc/init.d/* $(1)/usr/libexec/*
 endef
 
 define Package/luci-app-tether/postinst
@@ -52,23 +51,21 @@ define Package/luci-app-tether/postinst
 [ -n "$${IPKG_INSTROOT}" ] || {
 	rm -f /tmp/luci-indexcache* /tmp/luci-modulecache/* 2>/dev/null
 	/etc/init.d/rpcd restart
-	# OpenWrt only enables new init scripts on fresh installs, not upgrades
-	/etc/init.d/tether enable
-	/etc/init.d/tether reload
-	echo "luci-app-tether: log out of LuCI and back in, then open Network -> Wi-Fi Setup"
+	/etc/init.d/usbmuxd enable 2>/dev/null
+	/etc/init.d/usbmuxd start 2>/dev/null
+	echo "luci-app-tether: log out of LuCI and back in, then open Network -> iPhone Tethering"
 }
 exit 0
 endef
 
-# Remove the schedule so Wi-Fi is never left switched off by cron.
+# Hand the internet back to the main connection before the app is gone.
 define Package/luci-app-tether/prerm
 #!/bin/sh
 [ -n "$${IPKG_INSTROOT}" ] || {
-	if [ -f /etc/crontabs/root ] && grep -q '# tether-schedule' /etc/crontabs/root; then
-		sed -i '/# tether-schedule/d' /etc/crontabs/root
-		/etc/init.d/cron restart >/dev/null 2>&1
+	if [ "$$(uci -q get tether.settings.active)" = 1 ]; then
+		ubus call luci.tether stop >/dev/null 2>&1
+		sleep 2
 	fi
-	/sbin/wifi up >/dev/null 2>&1
 }
 exit 0
 endef

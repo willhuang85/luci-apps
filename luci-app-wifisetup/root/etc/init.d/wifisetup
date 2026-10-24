@@ -1,0 +1,17 @@
+#!/bin/sh /etc/rc.common
+# SPDX-License-Identifier: Apache-2.0
+# Applies the Wi-Fi schedule of luci-app-wifisetup (cron entries) at boot.
+
+START=99
+
+start() {
+	/usr/libexec/wifisetup-schedule boot
+}
+
+stop() {
+	:
+}
+
+reload() {
+	/usr/libexec/wifisetup-schedule sync
+}

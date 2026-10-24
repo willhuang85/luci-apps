@@ -1,0 +1,13 @@
+{
+	"admin/network/wifisetup": {
+		"title": "Wi-Fi Setup",
+		"order": 14,
+		"action": {
+			"type": "view",
+			"path": "wifisetup/overview"
+		},
+		"depends": {
+			"acl": [ "luci-app-wifisetup" ]
+		}
+	}
+}

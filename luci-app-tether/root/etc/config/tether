@@ -1,18 +1,9 @@
 
 config settings 'settings'
-	# network and firewall zones the main / guest Wi-Fi attach to
-	option lan_network 'lan'
-	option lan_zone 'lan'
+	# managed by the web page: tethering on/off and the method (usb / wifi)
+	option active '0'
+	option method 'usb'
+	# firewall zone of the main internet; the iPhone is added to it
 	option wan_zone 'wan'
-
-config schedule 'schedule'
-	option enabled '0'
-	option off '23:00'
-	option on '07:00'
-	list days 'mon'
-	list days 'tue'
-	list days 'wed'
-	list days 'thu'
-	list days 'fri'
-	list days 'sat'
-	list days 'sun'
+	# address pinged to check whether the main internet works
+	option check_host '1.1.1.1'

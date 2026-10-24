@@ -1,9 +1,9 @@
 // Tests the schedule helpers (cron lines, off window).
-// Run: ucode -L 'luci-app-tether/root/usr/share/ucode/*.uc' tests/schedule_test.uc
+// Run: ucode -L 'luci-app-wifisetup/root/usr/share/ucode/*.uc' tests/schedule_test.uc
 
 'use strict';
 
-import * as sch from 'tether.schedule';
+import * as sch from 'wifisetup.schedule';
 
 let failures = 0, total = 0;
 
@@ -28,12 +28,12 @@ check('disabled needs no days', sch.validate({ enabled: false, off: '23:00', on:
 
 let s = { enabled: true, off: '23:00', on: '07:30', days: [ 'mon', 'tue', 'wed', 'thu', 'sun' ] };
 let lines = sch.cron_lines(s);
-check('cron off', lines[0] == '0 23 * * 0,1,2,3,4 /usr/libexec/tether-schedule off # tether-schedule');
-check('cron on', lines[1] == '30 7 * * * /usr/libexec/tether-schedule on # tether-schedule');
+check('cron off', lines[0] == '0 23 * * 0,1,2,3,4 /usr/libexec/wifisetup-schedule off # wifisetup-schedule');
+check('cron on', lines[1] == '30 7 * * * /usr/libexec/wifisetup-schedule on # wifisetup-schedule');
 check('cron every day', index(sch.cron_lines({ ...s, days: sch.DAYS })[0], ' * * * /usr') > 0);
 check('cron disabled', length(sch.cron_lines({ ...s, enabled: false })) == 0);
 
-const tab = '# mine\n0 3 * * * /bin/backup\n1 2 * * * /old # tether-schedule\n';
+const tab = '# mine\n0 3 * * * /bin/backup\n1 2 * * * /old # wifisetup-schedule\n';
 check('merge keeps others', sch.merge_crontab(tab, lines) == '# mine\n0 3 * * * /bin/backup\n' + join('\n', lines) + '\n');
 check('merge removes', sch.merge_crontab(tab, []) == '# mine\n0 3 * * * /bin/backup\n');
 check('merge empty', sch.merge_crontab(null, []) == '');

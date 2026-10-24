@@ -1,0 +1,1056 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// rpcd backend for luci-app-wifisetup.
+//
+// Presents the router's Wi-Fi the way consumer routers do: one "main"
+// network and one optional "guest" network, each broadcast on every band
+// (radio), plus per-band channel / width / power settings.
+//
+//  - main network: the first access point on the LAN network of each radio
+//    (e.g. OpenWrt's "default_radio0"); radios without one get a
+//    "wifisetup_main_<radio>" section
+//  - guest network: "wifisetup_guest_<radio>" access points on the isolated
+//    "guestwifi" network, which gets its own bridge, subnet, DHCP pool and
+//    firewall zone (internet only, no access to the LAN or the router)
+//  - blocked devices: a MAC deny list on all of these access points
+//  - schedule: cron entries written by /usr/libexec/wifisetup-schedule
+//
+// Changes are committed right away and applied a moment after the reply has
+// been sent, so the browser gets its answer before Wi-Fi restarts.
+
+'use strict';
+
+import { access, popen, readfile } from 'fs';
+import { connect } from 'ubus';
+import { cursor } from 'uci';
+import * as schedule from 'wifisetup.schedule';
+
+const MAIN_PREFIX = 'wifisetup_main_';
+const GUEST_PREFIX = 'wifisetup_guest_';
+const GUEST_NET = 'guestwifi';
+const GUEST_BRIDGE = 'br-guestwifi';
+const GUEST_DEV_SID = 'wifisetup_guest_dev';
+const GUEST_ZONE_SID = 'wifisetup_guest_zone';
+const GUEST_FWD_SID = 'wifisetup_guest_fwd';
+const GUEST_RULE_SIDS = { dhcp: 'wifisetup_guest_dhcp', dns: 'wifisetup_guest_dns' };
+
+// uci encryption value -> needs a password, accepts a 64 digit hex key
+const ENCRYPTIONS = {
+	'sae-mixed': { key: true },
+	'sae': { key: true },
+	'psk2': { key: true, hex: true },
+	'psk-mixed': { key: true, hex: true },
+	'owe': { key: false },
+	'none': { key: false }
+};
+
+const BAND_LABELS = { '2g': '2.4 GHz', '5g': '5 GHz', '6g': '6 GHz', '60g': '60 GHz' };
+const STANDARDS = [ 'EHT', 'HE', 'VHT', 'HT' ];
+
+// Keep the connection outside of the handlers to prevent premature GC.
+const ubus = connect();
+
+function shell_quote(s) {
+	return "'" + replace(`${s}`, "'", "'\\''") + "'";
+}
+
+function as_list(v) {
+	if (v == null)
+		return [];
+
+	if (type(v) == 'array')
+		return v;
+
+	return filter(split(`${v}`, /\s+/), length);
+}
+
+function settings(uci) {
+	return {
+		lan_network: uci.get('wifisetup', 'settings', 'lan_network') || 'lan',
+		lan_zone: uci.get('wifisetup', 'settings', 'lan_zone') || 'lan',
+		wan_zone: uci.get('wifisetup', 'settings', 'wan_zone') || 'wan'
+	};
+}
+
+function radio_band(s) {
+	if (BAND_LABELS[s.band])
+		return s.band;
+
+	// pre-21.02 configs only carry hwmode
+	return (s.hwmode == '11a') ? '5g' : '2g';
+}
+
+// Normalises "psk2+ccmp" and friends to the values offered in the UI.
+function base_encryption(e) {
+	const b = split(e ?? 'none', '+')[0];
+
+	if (b == 'psk')
+		return 'psk-mixed';
+
+	if (b == 'sae-mixed' || b == 'sae' || b == 'psk2' || b == 'psk-mixed' || b == 'owe')
+		return b;
+
+	return 'none';
+}
+
+// 6 GHz only allows WPA3 and Enhanced Open.
+function band_encryption(enc, band) {
+	if (band != '6g')
+		return enc;
+
+	return ENCRYPTIONS[enc].key ? 'sae' : 'owe';
+}
+
+function radios(uci) {
+	let list = [];
+
+	uci.foreach('wireless', 'wifi-device', (s) => {
+		push(list, s);
+	});
+
+	return list;
+}
+
+function is_radio(uci, id) {
+	return type(id) == 'string' && length(id) > 0 && uci.get('wireless', id) == 'wifi-device';
+}
+
+// Finds the main and guest access point of every radio.
+function layout(uci) {
+	const lan = settings(uci).lan_network;
+	let main = {}, guest = {};
+
+	uci.foreach('wireless', 'wifi-iface', (s) => {
+		const dev = s.device;
+
+		if (!dev || (s.mode ?? 'ap') != 'ap')
+			return;
+
+		const nets = as_list(s.network);
+
+		if (index(s['.name'], GUEST_PREFIX) == 0 || (GUEST_NET in nets)) {
+			guest[dev] ??= s;
+		}
+		else if ((lan in nets) && !main[dev]) {
+			main[dev] = s;
+		}
+	});
+
+	return { main, guest };
+}
+
+// true if every byte of s is within lo..hi
+function bytes_in(s, lo, hi) {
+	for (let i = 0; i < length(s); i++) {
+		const c = ord(s, i);
+
+		if (c < lo || c > hi)
+			return false;
+	}
+
+	return true;
+}
+
+function check_ssid(ssid) {
+	if (type(ssid) != 'string' || !length(ssid))
+		return 'Enter a network name';
+
+	if (length(ssid) > 32)
+		return 'The network name can be at most 32 bytes long';
+
+	if (!bytes_in(ssid, 0x20, 0xff) || index(ssid, '\x7f') >= 0)
+		return 'The network name contains invalid characters';
+
+	return null;
+}
+
+function check_key(key, enc) {
+	if (!ENCRYPTIONS[enc].key)
+		return null;
+
+	if (ENCRYPTIONS[enc].hex && match(key ?? '', /^[0-9a-fA-F]{64}$/))
+		return null;
+
+	if (type(key) != 'string' || length(key) < 8)
+		return 'The password must be at least 8 characters long';
+
+	if (length(key) > 63)
+		return 'The password can be at most 63 characters long';
+
+	if (!bytes_in(key, 0x20, 0x7e))
+		return 'The password can only contain letters, digits, spaces and the usual symbols (no accents or emoji)';
+
+	return null;
+}
+
+function norm_mac(mac) {
+	const m = uc(`${mac ?? ''}`);
+
+	return match(m, /^([0-9A-F]{2}:){5}[0-9A-F]{2}$/) ? m : null;
+}
+
+function ip2int(ip) {
+	const p = match(ip ?? '', /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+
+	if (!p)
+		return null;
+
+	return (+p[1] << 24) | (+p[2] << 16) | (+p[3] << 8) | +p[4];
+}
+
+function prefix_mask(len) {
+	return (len <= 0) ? 0 : ((0xffffffff << (32 - len)) & 0xffffffff);
+}
+
+function netmask_len(mask) {
+	let n = ip2int(mask), len = 0;
+
+	for (let i = 31; i >= 0 && n != null && (n & (1 << i)); i--)
+		len++;
+
+	return len || 24;
+}
+
+// IPv4 networks already configured on the router, as [ net, mask ] pairs
+function used_networks(uci) {
+	let nets = [];
+
+	uci.foreach('network', 'interface', (s) => {
+		for (let a in as_list(s.ipaddr)) {
+			const p = split(a, '/');
+			const ip = ip2int(p[0]);
+
+			if (ip == null)
+				continue;
+
+			const mask = prefix_mask(p[1] != null ? +p[1] : netmask_len(s.netmask ?? '255.255.255.0'));
+			push(nets, [ ip & mask, mask ]);
+		}
+	});
+
+	return nets;
+}
+
+// First free 192.168.x.0/24 for the guest network.
+function pick_guest_subnet(uci) {
+	const used = used_networks(uci);
+	const mask = prefix_mask(24);
+
+	for (let x = 3; x < 255; x++) {
+		const net = ip2int(`192.168.${x}.0`);
+		let free = true;
+
+		for (let u in used) {
+			const m = mask & u[1];
+
+			if ((net & m) == (u[0] & m)) {
+				free = false;
+				break;
+			}
+		}
+
+		if (free)
+			return `192.168.${x}.1`;
+	}
+
+	return '10.254.254.1';
+}
+
+function guest_network_exists(uci) {
+	return uci.get('network', GUEST_NET) == 'interface';
+}
+
+// The guest network: own bridge and subnet, DHCP, and a firewall zone that
+// may only reach the internet plus DHCP and DNS on the router.
+function ensure_guest_network(uci) {
+	const s = settings(uci);
+
+	if (uci.get('network', GUEST_DEV_SID) == null) {
+		uci.set('network', GUEST_DEV_SID, 'device');
+		uci.set('network', GUEST_DEV_SID, 'name', GUEST_BRIDGE);
+		uci.set('network', GUEST_DEV_SID, 'type', 'bridge');
+		uci.set('network', GUEST_DEV_SID, 'bridge_empty', '1');
+	}
+
+	if (!guest_network_exists(uci)) {
+		uci.set('network', GUEST_NET, 'interface');
+		uci.set('network', GUEST_NET, 'proto', 'static');
+		uci.set('network', GUEST_NET, 'device', GUEST_BRIDGE);
+		uci.set('network', GUEST_NET, 'ipaddr', pick_guest_subnet(uci));
+		uci.set('network', GUEST_NET, 'netmask', '255.255.255.0');
+	}
+
+	if (uci.get('dhcp', GUEST_NET) == null) {
+		uci.set('dhcp', GUEST_NET, 'dhcp');
+		uci.set('dhcp', GUEST_NET, 'interface', GUEST_NET);
+		uci.set('dhcp', GUEST_NET, 'start', '100');
+		uci.set('dhcp', GUEST_NET, 'limit', '150');
+		uci.set('dhcp', GUEST_NET, 'leasetime', '1h');
+	}
+
+	if (uci.get('firewall', GUEST_ZONE_SID) == null) {
+		uci.set('firewall', GUEST_ZONE_SID, 'zone');
+		uci.set('firewall', GUEST_ZONE_SID, 'name', GUEST_NET);
+		uci.set('firewall', GUEST_ZONE_SID, 'network', [ GUEST_NET ]);
+		uci.set('firewall', GUEST_ZONE_SID, 'input', 'REJECT');
+		uci.set('firewall', GUEST_ZONE_SID, 'output', 'ACCEPT');
+		uci.set('firewall', GUEST_ZONE_SID, 'forward', 'REJECT');
+	}
+
+	if (uci.get('firewall', GUEST_FWD_SID) == null)
+		uci.set('firewall', GUEST_FWD_SID, 'forwarding');
+
+	uci.set('firewall', GUEST_FWD_SID, 'src', GUEST_NET);
+	uci.set('firewall', GUEST_FWD_SID, 'dest', s.wan_zone);
+
+	if (uci.get('firewall', GUEST_RULE_SIDS.dhcp) == null) {
+		uci.set('firewall', GUEST_RULE_SIDS.dhcp, 'rule');
+		uci.set('firewall', GUEST_RULE_SIDS.dhcp, 'name', 'Guest Wi-Fi DHCP');
+		uci.set('firewall', GUEST_RULE_SIDS.dhcp, 'src', GUEST_NET);
+		uci.set('firewall', GUEST_RULE_SIDS.dhcp, 'proto', 'udp');
+		uci.set('firewall', GUEST_RULE_SIDS.dhcp, 'dest_port', '67-68');
+		uci.set('firewall', GUEST_RULE_SIDS.dhcp, 'family', 'ipv4');
+		uci.set('firewall', GUEST_RULE_SIDS.dhcp, 'target', 'ACCEPT');
+	}
+
+	if (uci.get('firewall', GUEST_RULE_SIDS.dns) == null) {
+		uci.set('firewall', GUEST_RULE_SIDS.dns, 'rule');
+		uci.set('firewall', GUEST_RULE_SIDS.dns, 'name', 'Guest Wi-Fi DNS');
+		uci.set('firewall', GUEST_RULE_SIDS.dns, 'src', GUEST_NET);
+		uci.set('firewall', GUEST_RULE_SIDS.dns, 'proto', [ 'tcp', 'udp' ]);
+		uci.set('firewall', GUEST_RULE_SIDS.dns, 'dest_port', '53');
+		uci.set('firewall', GUEST_RULE_SIDS.dns, 'target', 'ACCEPT');
+	}
+}
+
+function blocked_list(uci) {
+	let list = [];
+
+	uci.foreach('wifisetup', 'block', (s) => {
+		const mac = norm_mac(s.mac);
+
+		if (mac)
+			push(list, { id: s['.name'], mac, name: s.name ?? '' });
+	});
+
+	return list;
+}
+
+// Puts the blocked devices on the deny list of every managed access point.
+// An existing allow list is left alone: it already keeps unknown devices out.
+function sync_macfilter(uci) {
+	const macs = map(blocked_list(uci), (b) => b.mac);
+	const l = layout(uci);
+
+	for (let s in [ ...values(l.main), ...values(l.guest) ]) {
+		const sid = s['.name'];
+
+		if (s.macfilter == 'allow')
+			continue;
+
+		if (length(macs)) {
+			uci.set('wireless', sid, 'macfilter', 'deny');
+			uci.set('wireless', sid, 'maclist', macs);
+		}
+		else if (s.macfilter == 'deny') {
+			uci.delete('wireless', sid, 'macfilter');
+			uci.delete('wireless', sid, 'maclist');
+		}
+	}
+}
+
+function set_security(uci, sid, enc, key, band) {
+	const e = band_encryption(enc, band);
+
+	if (base_encryption(uci.get('wireless', sid, 'encryption')) != e)
+		uci.delete('wireless', sid, 'ieee80211w');	// let the default match the new mode
+
+	uci.set('wireless', sid, 'encryption', e);
+
+	if (ENCRYPTIONS[e].key)
+		uci.set('wireless', sid, 'key', key);
+	else
+		uci.delete('wireless', sid, 'key');
+}
+
+function set_flag(uci, sid, opt, on) {
+	if (on)
+		uci.set('wireless', sid, opt, '1');
+	else
+		uci.delete('wireless', sid, opt);
+}
+
+// Commits and applies the changes shortly after the reply was sent.
+function apply(uci, packages) {
+	let cmds = [ 'sleep 1' ];
+
+	for (let pkg in packages)
+		uci.commit(pkg);
+
+	if ('wireless' in packages || 'network' in packages)
+		push(cmds, 'ubus call network reload');
+
+	if ('firewall' in packages)
+		push(cmds, '/etc/init.d/firewall reload');
+
+	if ('dhcp' in packages)
+		push(cmds, '/etc/init.d/dnsmasq reload');
+
+	system(`(${join('; ', cmds)}) >/dev/null 2>&1 &`);
+}
+
+function save_all(uci, packages) {
+	for (let pkg in packages)
+		uci.save(pkg);
+
+	apply(uci, packages);
+}
+
+function ensure_settings(uci) {
+	if (uci.get('wifisetup', 'settings') == null)
+		uci.set('wifisetup', 'settings', 'settings');
+}
+
+function iwinfo(method, device) {
+	return ubus.call('iwinfo', method, { device }) ?? {};
+}
+
+// Channel widths the radio supports, each with the newest standard that can
+// do it, e.g. [ { width: 20, htmode: 'HE20' }, { width: 80, htmode: 'HE80' } ].
+function width_options(htmodes, band, current) {
+	let best = {};
+
+	for (let m in htmodes ?? []) {
+		const p = match(m, /^(EHT|HE|VHT|HT)([0-9]+)$/);
+
+		if (!p)
+			continue;
+
+		const std = p[1], w = +p[2];
+
+		if (band == '2g' && (std == 'VHT' || w > 40))
+			continue;
+
+		if (band == '6g' && (std == 'HT' || std == 'VHT'))
+			continue;
+
+		if (best[w] == null || index(STANDARDS, std) < index(STANDARDS, best[w]))
+			best[w] = std;
+	}
+
+	let list = map(sort(map(keys(best), (k) => +k)), (w) => ({ width: w, htmode: best[w] + w }));
+
+	if (!length(list) && current) {
+		const p = match(current, /^([A-Z]+?)([0-9]+)/);
+
+		if (p)
+			push(list, { width: +p[2], htmode: p[1] + p[2] });
+	}
+
+	return list;
+}
+
+function radio_config(uci, s) {
+	const id = s['.name'];
+	const band = radio_band(s);
+	const info = iwinfo('info', id);
+	const ghz = { '2g': 2, '5g': 5, '6g': 6, '60g': 60 }[band];
+	const cur_w = match(s.htmode ?? '', /([0-9]+)/);
+
+	let channels = [];
+
+	for (let f in iwinfo('freqlist', id)?.results ?? [])
+		if ((f.band == null || f.band == ghz) && !f.restricted)
+			push(channels, {
+				channel: f.channel,
+				mhz: f.mhz,
+				dfs: ('RADAR' in (f.flags ?? [])) || (band == '5g' && f.channel >= 52 && f.channel <= 144)
+			});
+
+	let txpowers = [];
+
+	for (let t in iwinfo('txpowerlist', id)?.results ?? [])
+		push(txpowers, { dbm: t.dbm, mw: t.mw });
+
+	return {
+		id,
+		band,
+		label: BAND_LABELS[band],
+		enabled: s.disabled != '1',
+		hardware: info.hardware?.name ?? null,
+		channel: (s.channel == null || s.channel == 'auto') ? 'auto' : `${s.channel}`,
+		channels,
+		htmode: s.htmode ?? null,
+		width: cur_w ? +cur_w[1] : null,
+		widths: width_options(info.htmodes, band, s.htmode),
+		txpower: (s.txpower != null && match(s.txpower, /^[0-9]+$/)) ? +s.txpower : null,
+		txpowers,
+		country: s.country ?? null
+	};
+}
+
+function network_config(uci, ifaces, band_of) {
+	const list = sort(values(ifaces), (a, b) => a['.index'] - b['.index']);
+
+	if (!length(list))
+		return null;
+
+	// prefer a non-6 GHz interface, its security setting is the one the user picked
+	const first = filter(list, (s) => band_of[s.device] != '6g')[0] ?? list[0];
+	let ssids = {}, enabled = {};
+
+	for (let s in list) {
+		ssids[s.device] = s.ssid ?? '';
+		enabled[s.device] = s.disabled != '1';
+	}
+
+	let enc = base_encryption(first.encryption);
+
+	if (band_of[first.device] == '6g')
+		enc = (enc == 'owe') ? 'none' : 'sae-mixed';
+
+	return {
+		ssid: first.ssid ?? '',
+		key: ENCRYPTIONS[enc].key ? (first.key ?? '') : '',
+		encryption: enc,
+		hidden: first.hidden == '1',
+		isolate: first.isolate == '1',
+		same_name: length(uniq(values(ssids))) <= 1,
+		ssids,
+		bands: enabled
+	};
+}
+
+function hostapd_features() {
+	if (!access('/usr/sbin/hostapd'))
+		return { sae: true, owe: true, known: false };
+
+	return {
+		sae: system('/usr/sbin/hostapd -vsae >/dev/null 2>&1') == 0,
+		owe: system('/usr/sbin/hostapd -vowe >/dev/null 2>&1') == 0,
+		known: true
+	};
+}
+
+function schedule_config(uci) {
+	return schedule.load(uci);
+}
+
+function leases() {
+	let byMac = {};
+
+	for (let line in split(readfile('/tmp/dhcp.leases') ?? '', '\n')) {
+		const f = split(line, ' ');
+
+		if (length(f) >= 4)
+			byMac[uc(f[1])] = { ip: f[2], name: (f[3] != '*') ? f[3] : null };
+	}
+
+	return byMac;
+}
+
+// Access points that are up, keyed by uci section: { ifname, radio }
+function live_ifaces() {
+	let res = {};
+	const st = ubus.call('network.wireless', 'status', {}) ?? {};
+
+	for (let radio, r in st)
+		for (let i in r.interfaces ?? [])
+			if (i.ifname)
+				res[i.section] = { ifname: i.ifname, radio, up: !!r.up };
+
+	return { radios: st, ifaces: res };
+}
+
+function find_client(mac) {
+	const live = live_ifaces();
+
+	for (let sid, i in live.ifaces)
+		for (let c in iwinfo('assoclist', i.ifname)?.results ?? [])
+			if (uc(c.mac) == mac)
+				return i.ifname;
+
+	return null;
+}
+
+function kick(mac, ban_time) {
+	const ifname = find_client(mac);
+
+	if (!ifname)
+		return false;
+
+	ubus.call(`hostapd.${ifname}`, 'del_client', { addr: lc(mac), reason: 5, deauth: true, ban_time: ban_time ?? 0 });
+
+	return true;
+}
+
+function wifi_string(net) {
+	const esc = (s) => replace(s ?? '', /([\\;,:"])/g, '\\$1');
+	const t = ENCRYPTIONS[net.encryption].key ? 'WPA' : 'nopass';
+	let s = `WIFI:T:${t};S:${esc(net.ssid)};`;
+
+	if (t != 'nopass')
+		s += `P:${esc(net.key)};`;
+
+	if (net.hidden)
+		s += 'H:true;';
+
+	return s + ';';
+}
+
+const methods = {
+	/*
+	 * Everything the settings page needs: networks, radios with their
+	 * capabilities, blocked devices and the schedule.
+	 */
+	get: {
+		call: function() {
+			const uci = cursor();
+			const l = layout(uci);
+			let band_of = {}, list = [], country = null;
+
+			for (let s in radios(uci)) {
+				const r = radio_config(uci, s);
+
+				band_of[r.id] = r.band;
+				country ??= r.country;
+				push(list, r);
+			}
+
+			let countries = [];
+
+			if (length(list))
+				for (let c in iwinfo('countrylist', list[0].id)?.results ?? [])
+					push(countries, { code: c.iso3166, name: c.country });
+
+			const guest = network_config(uci, l.guest, band_of);
+
+			if (guest) {
+				guest.enabled = length(filter(values(guest.bands), (b) => b)) > 0;
+				guest.address = uci.get('network', GUEST_NET, 'ipaddr');
+			}
+
+			return {
+				radios: list,
+				main: network_config(uci, l.main, band_of),
+				guest: guest ?? { enabled: false },
+				country,
+				countries,
+				blocked: blocked_list(uci),
+				schedule: schedule_config(uci),
+				features: hostapd_features(),
+				qrcode: access('/usr/bin/qrencode') == true,
+				wan_zone: settings(uci).wan_zone
+			};
+		}
+	},
+
+	/*
+	 * Live state: which radios are up, the channel they really use and the
+	 * connected devices.
+	 */
+	status: {
+		call: function() {
+			const uci = cursor();
+			const l = layout(uci);
+			const live = live_ifaces();
+			const names = leases();
+			let blocked = {};
+
+			for (let b in blocked_list(uci))
+				blocked[b.mac] = true;
+
+			let net_of = {};
+
+			for (let dev, s in l.main)
+				net_of[s['.name']] = 'main';
+
+			for (let dev, s in l.guest)
+				net_of[s['.name']] = 'guest';
+
+			let radios_st = {}, clients = [];
+
+			for (let s in radios(uci)) {
+				const id = s['.name'];
+				const r = live.radios[id] ?? {};
+
+				radios_st[id] = { up: !!r.up, pending: !!r.pending, channel: null, frequency: null, txpower: null, width: null };
+			}
+
+			for (let sid, i in live.ifaces) {
+				const rs = radios_st[i.radio];
+
+				if (rs && rs.channel == null) {
+					const info = iwinfo('info', i.ifname);
+
+					rs.channel = info.channel ?? null;
+					rs.frequency = info.frequency ?? null;
+					rs.txpower = info.txpower ?? null;
+					rs.width = match(info.htmode ?? '', /([0-9]+)/)?.[1] ?? null;
+				}
+
+				for (let c in iwinfo('assoclist', i.ifname)?.results ?? []) {
+					const mac = uc(c.mac);
+					const lease = names[mac] ?? {};
+
+					push(clients, {
+						mac,
+						name: lease.name,
+						ip: lease.ip,
+						radio: i.radio,
+						network: net_of[sid] ?? 'other',
+						ssid: uci.get('wireless', sid, 'ssid'),
+						signal: c.signal,
+						connected_time: c.connected_time,
+						inactive: c.inactive,
+						rx_rate: c.rx?.rate,
+						tx_rate: c.tx?.rate,
+						rx_bytes: c.rx?.bytes,
+						tx_bytes: c.tx?.bytes,
+						blocked: !!blocked[mac]
+					});
+				}
+			}
+
+			return { radios: radios_st, clients };
+		}
+	},
+
+	/*
+	 * Saves the main or guest network: name(s), password, security, hidden.
+	 * For the guest network also on/off, the bands it is on and whether
+	 * guests can see each other.
+	 */
+	set_network: {
+		args: {
+			net: '', ssid: '', key: '', encryption: '', hidden: false, same_name: true, ssids: {},
+			enabled: true, isolate: true, bands: []
+		},
+		call: function(req) {
+			const a = req.args;
+			const uci = cursor();
+			const l = layout(uci);
+			const list = radios(uci);
+			let err;
+
+			if (a.net != 'main' && a.net != 'guest')
+				return { error: 'Unknown network' };
+
+			if (!length(list))
+				return { error: 'This router has no Wi-Fi radios' };
+
+			if (a.net == 'guest' && a.enabled === false) {
+				for (let dev, s in l.guest)
+					uci.set('wireless', s['.name'], 'disabled', '1');
+
+				save_all(uci, [ 'wireless' ]);
+				return { result: true };
+			}
+
+			if (!ENCRYPTIONS[a.encryption])
+				return { error: 'Unknown security mode' };
+
+			if ((err = check_ssid(a.ssid)) || (err = check_key(a.key, a.encryption)))
+				return { error: err };
+
+			if (a.net == 'main') {
+				const split_names = a.same_name === false;
+
+				for (let s in list) {
+					const ssid = (split_names && a.ssids?.[s['.name']]) ? a.ssids[s['.name']] : a.ssid;
+
+					if ((err = check_ssid(ssid)))
+						return { error: err };
+				}
+
+				for (let s in list) {
+					const dev = s['.name'];
+					let sid = l.main[dev]?.['.name'];
+
+					if (!sid) {
+						sid = MAIN_PREFIX + dev;
+						uci.set('wireless', sid, 'wifi-iface');
+						uci.set('wireless', sid, 'device', dev);
+						uci.set('wireless', sid, 'mode', 'ap');
+						uci.set('wireless', sid, 'network', settings(uci).lan_network);
+					}
+
+					uci.set('wireless', sid, 'ssid', (split_names && a.ssids?.[dev]) ? a.ssids[dev] : a.ssid);
+					set_security(uci, sid, a.encryption, a.key, radio_band(s));
+					set_flag(uci, sid, 'hidden', a.hidden);
+					uci.delete('wireless', sid, 'disabled');
+				}
+
+				sync_macfilter(uci);
+				save_all(uci, [ 'wireless' ]);
+
+				return { result: true };
+			}
+
+			const bands = length(a.bands ?? []) ? a.bands : map(list, (s) => s['.name']);
+			let packages = [ 'wireless' ];
+
+			for (let b in bands)
+				if (!is_radio(uci, b))
+					return { error: 'Unknown band' };
+
+			if (!guest_network_exists(uci) || uci.get('firewall', GUEST_ZONE_SID) == null)
+				push(packages, 'network', 'dhcp', 'firewall');
+
+			ensure_guest_network(uci);
+
+			for (let s in list) {
+				const dev = s['.name'];
+				let sid = l.guest[dev]?.['.name'];
+
+				if (!sid) {
+					sid = GUEST_PREFIX + dev;
+					uci.set('wireless', sid, 'wifi-iface');
+					uci.set('wireless', sid, 'device', dev);
+					uci.set('wireless', sid, 'mode', 'ap');
+					uci.set('wireless', sid, 'network', GUEST_NET);
+				}
+
+				uci.set('wireless', sid, 'ssid', a.ssid);
+				set_security(uci, sid, a.encryption, a.key, radio_band(s));
+				set_flag(uci, sid, 'hidden', a.hidden);
+				set_flag(uci, sid, 'isolate', a.isolate !== false);
+				set_flag(uci, sid, 'disabled', !(dev in bands));
+			}
+
+			sync_macfilter(uci);
+			save_all(uci, packages);
+
+			return { result: true };
+		}
+	},
+
+	/*
+	 * Band settings: on/off, channel ('auto' or a number), channel width in
+	 * MHz and transmit power in dBm (0 = maximum).
+	 */
+	set_radio: {
+		args: { id: '', enabled: true, channel: '', width: 0, txpower: 0 },
+		call: function(req) {
+			const a = req.args;
+			const uci = cursor();
+
+			if (!is_radio(uci, a.id))
+				return { error: 'Unknown band' };
+
+			const s = uci.get_all('wireless', a.id);
+			const r = radio_config(uci, s);
+
+			if (a.enabled !== false) {
+				const l = layout(uci);
+				const main = l.main[a.id];
+
+				if (!main) {
+					const tmpl = values(l.main)[0];
+
+					if (!tmpl)
+						return { error: 'Set up your Wi-Fi name and password first' };
+
+					const sid = MAIN_PREFIX + a.id;
+					uci.set('wireless', sid, 'wifi-iface');
+
+					for (let k in [ 'mode', 'network', 'ssid', 'key', 'hidden', 'macfilter', 'maclist' ])
+						if (tmpl[k] != null)
+							uci.set('wireless', sid, k, tmpl[k]);
+
+					uci.set('wireless', sid, 'device', a.id);
+					uci.set('wireless', sid, 'encryption', band_encryption(base_encryption(tmpl.encryption), r.band));
+
+					if (!ENCRYPTIONS[band_encryption(base_encryption(tmpl.encryption), r.band)].key)
+						uci.delete('wireless', sid, 'key');
+				}
+				else {
+					uci.delete('wireless', main['.name'], 'disabled');
+				}
+
+				uci.delete('wireless', a.id, 'disabled');
+			}
+			else {
+				uci.set('wireless', a.id, 'disabled', '1');
+			}
+
+			if (a.channel != null && a.channel != '') {
+				if (a.channel == 'auto') {
+					uci.set('wireless', a.id, 'channel', 'auto');
+				}
+				else {
+					const ch = match(`${a.channel}`, /^[0-9]+$/) ? +a.channel : null;
+
+					if (ch == null || (length(r.channels) && !length(filter(r.channels, (c) => c.channel == ch))))
+						return { error: 'This channel is not available' };
+
+					uci.set('wireless', a.id, 'channel', `${ch}`);
+				}
+			}
+
+			if (a.width) {
+				const w = filter(r.widths, (o) => o.width == a.width)[0];
+
+				if (!w)
+					return { error: 'This channel width is not supported' };
+
+				uci.set('wireless', a.id, 'htmode', w.htmode);
+			}
+
+			if (a.txpower == null || a.txpower == 0)
+				uci.delete('wireless', a.id, 'txpower');
+			else if (a.txpower > 0 && a.txpower <= 40)
+				uci.set('wireless', a.id, 'txpower', `${a.txpower}`);
+			else
+				return { error: 'Invalid transmit power' };
+
+			save_all(uci, [ 'wireless' ]);
+
+			return { result: true };
+		}
+	},
+
+	// Country / region for all radios: decides the allowed channels and power.
+	set_region: {
+		args: { country: '' },
+		call: function(req) {
+			const uci = cursor();
+			const c = uc(req.args.country ?? '');
+
+			if (!match(c, /^[A-Z0-9]{2}$/))
+				return { error: 'Invalid country code' };
+
+			for (let s in radios(uci))
+				uci.set('wireless', s['.name'], 'country', c);
+
+			save_all(uci, [ 'wireless' ]);
+
+			return { result: true };
+		}
+	},
+
+	// Disconnects a device; it may reconnect right away unless blocked.
+	kick: {
+		args: { mac: '' },
+		call: function(req) {
+			const mac = norm_mac(req.args.mac);
+
+			if (!mac)
+				return { error: 'Invalid MAC address' };
+
+			if (!kick(mac, 0))
+				return { error: 'This device is not connected' };
+
+			return { result: true };
+		}
+	},
+
+	block: {
+		args: { mac: '', name: '' },
+		call: function(req) {
+			const uci = cursor();
+			const mac = norm_mac(req.args.mac);
+
+			if (!mac)
+				return { error: 'Invalid MAC address' };
+
+			if (!length(filter(blocked_list(uci), (b) => b.mac == mac))) {
+				const sid = uci.add('wifisetup', 'block');
+
+				uci.set('wifisetup', sid, 'mac', mac);
+
+				if (length(req.args.name ?? ''))
+					uci.set('wifisetup', sid, 'name', substr(req.args.name, 0, 64));
+			}
+
+			sync_macfilter(uci);
+			uci.save('wifisetup');
+			uci.save('wireless');
+
+			// the deny list only applies to new connections
+			kick(mac, 0);
+			apply(uci, [ 'wifisetup', 'wireless' ]);
+
+			return { result: true };
+		}
+	},
+
+	unblock: {
+		args: { mac: '' },
+		call: function(req) {
+			const uci = cursor();
+			const mac = norm_mac(req.args.mac);
+
+			if (!mac)
+				return { error: 'Invalid MAC address' };
+
+			for (let b in blocked_list(uci))
+				if (b.mac == mac)
+					uci.delete('wifisetup', b.id);
+
+			sync_macfilter(uci);
+			uci.save('wifisetup');
+			uci.save('wireless');
+			apply(uci, [ 'wifisetup', 'wireless' ]);
+
+			return { result: true };
+		}
+	},
+
+	/*
+	 * Turns Wi-Fi off between `off` and `on` (HH:MM) on the given days
+	 * (the day the off time falls on).
+	 */
+	set_schedule: {
+		args: { enabled: false, off: '', on: '', days: [] },
+		call: function(req) {
+			const uci = cursor();
+			const a = req.args;
+			const err = schedule.validate(a);
+
+			if (err)
+				return { error: err };
+
+			schedule.store(uci, a);
+			uci.save('wifisetup');
+			uci.commit('wifisetup');
+			system('/etc/init.d/wifisetup reload >/dev/null 2>&1');
+
+			return { result: true };
+		}
+	},
+
+	// QR code to join a network: an SVG image plus the plain credentials.
+	qrcode: {
+		args: { net: '' },
+		call: function(req) {
+			const uci = cursor();
+			const l = layout(uci);
+			let band_of = {};
+
+			for (let s in radios(uci))
+				band_of[s['.name']] = radio_band(s);
+
+			const net = network_config(uci, (req.args.net == 'guest') ? l.guest : l.main, band_of);
+
+			if (!net)
+				return { error: 'This network is not set up yet' };
+
+			const text = wifi_string(net);
+			let svg = null;
+
+			if (access('/usr/bin/qrencode')) {
+				const p = popen(`/usr/bin/qrencode -t SVG -m 2 -s 6 -o - ${shell_quote(text)} 2>/dev/null`, 'r');
+
+				if (p) {
+					svg = p.read('all');
+					p.close();
+				}
+			}
+
+			return { ssid: net.ssid, key: net.key, encryption: net.encryption, hidden: net.hidden, text, svg: length(svg) ? svg : null };
+		}
+	}
+};
+
+return { 'luci.wifisetup': methods };

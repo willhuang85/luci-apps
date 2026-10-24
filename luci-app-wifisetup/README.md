@@ -1,0 +1,94 @@
+# Wi-Fi Setup (luci-app-wifisetup)
+
+A clean, consumer-router style Wi-Fi page for OpenWrt's LuCI web interface. Everything most home routers offer, on one page:
+
+- **Network name and password** for all bands at once (or a different name per band), with a password generator and strength meter
+- **Security**: WPA2/WPA3 (recommended), WPA3, WPA2, WPA/WPA2, Enhanced Open (OWE) or Open; 6 GHz automatically uses WPA3 / OWE, as the standard requires
+- **Hidden network** option
+- **Guest network** in one click: its own name and password, its own address range, internet only (no access to your devices or the router), guests kept apart from each other, pick the bands it's on
+- **Bands** (2.4 / 5 / 6 GHz): on/off, channel (with DFS hints), channel width and transmit power, plus the country setting
+- **Connected devices**: name, IP, band, signal, speed and connection time; **disconnect** or **block** a device (and unblock it later)
+- **Share** a network with a **QR code** that phones can scan to join
+- **Schedule**: turn Wi-Fi off at night or during set hours, on chosen days
+- Works on desktop and phone, light and dark theme
+
+Menu: **Network → Wi-Fi Setup**. Installation: see the [main README](../README.md).
+
+<p align="center">
+  <img src="../docs/screenshots/wifisetup/overview.png" alt="Wi-Fi Setup page" width="720">
+</p>
+
+| Share with a QR code | Band settings | On a phone |
+|---|---|---|
+| <img src="../docs/screenshots/wifisetup/share.png" alt="QR code dialog" width="300"> | <img src="../docs/screenshots/wifisetup/band-settings.png" alt="Band settings dialog" width="300"> | <img src="../docs/screenshots/wifisetup/mobile.png" alt="Phone layout" width="180"> |
+
+<sub>Screenshots show sample data; colours and fonts follow your LuCI theme.</sub>
+
+## Using it
+
+1. Under **Wi-Fi network**, pick a name and a password (or press **Generate**) and **Save**.
+2. Under **Bands**, make sure the bands you want are switched on. A fresh OpenWrt install has Wi-Fi off; the page asks before broadcasting a network that has no password.
+3. Optional: switch on the **Guest network**, give it a name and password and press **Turn on guest network**.
+4. Use **Share** to show a QR code that phones and tablets can scan to join.
+
+Settings are applied right away. Devices on Wi-Fi drop off for a few seconds while the radios restart; if you changed the name or password, reconnect with the new one.
+
+### Guest network
+
+The guest network gets its own bridge `br-guestwifi`, interface `guestwifi` with the first free `192.168.x.1/24` (usually `192.168.3.1`), a DHCP pool, and a firewall zone `guestwifi` that may only forward to `wan` and may only use DHCP and DNS on the router. Guests can't reach your LAN, the router's web interface or SSH. With *Keep guests apart* (on by default) guest devices can't see each other either. The guest network is IPv4 only.
+
+Turning the guest network off disables its access points but keeps its settings, so turning it on again restores it.
+
+### Blocking devices
+
+A blocked device is disconnected and put on a deny list (`macfilter deny`) on all main and guest access points, so it can't join any of your Wi-Fi networks. Devices that use a random ("private") MAC address per network get a new address when they forget the network, so blocking is a convenience, not a security boundary: for that, change the password.
+
+If you configured an *allow list* on an access point yourself (under *Network → Wireless*), this app leaves that access point's list alone.
+
+### Schedule
+
+Wi-Fi switches off at the *off* time on the selected days and back on at the *on* time (an overnight period such as 23:00–07:00 ends the next morning). It uses the router's clock and time zone (*System → System*); wired devices are not affected. If the router boots during an off period, Wi-Fi is switched off again shortly after boot. Saving any Wi-Fi setting during an off period turns Wi-Fi back on until the next scheduled off time.
+
+## How it works
+
+The page talks to an rpcd plugin (ubus object `luci.wifisetup`) that edits the normal OpenWrt configuration, so everything stays visible and editable under *Network → Wireless* too.
+
+| What | Where |
+|---|---|
+| Main network | the first access point on the `lan` network of each radio (e.g. `wireless.default_radio0`); radios without one get `wireless.wifisetup_main_<radio>` |
+| Guest network | `wireless.wifisetup_guest_<radio>`, `network.guestwifi`, `network.wifisetup_guest_dev`, `dhcp.guestwifi`, `firewall.wifisetup_guest_*` |
+| Bands | `wireless.<radio>`: `disabled`, `channel`, `htmode`, `txpower`, `country` |
+| Blocked devices | `wifisetup.@block[]`, applied as `macfilter`/`maclist` on the access points above |
+| Schedule | `wifisetup.schedule`, applied as lines tagged `# wifisetup-schedule` in `/etc/crontabs/root` |
+
+Changes are committed immediately and applied one second after the router has answered (`ubus call network reload`, plus firewall/dnsmasq when the guest network is first created), so the browser gets its reply before Wi-Fi restarts. The page then waits for the router to answer again.
+
+The network names in `/etc/config/wifisetup` (`lan_network`, `lan_zone`, `wan_zone`) can be changed if yours differ from `lan`/`wan`.
+
+Code layout:
+
+```
+luci-app-wifisetup/
+├── Makefile                                          OpenWrt package definition
+├── htdocs/luci-static/resources/view/wifisetup/
+│   └── overview.js                                   the web UI
+└── root/
+    ├── etc/config/wifisetup                          settings, schedule, blocked devices
+    ├── etc/init.d/wifisetup                          applies the schedule at boot
+    └── usr/
+        ├── libexec/wifisetup-schedule                Wi-Fi off/on, writes the cron entries
+        └── share/
+            ├── luci/menu.d/luci-app-wifisetup.json   menu entry (Network → Wi-Fi Setup)
+            ├── rpcd/acl.d/luci-app-wifisetup.json    permissions
+            ├── rpcd/ucode/luci.wifisetup             backend (ubus object luci.wifisetup)
+            └── ucode/wifisetup/schedule.uc           schedule helpers
+```
+
+## Troubleshooting
+
+- **WPA3 options are greyed out** – the installed `wpad` variant has no SAE support. OpenWrt 25.12 ships `wpad-basic-mbedtls`, which has it; if you replaced it with a "mini" variant, install `wpad-basic-mbedtls` (or `wpad-mbedtls`) again.
+- **A band stays "Starting…"** – on DFS channels (5 GHz 52–144) the router must listen for radar for 1–10 minutes first. Also check the **Country**: channels and power not allowed in the selected country don't start. `logread -e hostapd` shows the details.
+- Uninstalling (`apk del luci-app-wifisetup`) keeps your Wi-Fi settings as they are; the schedule is removed so Wi-Fi is never left switched off.
+
+> Tip: do the first setup from a computer connected by **cable**. Changing the Wi-Fi name or password disconnects every Wi-Fi device, including the one you're using; the page waits and continues by itself once you reconnect, but a cable makes it painless.
+

@@ -1,7 +1,7 @@
 // Minimal in-memory stand-in for the ucode "uci" module, used by tests.
 'use strict';
 
-let store = global.__uci_store ??= { firewall: {}, network: {}, wireless: {}, dhcp: {}, tether: {} };
+let store = global.__uci_store ??= { firewall: {}, network: {}, wireless: {}, dhcp: {}, tether: {}, wifisetup: {} };
 let counter = 0;
 
 function section(pkg, sid) {
