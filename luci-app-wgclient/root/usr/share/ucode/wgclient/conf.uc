@@ -78,7 +78,7 @@ function parse_endpoint(value) {
  * regardless of metrics (same trick as OpenVPN's "def1"). Cryptokey routing
  * is unaffected by the split.
  */
-export function expand_default_routes(list) {
+function expand_default_routes(list) {
 	let out = [];
 
 	for (let ip in list) {
@@ -93,7 +93,7 @@ export function expand_default_routes(list) {
 	return out;
 }
 
-export function collapse_default_routes(list) {
+function collapse_default_routes(list) {
 	let out = [];
 	let v4 = ('0.0.0.0/1' in list) && ('128.0.0.0/1' in list);
 	let v6 = ('::/1' in list) && ('8000::/1' in list);
@@ -115,7 +115,7 @@ export function collapse_default_routes(list) {
 	return out;
 }
 
-export function is_full_tunnel(list) {
+function is_full_tunnel(list) {
 	list = collapse_default_routes(list ?? []);
 
 	return ('0.0.0.0/0' in list) || ('::/0' in list);
@@ -128,7 +128,7 @@ export function is_full_tunnel(list) {
  *   { error: "message" }
  * on failure.
  */
-export function parse(text) {
+function parse(text) {
 	if (type(text) != 'string' || !length(trim(text)))
 		return { error: 'The configuration is empty' };
 
@@ -304,10 +304,10 @@ export function parse(text) {
 	}
 
 	return { iface, peers, warnings };
-};
+}
 
 // Turns the structure returned by parse() back into wg-quick format.
-export function serialize(cfg) {
+function serialize(cfg) {
 	let out = [ '[Interface]', `PrivateKey = ${cfg.iface.private_key}` ];
 
 	if (length(cfg.iface.addresses))
@@ -343,4 +343,6 @@ export function serialize(cfg) {
 	}
 
 	return join('\n', out) + '\n';
-};
+}
+
+export { expand_default_routes, collapse_default_routes, is_full_tunnel, parse, serialize };

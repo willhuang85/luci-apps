@@ -126,7 +126,7 @@ luci-app-wgclient/
 
 The GitHub Actions workflow (`.github/workflows/build.yml`) runs on every push:
 
-1. **test** – builds `ucode` and runs the parser and backend tests, syntax-checks JS/JSON.
+1. **test** – builds ucode, rpcd and friends at the exact revisions of the OpenWrt release, loads the backend into a real rpcd, runs the parser and backend tests, syntax-checks JS/JSON.
 2. **build** – downloads the official OpenWrt 25.12.2 SDK, builds the package and uploads the `.apk` as an artifact. The package is architecture independent, so one build works on every router.
 3. **release** – on a `v*` tag (e.g. `git tag v1.0.0 && git push --tags`), attaches the `.apk` to a GitHub release.
 
@@ -140,11 +140,13 @@ cd /path/to/openwrt-sdk
 make defconfig && make package/luci-app-wgclient/compile V=s
 ```
 
-Run the tests (needs a [ucode](https://github.com/jow-/ucode) build):
+Run the tests (needs a [ucode](https://github.com/jow-/ucode) build, ideally the revision your OpenWrt release ships):
 
 ```sh
 UCODE_DIR=/path/to/ucode/build ./tests/run.sh
 ```
+
+`tests/integration.sh` builds libubox, ubus, uci, ucode and rpcd at the revisions used by the OpenWrt release and drives the real plugin over ubus. It installs into `/usr` and `/etc/config`, so only run it on a throwaway machine or container (CI does this on every push).
 
 ## License
 
