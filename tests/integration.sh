@@ -95,6 +95,13 @@ config global
 config global_forwarding
 	option udp_proxy_drop_ports '443,51820'
 
+config nodes 'realitynode'
+	option type 'Xray'
+	option protocol 'vless'
+	option remarks 'Reality'
+	option address 'reality.example.com'
+	option port '443'
+
 config nodes 'hy2node'
 	option type 'Xray'
 	option protocol 'hysteria'
@@ -128,7 +135,7 @@ uci set wgclient.passwall=passwall
 uci add_list wgclient.passwall.added_ip=1.2.3.4
 uci commit wgclient
 
-ubus call luci.wgclient status | jq -e '.passwall.installed and (.passwall.nodes[0].id == "hy2node") and .mode == "vpn"' >/dev/null || fail "passwall not detected"
+ubus call luci.wgclient status | jq -e '.passwall.installed and (.passwall.nodes[1].id == "hy2node") and .mode == "vpn"' >/dev/null || fail "passwall not detected"
 ubus call luci.wgclient set_mode '{"mode":"vpn","connect":false}' >/dev/null || fail "vpn mode while in vpn mode"
 ubus call luci.wgclient set_mode '{"mode":"bogus"}' | jq -e '.error' >/dev/null || fail "unknown mode accepted"
 ubus call luci.wgclient set_mode '{"mode":"vpn_passwall"}' | jq -e '.error' >/dev/null || fail "Passwall mode without a node must fail"
@@ -190,9 +197,11 @@ uci show network | grep -q "wgclient_orig_host" && fail "relay endpoint left in 
 [ "$(uci -q get network.wgclient_rule_vpn.lookup)" = 51820 ] || fail "normal VPN rule missing in off mode"
 ubus call luci.wgclient connect '{"id":"wgc_civpn"}' | jq -e '.error' >/dev/null || fail "connect allowed in off mode"
 ubus call luci.wgclient status | jq -e '.mode == "off" and .killswitch_paused and .last_mode == "passwall"' >/dev/null || fail "status off mode"
+[ "$(uci -q get passwall.@global[0].node)" = hy2node ] || fail "picked node not kept selected in off mode"
+ubus call luci.wgclient status | jq -e '.passwall.node == "hy2node"' >/dev/null || fail "status does not show the picked node in off mode"
 
 echo "== mode: back to VPN through Passwall"
-ubus call luci.wgclient set_mode '{"mode":"vpn_passwall","node":"hy2node"}' >/dev/null || fail "set vpn_passwall again"
+ubus call luci.wgclient set_mode '{"mode":"vpn_passwall"}' >/dev/null || fail "set vpn_passwall again (remembered node)"
 check_wrapped
 
 echo "== mode: VPN restores Passwall"

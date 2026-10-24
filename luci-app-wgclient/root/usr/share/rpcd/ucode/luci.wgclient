@@ -639,6 +639,13 @@ function pw_restart(start) {
 		: '/etc/init.d/passwall restart >/dev/null 2>&1 &');
 }
 
+// The node picked for the Passwall modes, if it still exists.
+function pw_chosen_node(uci) {
+	const n = uci.get('wgclient', 'settings', 'pw_node');
+
+	return (n && uci.get('passwall', n) == 'nodes') ? n : null;
+}
+
 function pw_baseline_saved(uci) {
 	return uci.get('wgclient', 'passwall', 'pw_saved') == '1' ||
 		uci.get('wgclient', 'passwall', 'pw_enabled') != null;	// saved by 1.0.0-r5/r6
@@ -696,6 +703,11 @@ function pw_apply_mode(uci, mode, node) {
 			pw_save_baseline(uci, g, fw);
 			pw_restore_baseline(uci, g, fw);
 			uci.set('passwall', g, 'enabled', '0');
+
+			// keep the picked node selected, so Passwall's page and the
+			// app still show it while off
+			if (pw_chosen_node(uci))
+				uci.set('passwall', g, 'node', pw_chosen_node(uci));
 		}
 	}
 	else if (mode != 'vpn') {
@@ -706,10 +718,15 @@ function pw_apply_mode(uci, mode, node) {
 			return { error: 'Passwall\'s configuration has no global section' };
 
 		if (!node)
-			node = uci.get('passwall', g, 'node');
+			node = pw_chosen_node(uci) ?? uci.get('passwall', g, 'node');
 
 		if (!node || uci.get('passwall', node) != 'nodes')
 			return { error: 'Choose a Passwall node first' };
+
+		if (uci.get('wgclient', 'settings') == null)
+			uci.set('wgclient', 'settings', 'settings');
+
+		uci.set('wgclient', 'settings', 'pw_node', node);
 
 		pw_save_baseline(uci, g, fw);
 		pw_restore_baseline(uci, g, fw);
@@ -850,7 +867,8 @@ const methods = {
 					installed: pw_installed(uci),
 					enabled: pw_on,
 					running: pw_installed(uci) ? pw_running() : false,
-					node: pw_installed(uci) ? uci.get('passwall', first_section(uci, 'passwall', 'global') ?? '', 'node') : null,
+					// the node picked in the app, else Passwall's current one
+					node: pw_installed(uci) ? (pw_chosen_node(uci) ?? uci.get('passwall', first_section(uci, 'passwall', 'global') ?? '', 'node')) : null,
 					nodes: pw_installed(uci) ? pw_nodes(uci) : []
 				},
 				profiles
