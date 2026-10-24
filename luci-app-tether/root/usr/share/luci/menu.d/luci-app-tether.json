@@ -1,0 +1,13 @@
+{
+	"admin/network/tether": {
+		"title": "Wi-Fi Setup",
+		"order": 14,
+		"action": {
+			"type": "view",
+			"path": "tether/overview"
+		},
+		"depends": {
+			"acl": [ "luci-app-tether" ]
+		}
+	}
+}

@@ -1,0 +1,220 @@
+name: Build package
+
+on:
+  push:
+    branches: [ '**' ]
+    tags: [ 'v*' ]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      openwrt_version:
+        description: OpenWrt release to build against
+        default: '25.12.2'
+
+env:
+  OPENWRT_VERSION: ${{ inputs.openwrt_version || '25.12.2' }}
+  # The package is architecture independent (PKGARCH:=all), so the SDK of any
+  # target produces a package that installs on every router.
+  SDK_TARGET: x86/64
+  PKG_NAME: luci-app-tether
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake libjson-c-dev jq qrencode
+
+      # Builds libubox, ubus, uci, ucode and rpcd at the exact revisions of
+      # the OpenWrt release and loads the plugin into a real rpcd, with fake
+      # iwinfo / network.wireless / hostapd objects standing in for Wi-Fi. Newer ucode
+      # accepts syntax that the router's ucode rejects, so testing against
+      # upstream HEAD is not enough.
+      - name: Integration test (real rpcd, release versions)
+        run: sudo -E ./tests/integration.sh
+
+      - name: Unit tests (release ucode)
+        run: ./tests/run.sh
+
+      - name: Syntax check JavaScript
+        run: |
+          for f in $(find luci-app-tether/htdocs -name '*.js'); do node --check "$f"; done
+          for f in $(find luci-app-tether/root -name '*.json'); do python3 -m json.tool "$f" >/dev/null; done
+
+  build:
+    needs: test
+    runs-on: ubuntu-24.04
+    outputs:
+      release: ${{ steps.rel.outputs.num }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # The package release number (the "-rN" in 1.1.0-rN) is the number of
+      # commits on the built branch, so every merge to main gets a higher
+      # one and nobody has to bump PKG_RELEASE by hand. It is passed to make
+      # on the command line, which overrides the Makefile's PKG_RELEASE.
+      - name: Determine release number
+        id: rel
+        run: |
+          num=$(git rev-list --count HEAD)
+          echo "num=$num" >> "$GITHUB_OUTPUT"
+          echo "REL_NUM=$num" >> "$GITHUB_ENV"
+          echo "Package release: r$num"
+
+      - name: Install SDK dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang flex bison g++ gawk gettext git \
+            libncurses-dev libssl-dev python3 python3-setuptools rsync swig unzip zlib1g-dev \
+            file wget zstd xz-utils
+
+      - name: Locate SDK
+        id: sdk
+        run: |
+          base="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/${SDK_TARGET}"
+          file=$(curl -fsSL "$base/sha256sums" | grep -oE 'openwrt-sdk-[^ ]+\.tar\.(zst|xz)' | head -n1)
+          [ -n "$file" ] || { echo "No SDK found for OpenWrt ${OPENWRT_VERSION}"; exit 1; }
+          echo "url=$base/$file" >> "$GITHUB_OUTPUT"
+          echo "file=$file" >> "$GITHUB_OUTPUT"
+          echo "Using $file"
+
+      - name: Cache SDK
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/${{ steps.sdk.outputs.file }}
+          key: ${{ steps.sdk.outputs.file }}
+
+      - name: Download and unpack SDK
+        run: |
+          archive="$RUNNER_TEMP/${{ steps.sdk.outputs.file }}"
+          [ -f "$archive" ] || wget -q -O "$archive" "${{ steps.sdk.outputs.url }}"
+          base="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/${SDK_TARGET}"
+          expected=$(curl -fsSL "$base/sha256sums" | grep " \*${{ steps.sdk.outputs.file }}\$" | cut -d' ' -f1)
+          echo "$expected  $archive" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/sdk"
+          tar -xf "$archive" -C "$RUNNER_TEMP/sdk" --strip-components=1
+
+      - name: Prepare SDK
+        working-directory: ${{ runner.temp }}/sdk
+        run: |
+          # No feeds on purpose: the package only ships scripts, and the
+          # dependencies (luci-base, rpcd-mod-iwinfo, qrencode, ...) are recorded from
+          # DEPENDS verbatim. Installing feeds would make the SDK compile all
+          # of them, including kernel modules, from source.
+          ln -s "$GITHUB_WORKSPACE/$PKG_NAME" "package/$PKG_NAME"
+          make defconfig
+
+      - name: Build package
+        working-directory: ${{ runner.temp }}/sdk
+        run: make "package/$PKG_NAME/compile" PKG_RELEASE="$REL_NUM" V=s -j1
+
+      - name: Collect package
+        id: pkg
+        working-directory: ${{ runner.temp }}/sdk
+        run: |
+          pkg=$(find bin/packages -name "${PKG_NAME}-*.apk" -o -name "${PKG_NAME}_*.ipk" | head -n1)
+          [ -n "$pkg" ] || { echo "Package not found"; find bin -type f; exit 1; }
+          case "$pkg" in
+            *"-r${REL_NUM}.apk") ;;
+            *) echo "Package $pkg does not carry release r${REL_NUM}"; exit 1 ;;
+          esac
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          cp "$pkg" "$GITHUB_WORKSPACE/dist/"
+          echo "name=$(basename "$pkg")" >> "$GITHUB_OUTPUT"
+          # show metadata (dependencies) in the build log
+          if [ -x staging_dir/host/bin/apk ]; then
+            staging_dir/host/bin/apk adbdump "$pkg" | tee meta.txt
+            grep -q 'rpcd-mod-iwinfo' meta.txt || { echo "Dependencies missing from package metadata"; exit 1; }
+            # rpcd ignores world-writable plugins, so never ship such files
+            if grep -nE 'mode: *0?[0-7]?[0-7][0-7][2367]([^0-7]|$)' meta.txt; then
+              echo "World-writable files in package"; exit 1
+            fi
+          fi
+
+      # OpenWrt never signs single .apk files, so a self-built package needs
+      # --allow-untrusted, which LuCI's "Upload package" cannot pass. Signing
+      # it with our own key (repository secret APK_SIGNING_KEY, an EC
+      # prime256v1 private key in PEM format) makes it trusted by any router
+      # that has the public key in /etc/apk/keys. A signed index
+      # (packages.adb) lets the router use the release as a package feed.
+      - name: Sign package and index
+        working-directory: ${{ runner.temp }}/sdk
+        env:
+          APK_SIGNING_KEY: ${{ secrets.APK_SIGNING_KEY }}
+        run: |
+          if [ -z "$APK_SIGNING_KEY" ]; then
+            echo "::warning::APK_SIGNING_KEY secret not set: the package is unsigned and needs 'apk add --allow-untrusted'"
+            exit 0
+          fi
+          APK="$PWD/staging_dir/host/bin/apk"
+          keys="$RUNNER_TEMP/keys"
+          mkdir -p "$keys"
+          (umask 077; printf '%s\n' "$APK_SIGNING_KEY" > "$RUNNER_TEMP/signing-key.pem")
+          openssl ec -in "$RUNNER_TEMP/signing-key.pem" -pubout -out "$keys/tether.pem"
+          cd "$GITHUB_WORKSPACE/dist"
+          "$APK" adbsign --allow-untrusted --sign-key "$RUNNER_TEMP/signing-key.pem" ./*.apk
+          "$APK" verify --keys-dir "$keys" ./*.apk
+          "$APK" mkndx --keys-dir "$keys" --sign-key "$RUNNER_TEMP/signing-key.pem" --output packages.adb ./*.apk
+          cp "$keys/tether.pem" .
+          rm -f "$RUNNER_TEMP/signing-key.pem"
+          ls -l
+          # the public key is not secret; print it so it can be copied
+          echo "Public key (tether.pem):"
+          cat tether.pem
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PKG_NAME }}-openwrt-${{ env.OPENWRT_VERSION }}
+          path: dist/*
+          if-no-files-found: error
+
+  # Publishes the package (and, when signed, packages.adb and the public
+  # key tether.pem) as a GitHub release: on every push to main,
+  # tagged v<PKG_VERSION>-r<commit count> (e.g. v1.1.0-r45), and on pushed
+  # v* tags. Re-running a build of the same commit replaces the files.
+  release:
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine version
+        id: version
+        env:
+          REL_NUM: ${{ needs.build.outputs.release }}
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then
+            tag="${GITHUB_REF_NAME}"
+          else
+            ver=$(sed -n 's/^PKG_VERSION:=//p' "$PKG_NAME/Makefile")
+            tag="v${ver}-r${REL_NUM}"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Releasing $tag"
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ env.PKG_NAME }} ${{ steps.version.outputs.tag }}
+          files: dist/*
+          make_latest: true
+          overwrite_files: true
+          generate_release_notes: true

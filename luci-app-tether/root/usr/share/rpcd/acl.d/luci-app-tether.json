@@ -1,0 +1,17 @@
+{
+	"luci-app-tether": {
+		"description": "Grant access to the Wi-Fi setup page",
+		"read": {
+			"ubus": {
+				"luci.tether": [ "get", "status", "qrcode" ]
+			},
+			"uci": [ "tether" ]
+		},
+		"write": {
+			"ubus": {
+				"luci.tether": [ "set_network", "set_radio", "set_region", "kick", "block", "unblock", "set_schedule" ]
+			},
+			"uci": [ "tether" ]
+		}
+	}
+}

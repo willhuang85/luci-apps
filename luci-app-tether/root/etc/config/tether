@@ -1,0 +1,18 @@
+
+config settings 'settings'
+	# network and firewall zones the main / guest Wi-Fi attach to
+	option lan_network 'lan'
+	option lan_zone 'lan'
+	option wan_zone 'wan'
+
+config schedule 'schedule'
+	option enabled '0'
+	option off '23:00'
+	option on '07:00'
+	list days 'mon'
+	list days 'tue'
+	list days 'wed'
+	list days 'thu'
+	list days 'fri'
+	list days 'sat'
+	list days 'sun'
