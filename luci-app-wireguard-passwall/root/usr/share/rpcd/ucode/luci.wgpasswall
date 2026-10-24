@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// rpcd backend for luci-app-wgclient.
+// rpcd backend for luci-app-wireguard-passwall.
 //
 // Every imported profile is a regular netifd "wireguard" interface named
 // "wgc_<slug>" in /etc/config/network, with its peers stored in
 // "wireguard_wgc_<slug>" sections. All profiles share the firewall zone
-// "wgclient". The kill switch is a firewall rule rejecting all forwarded
+// "wgpasswall". The kill switch is a firewall rule rejecting all forwarded
 // traffic from the LAN zone to the WAN zone, so LAN clients can only reach
 // the internet through the tunnel.
 //
@@ -23,7 +23,7 @@
 //    table too
 //
 // "VPN through Passwall" mode points each tunnel's endpoint at a local relay
-// (/usr/libexec/wgclient-relay) that forwards WireGuard's packets through
+// (/usr/libexec/wgpasswall-relay) that forwards WireGuard's packets through
 // Passwall's SOCKS port to the real server.
 
 'use strict';
@@ -31,16 +31,16 @@
 import { access, popen, readfile, writefile } from 'fs';
 import { connect } from 'ubus';
 import { cursor } from 'uci';
-import * as conf from 'wgclient.conf';
+import * as conf from 'wgpasswall.conf';
 
 const PREFIX = 'wgc_';
-const ZONE = 'wgclient';
-const ZONE_SID = 'wgclient_zone';
-const FWD_SID = 'wgclient_fwd';
-const KS_SID = 'wgclient_killswitch';
+const ZONE = 'wgpasswall';
+const ZONE_SID = 'wgpasswall_zone';
+const FWD_SID = 'wgpasswall_fwd';
+const KS_SID = 'wgpasswall_killswitch';
 const RULE_SIDS = {
-	rule: [ 'wgclient_rule_main', 'wgclient_rule_vpn' ],
-	rule6: [ 'wgclient_rule6_main', 'wgclient_rule6_vpn' ]
+	rule: [ 'wgpasswall_rule_main', 'wgpasswall_rule_vpn' ],
+	rule6: [ 'wgpasswall_rule6_main', 'wgpasswall_rule6_vpn' ]
 };
 
 // uci config of known transparent proxy apps
@@ -75,7 +75,7 @@ function as_list(v) {
 }
 
 function opt_uint(uci, name, def, min, max) {
-	const v = uci.get('wgclient', 'settings', name);
+	const v = uci.get('wgpasswall', 'settings', name);
 	const n = match(v ?? '', /^(0x[0-9a-fA-F]+|[0-9]+)$/) ? int(v, index(v, '0x') == 0 ? 16 : 10) : null;
 
 	return (n != null && n >= min && n <= max) ? n : def;
@@ -89,9 +89,9 @@ function settings(uci) {
 		table = 51820;
 
 	return {
-		killswitch: uci.get('wgclient', 'settings', 'killswitch') == '1',
-		lan_zone: uci.get('wgclient', 'settings', 'lan_zone') || 'lan',
-		wan_zone: uci.get('wgclient', 'settings', 'wan_zone') || 'wan',
+		killswitch: uci.get('wgpasswall', 'settings', 'killswitch') == '1',
+		lan_zone: uci.get('wgpasswall', 'settings', 'lan_zone') || 'lan',
+		wan_zone: uci.get('wgpasswall', 'settings', 'wan_zone') || 'wan',
 		route_table: table,
 		rule_priority: opt_uint(uci, 'rule_priority', 30100, 1000, 32000),
 		bypass_mask: opt_uint(uci, 'bypass_mask', 0xff, 1, 0xffffffff),
@@ -108,13 +108,13 @@ const MODES = { vpn: true, vpn_passwall: true, passwall: true, off: true };
 // vpn: WireGuard only; vpn_passwall: WireGuard wrapped by Passwall;
 // passwall: no WireGuard, Passwall proxies the LAN; off: neither
 function get_mode(uci) {
-	const m = uci.get('wgclient', 'settings', 'mode');
+	const m = uci.get('wgpasswall', 'settings', 'mode');
 
 	if (MODES[m])
 		return m;
 
 	// 1.0.0-r5/r6 had a single "Tunnel through Passwall" switch
-	return uci.get('wgclient', 'passwall', 'enabled') == '1' ? 'vpn_passwall' : 'vpn';
+	return uci.get('wgpasswall', 'passwall', 'enabled') == '1' ? 'vpn_passwall' : 'vpn';
 }
 
 // The kill switch is paused while nothing should use the VPN: in
@@ -204,10 +204,10 @@ function load_profile(uci, id) {
 		push(peers, {
 			public_key: s.public_key,
 			preshared_key: s.preshared_key,
-			// while relayed, the real server is kept in wgclient_orig_*
-			endpoint_host: s.wgclient_orig_host ?? s.endpoint_host,
-			endpoint_port: (s.wgclient_orig_host ? s.wgclient_orig_port : s.endpoint_port)
-				? +(s.wgclient_orig_host ? s.wgclient_orig_port : s.endpoint_port) : null,
+			// while relayed, the real server is kept in wgpasswall_orig_*
+			endpoint_host: s.wgpasswall_orig_host ?? s.endpoint_host,
+			endpoint_port: (s.wgpasswall_orig_host ? s.wgpasswall_orig_port : s.endpoint_port)
+				? +(s.wgpasswall_orig_host ? s.wgpasswall_orig_port : s.endpoint_port) : null,
 			allowed_ips: as_list(s.allowed_ips),
 			persistent_keepalive: s.persistent_keepalive ? +s.persistent_keepalive : null
 		});
@@ -307,7 +307,7 @@ function sync_routing(uci) {
 
 	for (let t in keys(RULE_SIDS))
 		uci.foreach('network', t, (r) => {
-			if (index(r['.name'], 'wgclient_rule') == 0)
+			if (index(r['.name'], 'wgpasswall_rule') == 0)
 				push(stale, r['.name']);
 		});
 
@@ -367,7 +367,7 @@ function sync_firewall(uci) {
 	// Rules are evaluated before zone forwardings, so this rejects LAN -> WAN
 	// traffic even though a lan -> wan forwarding exists.
 	uci.set('firewall', KS_SID, 'rule');
-	uci.set('firewall', KS_SID, 'name', 'WireGuard client kill switch');
+	uci.set('firewall', KS_SID, 'name', 'WireGuard + Passwall kill switch');
 	uci.set('firewall', KS_SID, 'src', s.lan_zone);
 	uci.set('firewall', KS_SID, 'dest', s.wan_zone);
 	uci.set('firewall', KS_SID, 'proto', 'all');
@@ -427,14 +427,15 @@ function runtime_status() {
 /*
  * "Tunnel through Passwall": configures Passwall so that WireGuard's own
  * packets are wrapped by the proxy, and undoes it again. Every Passwall
- * value that gets changed is saved in wgclient.passwall first (UNSET marks
+ * value that gets changed is saved in wgpasswall.passwall first (UNSET marks
  * an option that did not exist), list entries are tagged, so turning the
  * feature off restores the previous state exactly.
  */
 const PW_RULES = '/etc/passwall/rules';
+// markers written by luci-app-wgclient, the former name of this app
 const PW_TAG = '# luci-app-wgclient: VPN server, removed when leaving "VPN through Passwall" mode';
 const RELAY_BASE_PORT = 51821;
-const RELAY_STATUS = '/var/run/wgclient/relay-status.json';
+const RELAY_STATUS = '/var/run/wgpasswall/relay-status.json';
 const PW_DISABLED = '# disabled by luci-app-wgclient: ';
 const PW_MTU = 1280;
 const UNSET = '__unset__';
@@ -486,7 +487,7 @@ function write_lines(path, lines) {
 // interception). Returns true if a file changed.
 function pw_sync_rules(uci) {
 	const want = [];
-	const added = as_list(uci.get('wgclient', 'passwall', 'added_ip'));
+	const added = as_list(uci.get('wgpasswall', 'passwall', 'added_ip'));
 	let changed = false;
 
 	// proxy list: drop our old entries and tag, then add what is needed
@@ -507,9 +508,9 @@ function pw_sync_rules(uci) {
 		changed = true;
 
 	if (length(now_added))
-		uci.set('wgclient', 'passwall', 'added_ip', now_added);
+		uci.set('wgpasswall', 'passwall', 'added_ip', now_added);
 	else
-		uci.delete('wgclient', 'passwall', 'added_ip');
+		uci.delete('wgpasswall', 'passwall', 'added_ip');
 
 	// direct list wins over the proxy list, so comment our servers out there
 	let direct = [];
@@ -552,7 +553,7 @@ function relay_sync(uci) {
 
 		for (let s in peers) {
 			const sid = s['.name'];
-			const orig_host = s.wgclient_orig_host;
+			const orig_host = s.wgpasswall_orig_host;
 
 			if (relay) {
 				const host = orig_host ?? s.endpoint_host;
@@ -561,8 +562,8 @@ function relay_sync(uci) {
 					continue;
 
 				if (!orig_host) {
-					uci.set('network', sid, 'wgclient_orig_host', host);
-					uci.set('network', sid, 'wgclient_orig_port', s.endpoint_port || '51820');
+					uci.set('network', sid, 'wgpasswall_orig_host', host);
+					uci.set('network', sid, 'wgpasswall_orig_port', s.endpoint_port || '51820');
 				}
 
 				uci.set('network', sid, 'endpoint_host', '127.0.0.1');
@@ -570,9 +571,9 @@ function relay_sync(uci) {
 			}
 			else if (orig_host) {
 				uci.set('network', sid, 'endpoint_host', orig_host);
-				uci.set('network', sid, 'endpoint_port', s.wgclient_orig_port || '51820');
-				uci.delete('network', sid, 'wgclient_orig_host');
-				uci.delete('network', sid, 'wgclient_orig_port');
+				uci.set('network', sid, 'endpoint_port', s.wgpasswall_orig_port || '51820');
+				uci.delete('network', sid, 'wgpasswall_orig_host');
+				uci.delete('network', sid, 'wgpasswall_orig_port');
 			}
 		}
 	}
@@ -581,7 +582,7 @@ function relay_sync(uci) {
 }
 
 function relay_restart() {
-	system('/etc/init.d/wgclient restart >/dev/null 2>&1 &');
+	system('/etc/init.d/wgpasswall restart >/dev/null 2>&1 &');
 }
 
 // Relay state of the tunnel whose endpoint is 127.0.0.1:<port>: true if the
@@ -607,20 +608,20 @@ function relay_up(endpoint) {
 
 // Lowers a profile's MTU for the proxy overhead, remembering the original.
 function pw_apply_mtu(uci, id) {
-	if (uci.get('wgclient', id) == null)
-		uci.set('wgclient', id, 'profile');
+	if (uci.get('wgpasswall', id) == null)
+		uci.set('wgpasswall', id, 'profile');
 
 	const cur = uci.get('network', id, 'mtu');
 
-	if (uci.get('wgclient', id, 'mtu_backup') == null)
-		uci.set('wgclient', id, 'mtu_backup', cur ?? UNSET);
+	if (uci.get('wgpasswall', id, 'mtu_backup') == null)
+		uci.set('wgpasswall', id, 'mtu_backup', cur ?? UNSET);
 
 	if (cur == null || +cur > PW_MTU)
 		uci.set('network', id, 'mtu', `${PW_MTU}`);
 }
 
 function pw_restore_mtu(uci, id) {
-	const backup = uci.get('wgclient', id, 'mtu_backup');
+	const backup = uci.get('wgpasswall', id, 'mtu_backup');
 
 	if (backup == null)
 		return;
@@ -630,7 +631,7 @@ function pw_restore_mtu(uci, id) {
 	else
 		uci.set('network', id, 'mtu', backup);
 
-	uci.delete('wgclient', id, 'mtu_backup');
+	uci.delete('wgpasswall', id, 'mtu_backup');
 }
 
 function pw_restart(start) {
@@ -641,36 +642,36 @@ function pw_restart(start) {
 
 // The node picked for the Passwall modes, if it still exists.
 function pw_chosen_node(uci) {
-	const n = uci.get('wgclient', 'settings', 'pw_node');
+	const n = uci.get('wgpasswall', 'settings', 'pw_node');
 
 	return (n && uci.get('passwall', n) == 'nodes') ? n : null;
 }
 
 function pw_baseline_saved(uci) {
-	return uci.get('wgclient', 'passwall', 'pw_saved') == '1' ||
-		uci.get('wgclient', 'passwall', 'pw_enabled') != null;	// saved by 1.0.0-r5/r6
+	return uci.get('wgpasswall', 'passwall', 'pw_saved') == '1' ||
+		uci.get('wgpasswall', 'passwall', 'pw_enabled') != null;	// saved by 1.0.0-r5/r6
 }
 
 function pw_save_baseline(uci, g, fw) {
 	if (pw_baseline_saved(uci))
 		return;
 
-	uci.set('wgclient', 'passwall', 'passwall');
+	uci.set('wgpasswall', 'passwall', 'passwall');
 
 	for (let opt in PW_MANAGED)
-		uci.set('wgclient', 'passwall', `pw_${opt}`, uci.get('passwall', g, opt) ?? UNSET);
+		uci.set('wgpasswall', 'passwall', `pw_${opt}`, uci.get('passwall', g, opt) ?? UNSET);
 
-	uci.set('wgclient', 'passwall', 'pw_udp_proxy_drop_ports',
+	uci.set('wgpasswall', 'passwall', 'pw_udp_proxy_drop_ports',
 		(fw && uci.get('passwall', fw, 'udp_proxy_drop_ports')) ?? UNSET);
-	uci.set('wgclient', 'passwall', 'pw_service_enabled',
+	uci.set('wgpasswall', 'passwall', 'pw_service_enabled',
 		system('/etc/init.d/passwall enabled') == 0 ? '1' : '0');
-	uci.set('wgclient', 'passwall', 'pw_saved', '1');
+	uci.set('wgpasswall', 'passwall', 'pw_saved', '1');
 }
 
 // Writes the saved original values back into Passwall's config.
 function pw_restore_baseline(uci, g, fw) {
 	for (let opt in PW_MANAGED) {
-		const v = uci.get('wgclient', 'passwall', `pw_${opt}`);
+		const v = uci.get('wgpasswall', 'passwall', `pw_${opt}`);
 
 		if (v == UNSET)
 			uci.delete('passwall', g, opt);
@@ -678,7 +679,7 @@ function pw_restore_baseline(uci, g, fw) {
 			uci.set('passwall', g, opt, v);
 	}
 
-	const drop = uci.get('wgclient', 'passwall', 'pw_udp_proxy_drop_ports');
+	const drop = uci.get('wgpasswall', 'passwall', 'pw_udp_proxy_drop_ports');
 
 	if (fw && drop == UNSET)
 		uci.delete('passwall', fw, 'udp_proxy_drop_ports');
@@ -718,10 +719,10 @@ function pw_apply_mode(uci, mode, node) {
 		if (!node || uci.get('passwall', node) != 'nodes')
 			return { error: 'Choose a Passwall node first' };
 
-		if (uci.get('wgclient', 'settings') == null)
-			uci.set('wgclient', 'settings', 'settings');
+		if (uci.get('wgpasswall', 'settings') == null)
+			uci.set('wgpasswall', 'settings', 'settings');
 
-		uci.set('wgclient', 'settings', 'pw_node', node);
+		uci.set('wgpasswall', 'settings', 'pw_node', node);
 
 		pw_save_baseline(uci, g, fw);
 		pw_restore_baseline(uci, g, fw);
@@ -742,13 +743,13 @@ function pw_apply_mode(uci, mode, node) {
 	}
 	else if (installed && g && pw_baseline_saved(uci)) {
 		pw_restore_baseline(uci, g, fw);
-		service = uci.get('wgclient', 'passwall', 'pw_service_enabled');
+		service = uci.get('wgpasswall', 'passwall', 'pw_service_enabled');
 	}
 
-	if (uci.get('wgclient', 'settings') == null)
-		uci.set('wgclient', 'settings', 'settings');
+	if (uci.get('wgpasswall', 'settings') == null)
+		uci.set('wgpasswall', 'settings', 'settings');
 
-	uci.set('wgclient', 'settings', 'mode', mode);
+	uci.set('wgpasswall', 'settings', 'mode', mode);
 
 	// Off leaves the (disconnected) profiles alone; the next mode sets them up
 	for (let id in profile_ids(uci)) {
@@ -766,8 +767,8 @@ function pw_apply_mode(uci, mode, node) {
 		relay_sync(uci);
 
 	if (mode == 'vpn') {
-		uci.delete('wgclient', 'passwall');
-		uci.set('wgclient', 'passwall', 'passwall');
+		uci.delete('wgpasswall', 'passwall');
+		uci.set('wgpasswall', 'passwall', 'passwall');
 	}
 
 	return { service };
@@ -826,7 +827,7 @@ const methods = {
 
 				push(profiles, {
 					id,
-					label: uci.get('wgclient', id, 'label') || substr(id, length(PREFIX)),
+					label: uci.get('wgpasswall', id, 'label') || substr(id, length(PREFIX)),
 					auto: uci.get('network', id, 'auto') != '0',
 					up: !!ifc?.up,
 					pending: !!ifc?.pending,
@@ -857,7 +858,7 @@ const methods = {
 				killswitch_active: s.killswitch && uci.get('firewall', KS_SID, 'enabled') == '1',
 				proxy_apps: detect_proxy_apps(uci),
 				mode: get_mode(uci),
-				last_profile: uci.get('wgclient', 'settings', 'last_profile'),
+				last_profile: uci.get('wgpasswall', 'settings', 'last_profile'),
 				killswitch_paused: s.killswitch && killswitch_paused(uci),
 				passwall: {
 					installed: pw_installed(uci),
@@ -909,7 +910,7 @@ const methods = {
 				return { error: 'No such profile' };
 
 			const cfg = load_profile(uci, id);
-			const mtu_backup = uci.get('wgclient', id, 'mtu_backup');
+			const mtu_backup = uci.get('wgpasswall', id, 'mtu_backup');
 
 			// show the profile's own MTU, not the one lowered for Passwall
 			if (mtu_backup != null)
@@ -917,7 +918,7 @@ const methods = {
 
 			return {
 				id,
-				label: uci.get('wgclient', id, 'label') || substr(id, length(PREFIX)),
+				label: uci.get('wgpasswall', id, 'label') || substr(id, length(PREFIX)),
 				conf: conf.serialize(cfg)
 			};
 		}
@@ -964,20 +965,20 @@ const methods = {
 			write_profile(uci, id, r, connect_now);
 			sync_routing(uci);
 
-			if (uci.get('wgclient', 'settings') == null)
-				uci.set('wgclient', 'settings', 'settings');
+			if (uci.get('wgpasswall', 'settings') == null)
+				uci.set('wgpasswall', 'settings', 'settings');
 
-			uci.set('wgclient', id, 'profile');
-			uci.set('wgclient', id, 'label', label);
+			uci.set('wgpasswall', id, 'profile');
+			uci.set('wgpasswall', id, 'label', label);
 
 			if (req.args.connect)
-				uci.set('wgclient', 'settings', 'last_profile', id);
-			uci.delete('wgclient', id, 'mtu_backup');	// the new .conf defines the MTU
+				uci.set('wgpasswall', 'settings', 'last_profile', id);
+			uci.delete('wgpasswall', id, 'mtu_backup');	// the new .conf defines the MTU
 			pw_after_profile_change(uci);
-			uci.save('wgclient');
+			uci.save('wgpasswall');
 
 			sync_firewall(uci);
-			apply(uci, [ 'wgclient', 'network', 'firewall', 'passwall' ]);
+			apply(uci, [ 'wgpasswall', 'network', 'firewall', 'passwall' ]);
 
 			if (connect_now)
 				iface_up(id);
@@ -1006,12 +1007,12 @@ const methods = {
 
 			uci.delete('network', id);
 			sync_routing(uci);
-			uci.delete('wgclient', id);
+			uci.delete('wgpasswall', id);
 			pw_after_profile_change(uci);
-			uci.save('wgclient');
+			uci.save('wgpasswall');
 
 			sync_firewall(uci);
-			apply(uci, [ 'wgclient', 'network', 'firewall', 'passwall' ]);
+			apply(uci, [ 'wgpasswall', 'network', 'firewall', 'passwall' ]);
 
 			return { result: true };
 		}
@@ -1039,13 +1040,13 @@ const methods = {
 
 			uci.set('network', id, 'auto', '1');
 
-			if (uci.get('wgclient', 'settings') == null)
-				uci.set('wgclient', 'settings', 'settings');
+			if (uci.get('wgpasswall', 'settings') == null)
+				uci.set('wgpasswall', 'settings', 'settings');
 
-			uci.set('wgclient', 'settings', 'last_profile', id);
-			uci.save('wgclient');
+			uci.set('wgpasswall', 'settings', 'last_profile', id);
+			uci.save('wgpasswall');
 			sync_routing(uci);
-			apply(uci, [ 'network', 'wgclient' ]);
+			apply(uci, [ 'network', 'wgpasswall' ]);
 			iface_up(id);
 
 			return { result: true };
@@ -1088,7 +1089,7 @@ const methods = {
 			let id = null;
 
 			if ((mode == 'vpn' || mode == 'vpn_passwall') && req.args.connect !== false) {
-				for (let cand in [ req.args.id, uci.get('wgclient', 'settings', 'last_profile'), ...profile_ids(uci) ]) {
+				for (let cand in [ req.args.id, uci.get('wgpasswall', 'settings', 'last_profile'), ...profile_ids(uci) ]) {
 					if (cand && is_profile(uci, cand)) {
 						id = cand;
 						break;
@@ -1115,14 +1116,14 @@ const methods = {
 
 			if (id) {
 				uci.set('network', id, 'auto', '1');
-				uci.set('wgclient', 'settings', 'last_profile', id);
+				uci.set('wgpasswall', 'settings', 'last_profile', id);
 			}
 
 			sync_routing(uci);
 			sync_firewall(uci);
-			uci.save('wgclient');
+			uci.save('wgpasswall');
 			uci.save('passwall');
-			apply(uci, [ 'wgclient', 'passwall', 'network', 'firewall' ]);
+			apply(uci, [ 'wgpasswall', 'passwall', 'network', 'firewall' ]);
 
 			for (let other in down)
 				iface_down(other);
@@ -1160,18 +1161,18 @@ const methods = {
 			if (req.args.enabled && (!zone_exists(uci, s.lan_zone) || !zone_exists(uci, s.wan_zone)))
 				return { error: `Firewall zones "${s.lan_zone}" and "${s.wan_zone}" are required for the kill switch` };
 
-			if (uci.get('wgclient', 'settings') == null)
-				uci.set('wgclient', 'settings', 'settings');
+			if (uci.get('wgpasswall', 'settings') == null)
+				uci.set('wgpasswall', 'settings', 'settings');
 
-			uci.set('wgclient', 'settings', 'killswitch', req.args.enabled ? '1' : '0');
-			uci.save('wgclient');
+			uci.set('wgpasswall', 'settings', 'killswitch', req.args.enabled ? '1' : '0');
+			uci.save('wgpasswall');
 
 			sync_firewall(uci);
-			apply(uci, [ 'wgclient', 'firewall' ]);
+			apply(uci, [ 'wgpasswall', 'firewall' ]);
 
 			return { result: true, killswitch: !!req.args.enabled };
 		}
 	}
 };
 
-return { 'luci.wgclient': methods };
+return { 'luci.wgpasswall': methods };

@@ -1,5 +1,5 @@
 #!/bin/sh
-# End-to-end test of wgclient-relay: a UDP client (standing in for
+# End-to-end test of wgpasswall-relay: a UDP client (standing in for
 # WireGuard) talks to the relay, which forwards through a stub SOCKS5
 # proxy to a UDP echo server (standing in for the VPN server). Also checks
 # that the relay recovers when the proxy restarts. Needs ucode with the
@@ -42,8 +42,8 @@ cat > "$T/relay.json" <<JSON
 JSON
 
 start_stub
-WGCLIENT_RELAY_CONFIG="$T/relay.json" WGCLIENT_RELAY_STATUS="$T/status.json" \
-	ucode "$SRC/luci-app-wgclient/root/usr/libexec/wgclient-relay" > "$T/relay.log" 2>&1 &
+WGPASSWALL_RELAY_CONFIG="$T/relay.json" WGPASSWALL_RELAY_STATUS="$T/status.json" \
+	ucode "$SRC/luci-app-wireguard-passwall/root/usr/libexec/wgpasswall-relay" > "$T/relay.log" 2>&1 &
 RELAY=$!
 sleep 1
 

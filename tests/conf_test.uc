@@ -1,9 +1,9 @@
-// Unit tests for wgclient/conf.uc
-// Run: ucode -L luci-app-wgclient/root/usr/share/ucode tests/conf_test.uc
+// Unit tests for wgpasswall/conf.uc
+// Run: ucode -L luci-app-wireguard-passwall/root/usr/share/ucode tests/conf_test.uc
 
 'use strict';
 
-import * as conf from 'wgclient.conf';
+import * as conf from 'wgpasswall.conf';
 
 let failures = 0, total = 0;
 

@@ -16,7 +16,7 @@ env:
   # The package is architecture independent (PKGARCH:=all), so the SDK of any
   # target produces a package that installs on every router.
   SDK_TARGET: x86/64
-  PKG_NAME: luci-app-wgclient
+  PKG_NAME: luci-app-wireguard-passwall
 
 permissions:
   contents: read
@@ -45,8 +45,8 @@ jobs:
 
       - name: Syntax check JavaScript
         run: |
-          for f in $(find luci-app-wgclient/htdocs -name '*.js'); do node --check "$f"; done
-          for f in $(find luci-app-wgclient/root -name '*.json'); do python3 -m json.tool "$f" >/dev/null; done
+          for f in $(find luci-app-wireguard-passwall/htdocs -name '*.js'); do node --check "$f"; done
+          for f in $(find luci-app-wireguard-passwall/root -name '*.json'); do python3 -m json.tool "$f" >/dev/null; done
 
   build:
     needs: test

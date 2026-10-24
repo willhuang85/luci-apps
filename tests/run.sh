@@ -13,7 +13,7 @@ else
 	UCODE=ucode
 fi
 
-SRC="$PWD/luci-app-wgclient/root/usr/share/ucode/*.uc"
+SRC="$PWD/luci-app-wireguard-passwall/root/usr/share/ucode/*.uc"
 MOCKS="$PWD/tests/mocks/*.uc"
 
 echo "== conf parser"

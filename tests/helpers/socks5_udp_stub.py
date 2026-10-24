@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Minimal SOCKS5 server with UDP ASSOCIATE, plus a UDP echo "VPN server",
-# for testing wgclient-relay. Usage: socks5_udp_stub.py <socks_port> <echo_port>
+# for testing wgpasswall-relay. Usage: socks5_udp_stub.py <socks_port> <echo_port>
 import selectors, socket, struct, sys, threading
 
 socks_port, echo_port = int(sys.argv[1]), int(sys.argv[2])

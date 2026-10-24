@@ -1,6 +1,6 @@
-# luci-app-wgclient
+# WireGuard + Passwall (luci-app-wireguard-passwall)
 
-A simple WireGuard VPN **client** for OpenWrt's LuCI web interface.
+A simple WireGuard VPN **client** for OpenWrt's LuCI web interface that can also carry the VPN through a [Passwall](https://github.com/Openwrt-Passwall/openwrt-passwall) proxy node. Formerly called `luci-app-wgclient`.
 
 - **Import** the `.conf` file from your VPN provider (drag & drop, file picker or paste) with a live check of the file before saving
 - **One-click connect / disconnect**, only one profile is active at a time
@@ -15,25 +15,36 @@ Built and tested for **OpenWrt 25.12** (apk package manager).
 
 1. Get the package
    - From the [Releases](../../releases) page (created when a `v*` tag is pushed), or
-   - From the **Actions** tab → latest *Build package* run → artifact `luci-app-wgclient-openwrt-25.12.2` (it's a zip with the `.apk` inside).
+   - From the **Actions** tab → latest *Build package* run → artifact `luci-app-wireguard-passwall-openwrt-25.12.2` (it's a zip with the `.apk` inside).
 2. Copy it to the router (`-O` is needed because OpenWrt has no SFTP server by default):
    ```sh
-   scp -O luci-app-wgclient-*.apk root@192.168.1.1:/tmp/
+   scp -O luci-app-wireguard-passwall-*.apk root@192.168.1.1:/tmp/
    ```
 3. Install it on the router. The package is built by CI, not signed by OpenWrt, so allow it explicitly:
    ```sh
    ssh root@192.168.1.1
    apk update
-   apk add --allow-untrusted /tmp/luci-app-wgclient-*.apk
+   apk add --allow-untrusted /tmp/luci-app-wireguard-passwall-*.apk
    ```
-   `apk update` lets apk pull the dependencies (`wireguard-tools`, `kmod-wireguard`, ...) from the official feeds.
-4. **Log out of LuCI and log back in**, then open **VPN → WireGuard Client**. LuCI decides which menu entries you may see when you log in, so an already open session won't show the new entry.
+   `apk update` lets apk pull the dependencies it doesn't find on the router (`wireguard-tools`, `kmod-wireguard`, the ucode modules, ...) from the official feeds, so the router needs internet access for the install.
+4. **Log out of LuCI and log back in**, then open **VPN → WireGuard + Passwall**. LuCI decides which menu entries you may see when you log in, so an already open session won't show the new entry.
 
 > **Use SSH, not LuCI's "Upload Package…" button.** OpenWrt 25.12 only signs repository indexes, never single `.apk` files, so every self-built package fails with `UNTRUSTED signature` unless `--allow-untrusted` is passed — and the LuCI upload dialog has no way to pass it.
 
+### Upgrading from luci-app-wgclient
+
+This app used to be called `luci-app-wgclient`. Install the new package next to the old one, then remove the old one **without its uninstall script** (which would otherwise restore Passwall and turn off the kill switch):
+
+```sh
+apk add --allow-untrusted /tmp/luci-app-wireguard-passwall-*.apk
+apk del --no-scripts luci-app-wgclient
+```
+
+On install, the new package copies your settings over (mode, Passwall node, kill switch, profile names, saved Passwall settings), renames its firewall zone and routing rules, and stops the old relay service. Your VPN profiles keep their names.
+
 ### Troubleshooting
 
-- **Installed but no menu entry** – log out of LuCI and back in (and reload the page with Ctrl+F5). Still nothing? Check `apk info -e luci-app-wgclient`, run `/etc/init.d/rpcd restart` and verify `ubus list luci.wgclient` prints the object.
+- **Installed but no menu entry** – log out of LuCI and back in (and reload the page with Ctrl+F5). Still nothing? Check `apk info -e luci-app-wireguard-passwall`, run `/etc/init.d/rpcd restart` and verify `ubus list luci.wgpasswall` prints the object.
 - **`UNTRUSTED signature`** – you installed through LuCI's upload button or forgot `--allow-untrusted`; use the `apk add` command above.
 - **`wget ... Failed to send request: Operation not permitted`** during `apk update` – the router itself cannot reach the package mirror; a firewall rule is dropping the router's own outgoing traffic (not related to this app). `apk` needs the mirror to fetch `wireguard-tools` and `kmod-wireguard`. Check with:
   ```sh
@@ -44,7 +55,7 @@ Built and tested for **OpenWrt 25.12** (apk package manager).
   ```
   If a proxy app such as Passwall runs with "Localhost proxy", stop it briefly (`/etc/init.d/passwall stop`), run `apk update`, install, then start it again.
 
-To uninstall: `apk del luci-app-wgclient` (the kill switch is turned off automatically so you don't lose internet access).
+To uninstall: `apk del luci-app-wireguard-passwall` (the kill switch is turned off automatically so you don't lose internet access).
 
 ## Using it
 
@@ -61,7 +72,7 @@ When on, a firewall rule rejects all traffic forwarded from the `lan` zone to th
 - VPN connected → everything works through the tunnel.
 - VPN drops or is disconnected → LAN devices have **no internet** until a VPN connects again. Nothing leaks over your normal connection.
 
-The router itself can still reach the internet (it needs that to contact the VPN server), and access to LuCI/SSH from the LAN is not affected. The zone names can be changed in `/etc/config/wgclient` if yours differ from `lan`/`wan`.
+The router itself can still reach the internet (it needs that to contact the VPN server), and access to LuCI/SSH from the LAN is not affected. The zone names can be changed in `/etc/config/wgpasswall` if yours differ from `lan`/`wan`.
 
 ### Good to know
 
@@ -103,31 +114,31 @@ Each profile is a normal netifd WireGuard interface named `wgc_<name>` in `/etc/
 
 | UCI section | Purpose |
 |---|---|
-| `firewall.wgclient_zone` | Zone `wgclient` with all profiles, masquerading on |
-| `firewall.wgclient_fwd` | Forwarding `lan` → `wgclient` |
-| `firewall.wgclient_killswitch` | Rule `lan` → `wan` REJECT, enabled by the toggle |
-| `network.wgclient_rule_main` / `wgclient_rule6_main` | `lookup main suppress_prefixlength 0` keeps LAN and other specific routes |
-| `network.wgclient_rule_vpn` / `wgclient_rule6_vpn` | Unmarked traffic → VPN table 51820 (limited to LAN traffic in VPN through Passwall mode) |
-| `wgclient.<iface>` | Display name of each profile |
+| `firewall.wgpasswall_zone` | Zone `wgpasswall` with all profiles, masquerading on |
+| `firewall.wgpasswall_fwd` | Forwarding `lan` → `wgpasswall` |
+| `firewall.wgpasswall_killswitch` | Rule `lan` → `wan` REJECT, enabled by the toggle |
+| `network.wgpasswall_rule_main` / `wgpasswall_rule6_main` | `lookup main suppress_prefixlength 0` keeps LAN and other specific routes |
+| `network.wgpasswall_rule_vpn` / `wgpasswall_rule6_vpn` | Unmarked traffic → VPN table 51820 (limited to LAN traffic in VPN through Passwall mode) |
+| `wgpasswall.<iface>` | Display name of each profile |
 
 Full-tunnel `AllowedIPs` (`0.0.0.0/0`, `::/0`) are stored as two `/1` halves so the tunnel can never replace a default route; exports turn them back into `/0`.
 
 Code layout:
 
 ```
-luci-app-wgclient/
+luci-app-wireguard-passwall/
 ├── Makefile                                       OpenWrt package definition
-├── htdocs/luci-static/resources/view/wgclient/
+├── htdocs/luci-static/resources/view/wgpasswall/
 │   └── overview.js                                the web UI
 └── root/
-    ├── etc/config/wgclient                        settings (kill switch, zone names)
+    ├── etc/config/wgpasswall                        settings (kill switch, zone names)
     └── usr/share/
-        ├── luci/menu.d/luci-app-wgclient.json     menu entry (VPN → WireGuard Client)
-        ├── rpcd/acl.d/luci-app-wgclient.json      permissions
-        ├── rpcd/ucode/luci.wgclient               backend (ubus object luci.wgclient)
-        └── ucode/wgclient/conf.uc                 .conf parser / writer
-    ├── usr/libexec/wgclient-relay                 WireGuard → SOCKS5 UDP relay (VPN through Passwall)
-    └── etc/init.d/wgclient                        runs the relay
+        ├── luci/menu.d/luci-app-wireguard-passwall.json     menu entry (VPN → WireGuard + Passwall)
+        ├── rpcd/acl.d/luci-app-wireguard-passwall.json      permissions
+        ├── rpcd/ucode/luci.wgpasswall               backend (ubus object luci.wgpasswall)
+        └── ucode/wgpasswall/conf.uc                 .conf parser / writer
+    ├── usr/libexec/wgpasswall-relay                 WireGuard → SOCKS5 UDP relay (VPN through Passwall)
+    └── etc/init.d/wgpasswall                        runs the relay
 ```
 
 ## Building
@@ -143,9 +154,9 @@ Build for another OpenWrt release via *Actions → Build package → Run workflo
 Build locally with an OpenWrt SDK:
 
 ```sh
-ln -s "$PWD/luci-app-wgclient" /path/to/openwrt-sdk/package/
+ln -s "$PWD/luci-app-wireguard-passwall" /path/to/openwrt-sdk/package/
 cd /path/to/openwrt-sdk
-make defconfig && make package/luci-app-wgclient/compile V=s
+make defconfig && make package/luci-app-wireguard-passwall/compile V=s
 ```
 
 Run the tests (needs a [ucode](https://github.com/jow-/ucode) build, ideally the revision your OpenWrt release ships):

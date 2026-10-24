@@ -1,0 +1,47 @@
+#!/bin/sh
+# Migrates the settings of luci-app-wgclient, the former name of this app:
+# its config, firewall zone/rules, routing rules and relay endpoints, which
+# all carried the "wgclient" name. VPN profiles (wgc_* interfaces) keep
+# their names. Runs once; the old package can then be removed with
+# "apk del --no-scripts luci-app-wgclient".
+
+[ -f /etc/config/wgclient ] || exit 0
+[ "$(uci -q get wgpasswall.settings.migrated)" = 1 ] && exit 0
+
+# the old relay would hold the ports the new one needs
+[ -x /etc/init.d/wgclient ] && {
+	/etc/init.d/wgclient stop
+	/etc/init.d/wgclient disable
+}
+
+cp /etc/config/wgclient /etc/config/wgpasswall
+
+for s in zone fwd killswitch; do
+	uci -q rename firewall.wgclient_$s=wgpasswall_$s
+done
+[ "$(uci -q get firewall.wgpasswall_zone.name)" = wgclient ] && uci set firewall.wgpasswall_zone.name=wgpasswall
+[ "$(uci -q get firewall.wgpasswall_fwd.dest)" = wgclient ] && uci set firewall.wgpasswall_fwd.dest=wgpasswall
+uci -q set firewall.wgpasswall_killswitch.name='WireGuard + Passwall kill switch'
+
+for s in $(uci -q show network | sed -n 's/^network\.\(wgclient_rule[^.=]*\)=.*/\1/p'); do
+	uci rename "network.$s=wgpasswall_${s#wgclient_}"
+done
+
+for s in $(uci -q show network | sed -n 's/^network\.\([^.]*\)\.wgclient_orig_host=.*/\1/p'); do
+	uci set "network.$s.wgpasswall_orig_host=$(uci get "network.$s.wgclient_orig_host")"
+	uci set "network.$s.wgpasswall_orig_port=$(uci -q get "network.$s.wgclient_orig_port" || echo 51820)"
+	uci delete "network.$s.wgclient_orig_host"
+	uci -q delete "network.$s.wgclient_orig_port"
+done
+
+uci set wgpasswall.settings.migrated=1
+uci commit wgpasswall
+uci commit firewall
+uci commit network
+
+[ -n "$IPKG_INSTROOT" ] || {
+	ubus call network reload 2>/dev/null
+	/etc/init.d/firewall reload >/dev/null 2>&1
+}
+
+exit 0

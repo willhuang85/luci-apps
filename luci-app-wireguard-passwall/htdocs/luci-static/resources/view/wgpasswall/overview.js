@@ -5,15 +5,15 @@
 'require poll';
 'require dom';
 
-const callStatus = rpc.declare({ object: 'luci.wgclient', method: 'status' });
-const callParse = rpc.declare({ object: 'luci.wgclient', method: 'parse', params: [ 'conf' ] });
-const callGet = rpc.declare({ object: 'luci.wgclient', method: 'get', params: [ 'id' ] });
-const callSave = rpc.declare({ object: 'luci.wgclient', method: 'save', params: [ 'id', 'label', 'conf', 'connect' ] });
-const callRemove = rpc.declare({ object: 'luci.wgclient', method: 'remove', params: [ 'id' ] });
-const callConnect = rpc.declare({ object: 'luci.wgclient', method: 'connect', params: [ 'id' ] });
-const callDisconnect = rpc.declare({ object: 'luci.wgclient', method: 'disconnect', params: [ 'id' ] });
-const callSetKillswitch = rpc.declare({ object: 'luci.wgclient', method: 'set_killswitch', params: [ 'enabled' ] });
-const callSetMode = rpc.declare({ object: 'luci.wgclient', method: 'set_mode', params: [ 'mode', 'node', 'id' ] });
+const callStatus = rpc.declare({ object: 'luci.wgpasswall', method: 'status' });
+const callParse = rpc.declare({ object: 'luci.wgpasswall', method: 'parse', params: [ 'conf' ] });
+const callGet = rpc.declare({ object: 'luci.wgpasswall', method: 'get', params: [ 'id' ] });
+const callSave = rpc.declare({ object: 'luci.wgpasswall', method: 'save', params: [ 'id', 'label', 'conf', 'connect' ] });
+const callRemove = rpc.declare({ object: 'luci.wgpasswall', method: 'remove', params: [ 'id' ] });
+const callConnect = rpc.declare({ object: 'luci.wgpasswall', method: 'connect', params: [ 'id' ] });
+const callDisconnect = rpc.declare({ object: 'luci.wgpasswall', method: 'disconnect', params: [ 'id' ] });
+const callSetKillswitch = rpc.declare({ object: 'luci.wgpasswall', method: 'set_killswitch', params: [ 'enabled' ] });
+const callSetMode = rpc.declare({ object: 'luci.wgpasswall', method: 'set_mode', params: [ 'mode', 'node', 'id' ] });
 
 const MODE_INFO = {
 	vpn: { icon: '🔒', title: _('VPN'), desc: _('All devices use the WireGuard VPN.') },
@@ -742,8 +742,8 @@ return view.extend({
 
 		return E([], [
 			E('style', {}, CSS),
-			E('h2', {}, _('WireGuard VPN Client')),
-			E('div', { 'class': 'cbi-map-descr', style: 'margin-bottom:16px' }, _('Connect your whole network to a WireGuard VPN. Import the configuration file from your VPN provider and press Connect.')),
+			E('h2', {}, _('WireGuard + Passwall')),
+			E('div', { 'class': 'cbi-map-descr', style: 'margin-bottom:16px' }, _('Connect your whole network to a WireGuard VPN, optionally carried through a Passwall proxy node. Import the configuration file from your VPN provider, pick a mode and connect.')),
 			this.root
 		]);
 	}

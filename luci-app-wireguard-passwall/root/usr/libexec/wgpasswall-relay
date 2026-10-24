@@ -13,13 +13,13 @@
 // packets as replies and lets them out directly.
 //
 // The relays are read from /etc/config/network: every WireGuard peer with
-// "wgclient_orig_host" set (by the app, while in that mode) is relayed from
+// "wgpasswall_orig_host" set (by the app, while in that mode) is relayed from
 // 127.0.0.1:<endpoint_port> to its original endpoint. The SOCKS port is
-// Passwall's "node_socks_port". For tests, WGCLIENT_RELAY_CONFIG can point
+// Passwall's "node_socks_port". For tests, WGPASSWALL_RELAY_CONFIG can point
 // to a JSON file instead:
 //   { "socks": { "host": "127.0.0.1", "port": 1070 },
 //     "relays": [ { "listen": 51821, "host": "vpn.example.com", "port": 51820 } ] }
-// Status: /var/run/wgclient/relay-status.json
+// Status: /var/run/wgpasswall/relay-status.json
 
 'use strict';
 
@@ -28,12 +28,12 @@ import * as uloop from 'uloop';
 import { readfile, writefile, rename, mkdir } from 'fs';
 import { cursor } from 'uci';
 
-const STATUS = getenv('WGCLIENT_RELAY_STATUS') ?? '/var/run/wgclient/relay-status.json';
+const STATUS = getenv('WGPASSWALL_RELAY_STATUS') ?? '/var/run/wgpasswall/relay-status.json';
 const RETRY_MS = 3000;
 
 function load_config() {
-	if (getenv('WGCLIENT_RELAY_CONFIG'))
-		return json(readfile(getenv('WGCLIENT_RELAY_CONFIG')) ?? 'null');
+	if (getenv('WGPASSWALL_RELAY_CONFIG'))
+		return json(readfile(getenv('WGPASSWALL_RELAY_CONFIG')) ?? 'null');
 
 	const uci = cursor();
 	let relays = [], socks_port = 1070;
@@ -43,8 +43,8 @@ function load_config() {
 	});
 
 	uci.foreach('network', null, (s) => {
-		if (index(s['.type'], 'wireguard_wgc_') == 0 && s.wgclient_orig_host && s.endpoint_port)
-			push(relays, { listen: +s.endpoint_port, host: s.wgclient_orig_host, port: +(s.wgclient_orig_port || 51820) });
+		if (index(s['.type'], 'wireguard_wgc_') == 0 && s.wgpasswall_orig_host && s.endpoint_port)
+			push(relays, { listen: +s.endpoint_port, host: s.wgpasswall_orig_host, port: +(s.wgpasswall_orig_port || 51820) });
 	});
 
 	return { socks: { host: '127.0.0.1', port: socks_port }, relays };
@@ -53,7 +53,7 @@ function load_config() {
 const cfg = load_config();
 
 if (!cfg || !length(cfg.relays)) {
-	warn('wgclient-relay: no tunnels to relay\n');
+	warn('wgpasswall-relay: no tunnels to relay\n');
 	exit(0);
 }
 
@@ -219,7 +219,7 @@ for (let c in cfg.relays) {
 
 	if (!r.local || !r.local.bind({ address: '127.0.0.1', port: r.listen }) ||
 	    !r.out || !r.out.bind({ address: '127.0.0.1', port: 0 })) {
-		warn(`wgclient-relay: cannot listen on 127.0.0.1:${r.listen}\n`);
+		warn(`wgpasswall-relay: cannot listen on 127.0.0.1:${r.listen}\n`);
 		exit(1);
 	}
 
