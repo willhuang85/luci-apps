@@ -1,6 +1,6 @@
 # WireGuard + Passwall (luci-app-wireguard-passwall)
 
-A simple WireGuard VPN **client** for OpenWrt's LuCI web interface that can also carry the VPN through a [Passwall](https://github.com/Openwrt-Passwall/openwrt-passwall) proxy node. Formerly called `luci-app-wgclient`.
+A simple WireGuard VPN **client** for OpenWrt's LuCI web interface that can also carry the VPN through a [Passwall](https://github.com/Openwrt-Passwall/openwrt-passwall) proxy node.
 
 - **Import** the `.conf` file from your VPN provider (drag & drop, file picker or paste) with a live check of the file before saving
 - **One-click connect / disconnect**, only one profile is active at a time
@@ -29,23 +29,39 @@ Built and tested for **OpenWrt 25.12** (apk package manager).
    `apk update` lets apk pull the dependencies it doesn't find on the router (`wireguard-tools`, `kmod-wireguard`, the ucode modules, ...) from the official feeds, so the router needs internet access for the install.
 4. **Log out of LuCI and log back in**, then open **VPN → WireGuard + Passwall**. LuCI decides which menu entries you may see when you log in, so an already open session won't show the new entry.
 
-> **Use SSH, not LuCI's "Upload Package…" button.** OpenWrt 25.12 only signs repository indexes, never single `.apk` files, so every self-built package fails with `UNTRUSTED signature` unless `--allow-untrusted` is passed — and the LuCI upload dialog has no way to pass it.
+### Installing from LuCI (signed packages)
 
-### Upgrading from luci-app-wgclient
+OpenWrt only trusts packages signed with a key in `/etc/apk/keys`. Unsigned self-built packages fail with `UNTRUSTED signature` unless `--allow-untrusted` is passed, which LuCI's **Upload Package…** dialog cannot do. CI therefore signs the package with your own key:
 
-This app used to be called `luci-app-wgclient`. Install the new package next to the old one, then remove the old one **without its uninstall script** (which would otherwise restore Passwall and turn off the kill switch):
+**Once, on GitHub:** create a signing key on your computer and store it as a repository secret.
 
 ```sh
-apk add --allow-untrusted /tmp/luci-app-wireguard-passwall-*.apk
-apk del --no-scripts luci-app-wgclient
+openssl ecparam -name prime256v1 -genkey -noout -out apk-signing-key.pem
 ```
 
-On install, the new package copies your settings over (mode, Passwall node, kill switch, profile names, saved Passwall settings), renames its firewall zone and routing rules, and stops the old relay service. Your VPN profiles keep their names.
+GitHub → repository → *Settings → Secrets and variables → Actions → New repository secret*: name `APK_SIGNING_KEY`, value: the contents of `apk-signing-key.pem`. Keep the file somewhere safe and private. Every build after that is signed, and the artifact / release additionally contains `wireguard-passwall.pem` (the public key) and `packages.adb` (a signed package index).
+
+**Once, on the router:** trust the public key (copy `wireguard-passwall.pem` from the artifact):
+
+```sh
+scp -O wireguard-passwall.pem root@192.168.1.1:/etc/apk/keys/
+```
+
+From then on, install and upgrade from **System → Software → Upload Package…** with no extra flags.
+
+**Optional, if the repository is public:** use the GitHub release as a package feed, so the app shows up (and updates) in *System → Software* like any other package:
+
+```sh
+wget -O /etc/apk/keys/wireguard-passwall.pem https://github.com/willhuang85/luci-wireguard/releases/latest/download/wireguard-passwall.pem
+echo "https://github.com/willhuang85/luci-wireguard/releases/latest/download/packages.adb" >> /etc/apk/repositories.d/customfeeds.list
+```
+
+Then *System → Software → Update lists*, search for `luci-app-wireguard-passwall` and install. Release files of a private repository need a GitHub login, which the router does not have, so this route needs a public repository; the upload route works either way.
 
 ### Troubleshooting
 
 - **Installed but no menu entry** – log out of LuCI and back in (and reload the page with Ctrl+F5). Still nothing? Check `apk info -e luci-app-wireguard-passwall`, run `/etc/init.d/rpcd restart` and verify `ubus list luci.wgpasswall` prints the object.
-- **`UNTRUSTED signature`** – you installed through LuCI's upload button or forgot `--allow-untrusted`; use the `apk add` command above.
+- **`UNTRUSTED signature`** – the package is unsigned (no `APK_SIGNING_KEY` secret) or the router lacks the public key in `/etc/apk/keys`; see *Installing from LuCI* above, or use `apk add --allow-untrusted`.
 - **`wget ... Failed to send request: Operation not permitted`** during `apk update` – the router itself cannot reach the package mirror; a firewall rule is dropping the router's own outgoing traffic (not related to this app). `apk` needs the mirror to fetch `wireguard-tools` and `kmod-wireguard`. Check with:
   ```sh
   ping -c 3 1.1.1.1                 # basic connectivity
@@ -106,7 +122,7 @@ Details:
 
 ### Why not Passwall's "Localhost Proxy"?
 
-Letting Passwall intercept WireGuard's packets transparently (Localhost Proxy plus the server in the proxy list) looks like it should work, and the proxy log even shows the packets arriving, but it falls apart within seconds: the replies the proxy injects back to WireGuard create a new connection-tracking entry that looks like it was opened by the server, after which Passwall treats WireGuard's packets as replies and lets them out directly. The relay avoids interception altogether. Versions up to 1.0.0-r9 used interception; upgrading cleans up the proxy list entries they added.
+Letting Passwall intercept WireGuard's packets transparently (Localhost Proxy plus the server in the proxy list) looks like it should work, and the proxy log even shows the packets arriving, but it falls apart within seconds: the replies the proxy injects back to WireGuard create a new connection-tracking entry that looks like it was opened by the server, after which Passwall treats WireGuard's packets as replies and lets them out directly. The relay avoids interception altogether.
 
 ## How it works
 
@@ -147,7 +163,7 @@ The GitHub Actions workflow (`.github/workflows/build.yml`) runs on every push:
 
 1. **test** – builds ucode, rpcd and friends at the exact revisions of the OpenWrt release, loads the backend into a real rpcd and walks through all modes, runs the parser and backend tests, tests the relay end to end against a stub SOCKS5 proxy, syntax-checks JS/JSON.
 2. **build** – downloads the official OpenWrt 25.12.2 SDK, builds the package and uploads the `.apk` as an artifact. The package is architecture independent, so one build works on every router.
-3. **release** – on a `v*` tag (e.g. `git tag v1.0.0 && git push --tags`), attaches the `.apk` to a GitHub release.
+3. **release** – on a `v*` tag (e.g. `git tag v1.1.0 && git push --tags`), attaches the `.apk` (plus, when signed, `packages.adb` and the public key) to a GitHub release.
 
 Build for another OpenWrt release via *Actions → Build package → Run workflow* and enter the version.
 

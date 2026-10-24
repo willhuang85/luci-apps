@@ -35,72 +35,6 @@ build rpcd openwrt/rpcd package/system/rpcd/Makefile -DUCODE_SUPPORT=ON -DFILE_S
 
 R="$SRC/luci-app-wireguard-passwall/root"
 
-echo "== migration from luci-app-wgclient"
-mkfail() { echo "FAIL: $*"; exit 1; }
-cat > /etc/config/wgclient <<'OLD'
-config settings 'settings'
-	option killswitch '1'
-	option mode 'vpn_passwall'
-	option pw_node 'hy2node'
-
-config profile 'wgc_home'
-	option label 'Home'
-OLD
-cat > /etc/config/firewall <<'OLD'
-config zone
-	option name 'lan'
-
-config zone
-	option name 'wan'
-
-config zone 'wgclient_zone'
-	option name 'wgclient'
-	list network 'wgc_home'
-
-config forwarding 'wgclient_fwd'
-	option src 'lan'
-	option dest 'wgclient'
-
-config rule 'wgclient_killswitch'
-	option name 'WireGuard client kill switch'
-	option enabled '1'
-OLD
-cat > /etc/config/network <<'OLD'
-config interface 'wgc_home'
-	option proto 'wireguard'
-
-config wireguard_wgc_home
-	option endpoint_host '127.0.0.1'
-	option endpoint_port '51821'
-	option wgclient_orig_host 'vpn.example.com'
-	option wgclient_orig_port '51820'
-
-config rule 'wgclient_rule_main'
-	option lookup 'main'
-
-config rule 'wgclient_rule_vpn_lan'
-	option in 'lan'
-	option lookup '51820'
-OLD
-install -D -m 0644 "$R/etc/config/wgpasswall" /etc/config/wgpasswall
-( cd "$R/etc/uci-defaults" && IPKG_INSTROOT= sh ./90-wgpasswall-migrate ) || mkfail "migration script failed"
-[ "$(uci -q get wgpasswall.settings.mode)" = vpn_passwall ] || mkfail "mode not migrated"
-[ "$(uci -q get wgpasswall.settings.pw_node)" = hy2node ] || mkfail "node not migrated"
-[ "$(uci -q get wgpasswall.wgc_home.label)" = Home ] || mkfail "profile label not migrated"
-[ "$(uci -q get firewall.wgpasswall_zone.name)" = wgpasswall ] || mkfail "zone not migrated"
-[ "$(uci -q get firewall.wgpasswall_zone.network)" = wgc_home ] || mkfail "zone networks lost"
-[ "$(uci -q get firewall.wgpasswall_fwd.dest)" = wgpasswall ] || mkfail "forwarding not migrated"
-[ "$(uci -q get firewall.wgpasswall_killswitch.enabled)" = 1 ] || mkfail "kill switch not migrated"
-uci -q get firewall.wgclient_zone >/dev/null && mkfail "old zone left"
-[ "$(uci -q get network.wgpasswall_rule_vpn_lan.in)" = lan ] || mkfail "routing rule not migrated"
-uci -q get network.wgclient_rule_main >/dev/null && mkfail "old routing rule left"
-[ "$(uci -q get network.@wireguard_wgc_home[0].wgpasswall_orig_host)" = vpn.example.com ] || mkfail "relay endpoint not migrated"
-uci -q show network | grep -q wgclient_orig && mkfail "old relay options left"
-[ "$(uci -q get network.@wireguard_wgc_home[0].endpoint_host)" = 127.0.0.1 ] || mkfail "endpoint changed by migration"
-( cd "$R/etc/uci-defaults" && sh ./90-wgpasswall-migrate ) || mkfail "second run failed"
-[ "$(uci -q get firewall.wgpasswall_zone.name)" = wgpasswall ] || mkfail "second run broke the zone"
-rm -f /etc/config/wgclient
-
 echo "== installing package files"
 install -D -m 0644 "$R/usr/share/rpcd/ucode/luci.wgpasswall" /usr/share/rpcd/ucode/luci.wgpasswall
 install -D -m 0644 "$R/usr/share/ucode/wgpasswall/conf.uc" /usr/share/ucode/wgpasswall/conf.uc
@@ -195,12 +129,6 @@ rm -f /tmp/wgpasswall-init.log
 uci show passwall > "$WORK/passwall.orig"
 cp /etc/passwall/rules/proxy_ip "$WORK/proxy_ip.orig"
 cp /etc/passwall/rules/direct_ip "$WORK/direct_ip.orig"
-# entries a 1.0.0-r7 install added, which must be cleaned up
-printf '# luci-app-wgclient: VPN server, removed when leaving "VPN through Passwall" mode\n1.2.3.4\n' >> /etc/passwall/rules/proxy_ip
-sed -i 's/^1.2.3.4$/# disabled by luci-app-wgclient: 1.2.3.4/' /etc/passwall/rules/direct_ip
-uci set wgpasswall.passwall=passwall
-uci add_list wgpasswall.passwall.added_ip=1.2.3.4
-uci commit wgpasswall
 
 ubus call luci.wgpasswall status | jq -e '.passwall.installed and (.passwall.nodes[1].id == "hy2node") and .mode == "vpn"' >/dev/null || fail "passwall not detected"
 ubus call luci.wgpasswall set_mode '{"mode":"vpn","connect":false}' >/dev/null || fail "vpn mode while in vpn mode"
@@ -216,8 +144,8 @@ check_wrapped() {
 	[ "$(uci -q get passwall.@global[0].client_proxy)" = 0 ] || fail "client proxy not off"
 	[ "$(uci -q get passwall.@global[0].localhost_proxy)" = 0 ] || fail "localhost proxy changed"
 	[ "$(uci -q get passwall.@global_forwarding[0].udp_proxy_drop_ports)" = 443,51820 ] || fail "drop ports changed"
-	cmp -s /etc/passwall/rules/proxy_ip "$WORK/proxy_ip.orig" || fail "proxy list modified / old entries not cleaned up"
-	cmp -s /etc/passwall/rules/direct_ip "$WORK/direct_ip.orig" || fail "direct list modified / old entries not cleaned up"
+	cmp -s /etc/passwall/rules/proxy_ip "$WORK/proxy_ip.orig" || fail "proxy list modified"
+	cmp -s /etc/passwall/rules/direct_ip "$WORK/direct_ip.orig" || fail "direct list modified"
 	uci show network | grep -q "endpoint_host='127.0.0.1'" || fail "endpoint not pointed at the relay"
 	uci show network | grep -q "endpoint_port='51821'" || fail "relay port not set"
 	uci show network | grep -q "wgpasswall_orig_host='1.2.3.4'" || fail "original endpoint not kept"

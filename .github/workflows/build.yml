@@ -120,6 +120,34 @@ jobs:
             fi
           fi
 
+      # OpenWrt never signs single .apk files, so a self-built package needs
+      # --allow-untrusted, which LuCI's "Upload package" cannot pass. Signing
+      # it with our own key (repository secret APK_SIGNING_KEY, an EC
+      # prime256v1 private key in PEM format) makes it trusted by any router
+      # that has the public key in /etc/apk/keys. A signed index
+      # (packages.adb) lets the router use the release as a package feed.
+      - name: Sign package and index
+        working-directory: ${{ runner.temp }}/sdk
+        env:
+          APK_SIGNING_KEY: ${{ secrets.APK_SIGNING_KEY }}
+        run: |
+          if [ -z "$APK_SIGNING_KEY" ]; then
+            echo "::warning::APK_SIGNING_KEY secret not set: the package is unsigned and needs 'apk add --allow-untrusted'"
+            exit 0
+          fi
+          APK="$PWD/staging_dir/host/bin/apk"
+          keys="$RUNNER_TEMP/keys"
+          mkdir -p "$keys"
+          (umask 077; printf '%s\n' "$APK_SIGNING_KEY" > "$RUNNER_TEMP/signing-key.pem")
+          openssl ec -in "$RUNNER_TEMP/signing-key.pem" -pubout -out "$keys/wireguard-passwall.pem"
+          cd "$GITHUB_WORKSPACE/dist"
+          "$APK" adbsign --allow-untrusted --sign-key "$RUNNER_TEMP/signing-key.pem" ./*.apk
+          "$APK" verify --keys-dir "$keys" ./*.apk
+          "$APK" mkndx --keys-dir "$keys" --sign-key "$RUNNER_TEMP/signing-key.pem" --output packages.adb ./*.apk
+          cp "$keys/wireguard-passwall.pem" .
+          rm -f "$RUNNER_TEMP/signing-key.pem"
+          ls -l
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:

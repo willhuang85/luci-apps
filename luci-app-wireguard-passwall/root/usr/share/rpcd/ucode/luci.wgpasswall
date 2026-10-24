@@ -28,7 +28,7 @@
 
 'use strict';
 
-import { access, popen, readfile, writefile } from 'fs';
+import { access, popen, readfile } from 'fs';
 import { connect } from 'ubus';
 import { cursor } from 'uci';
 import * as conf from 'wgpasswall.conf';
@@ -110,11 +110,7 @@ const MODES = { vpn: true, vpn_passwall: true, passwall: true, off: true };
 function get_mode(uci) {
 	const m = uci.get('wgpasswall', 'settings', 'mode');
 
-	if (MODES[m])
-		return m;
-
-	// 1.0.0-r5/r6 had a single "Tunnel through Passwall" switch
-	return uci.get('wgpasswall', 'passwall', 'enabled') == '1' ? 'vpn_passwall' : 'vpn';
+	return MODES[m] ? m : 'vpn';
 }
 
 // The kill switch is paused while nothing should use the VPN: in
@@ -425,23 +421,17 @@ function runtime_status() {
 }
 
 /*
- * "Tunnel through Passwall": configures Passwall so that WireGuard's own
- * packets are wrapped by the proxy, and undoes it again. Every Passwall
- * value that gets changed is saved in wgpasswall.passwall first (UNSET marks
- * an option that did not exist), list entries are tagged, so turning the
- * feature off restores the previous state exactly.
+ * Passwall modes. The Passwall options a mode changes are saved in
+ * wgpasswall.passwall the first time VPN mode is left (UNSET marks an
+ * option that did not exist), and VPN mode restores them exactly.
  */
-const PW_RULES = '/etc/passwall/rules';
-// markers written by luci-app-wgclient, the former name of this app
-const PW_TAG = '# luci-app-wgclient: VPN server, removed when leaving "VPN through Passwall" mode';
 const RELAY_BASE_PORT = 51821;
 const RELAY_STATUS = '/var/run/wgpasswall/relay-status.json';
-const PW_DISABLED = '# disabled by luci-app-wgclient: ';
 const PW_MTU = 1280;
 const UNSET = '__unset__';
 // Passwall options the modes change; their original values are saved once
 // when leaving VPN mode and restored when coming back to it
-const PW_MANAGED = [ 'enabled', 'node', 'localhost_proxy', 'client_proxy', 'use_proxy_list', 'tcp_proxy_mode', 'udp_proxy_mode' ];
+const PW_MANAGED = [ 'enabled', 'node', 'client_proxy', 'tcp_proxy_mode', 'udp_proxy_mode' ];
 
 function first_section(uci, config, stype) {
 	let sid = null;
@@ -470,74 +460,6 @@ function pw_nodes(uci) {
 
 function pw_running() {
 	return length(run('nft list chain inet passwall PSW_OUTPUT_MANGLE 2>/dev/null | head -n 1') ?? '') > 0;
-}
-
-function read_lines(path) {
-	const data = readfile(path);
-
-	return data ? split(replace(data, /\n$/, ''), '\n') : [];
-}
-
-function write_lines(path, lines) {
-	writefile(path, length(lines) ? join('\n', lines) + '\n' : '');
-}
-
-// Removes VPN server entries that versions up to 1.0.0-r9 put into
-// Passwall's proxy and direct lists (they wrapped WireGuard by transparent
-// interception). Returns true if a file changed.
-function pw_sync_rules(uci) {
-	const want = [];
-	const added = as_list(uci.get('wgpasswall', 'passwall', 'added_ip'));
-	let changed = false;
-
-	// proxy list: drop our old entries and tag, then add what is needed
-	let lines = filter(read_lines(`${PW_RULES}/proxy_ip`), (l) => l != PW_TAG && !(l in added));
-	let now_added = [];
-
-	for (let ip in want) {
-		if (!(ip in lines))
-			push(now_added, ip);
-	}
-
-	if (length(now_added))
-		push(lines, PW_TAG, ...now_added);
-
-	const old_proxy = readfile(`${PW_RULES}/proxy_ip`) ?? '';
-	write_lines(`${PW_RULES}/proxy_ip`, lines);
-	if ((readfile(`${PW_RULES}/proxy_ip`) ?? '') != old_proxy)
-		changed = true;
-
-	if (length(now_added))
-		uci.set('wgpasswall', 'passwall', 'added_ip', now_added);
-	else
-		uci.delete('wgpasswall', 'passwall', 'added_ip');
-
-	// direct list wins over the proxy list, so comment our servers out there
-	let direct = [];
-
-	for (let l in read_lines(`${PW_RULES}/direct_ip`)) {
-		if (index(l, PW_DISABLED) == 0) {
-			const ip = substr(l, length(PW_DISABLED));
-			const bare = replace(ip, /\/(32|128)$/, '');
-
-			l = (bare in want) ? l : ip;
-		}
-		else if (replace(trim(l), /\/(32|128)$/, '') in want) {
-			l = PW_DISABLED + trim(l);
-		}
-
-		push(direct, l);
-	}
-
-	const old_direct = readfile(`${PW_RULES}/direct_ip`) ?? '';
-
-	if (old_direct != '' || length(direct)) {
-		write_lines(`${PW_RULES}/direct_ip`, direct);
-		if ((readfile(`${PW_RULES}/direct_ip`) ?? '') != old_direct)
-			changed = true;
-	}
-
-	return changed;
 }
 
 // Points every peer at the local relay while in "VPN through Passwall"
@@ -648,8 +570,7 @@ function pw_chosen_node(uci) {
 }
 
 function pw_baseline_saved(uci) {
-	return uci.get('wgpasswall', 'passwall', 'pw_saved') == '1' ||
-		uci.get('wgpasswall', 'passwall', 'pw_enabled') != null;	// saved by 1.0.0-r5/r6
+	return uci.get('wgpasswall', 'passwall', 'pw_saved') == '1';
 }
 
 function pw_save_baseline(uci, g, fw) {
@@ -758,10 +679,6 @@ function pw_apply_mode(uci, mode, node) {
 		else if (mode != 'off')
 			pw_restore_mtu(uci, id);
 	}
-
-	// needs the list of added IPs, so before forgetting the saved state
-	if (installed)
-		pw_sync_rules(uci);
 
 	if (mode != 'off')
 		relay_sync(uci);

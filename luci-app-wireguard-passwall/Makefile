@@ -4,7 +4,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-wireguard-passwall
 PKG_VERSION:=1.1.0
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_LICENSE:=Apache-2.0
 PKG_MAINTAINER:=willhuang85
@@ -27,7 +27,6 @@ define Package/luci-app-wireguard-passwall/description
   optionally block all non-VPN traffic from the LAN with a kill switch.
   With Passwall installed it adds modes to carry the VPN through a Passwall
   proxy node, to use Passwall alone, or to switch everything off.
-  Formerly luci-app-wgclient; settings are migrated on install.
 endef
 
 define Package/luci-app-wireguard-passwall/conffiles
@@ -55,12 +54,6 @@ define Package/luci-app-wireguard-passwall/postinst
 	/etc/init.d/rpcd restart
 	# OpenWrt only enables new init scripts on fresh installs, not upgrades
 	/etc/init.d/wgpasswall enable
-	# re-apply a Passwall mode so changes in how it is set up take effect
-	mode=$$(uci -q get wgpasswall.settings.mode)
-	if [ "$$mode" = vpn_passwall ] || [ "$$mode" = passwall ]; then
-		ubus -t 15 wait_for luci.wgpasswall 2>/dev/null &&
-			ubus call luci.wgpasswall set_mode "{\"mode\":\"$$mode\",\"connect\":false}" >/dev/null 2>&1
-	fi
 	/etc/init.d/wgpasswall restart
 	echo "luci-app-wireguard-passwall: log out of LuCI and back in, then open VPN -> WireGuard Client"
 }
