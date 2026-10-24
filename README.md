@@ -7,14 +7,24 @@ A simple WireGuard VPN **client** for OpenWrt's LuCI web interface that can also
 - **Live status**: handshake, uptime, traffic, server and tunnel address
 - **Kill switch** toggle: LAN devices can only reach the internet through the VPN
 - Edit, export and delete profiles; works on desktop and phone
-- **Works with Passwall / Xray / sing-box**, with modes for VPN, VPN carried through a Passwall node, and Passwall only (see below)
+- **Modes** (with Passwall installed): VPN, VPN carried through a Passwall node, Passwall only, and Off, switched with one click (see below)
 
 Built and tested for **OpenWrt 25.12** (apk package manager).
+
+<p align="center">
+  <img src="docs/screenshots/overview.png" alt="Connected in VPN through Passwall mode" width="720">
+</p>
+
+| Import with a live check | Everything off | On a phone |
+|---|---|---|
+| <img src="docs/screenshots/import.png" alt="Import dialog" width="280"> | <img src="docs/screenshots/mode-off.png" alt="Off mode" width="280"> | <img src="docs/screenshots/mobile.png" alt="Phone layout" width="180"> |
+
+<sub>Screenshots show sample data; colours and fonts follow your LuCI theme.</sub>
 
 ## Install on your router
 
 1. Get the package
-   - From the [Releases](../../releases) page (created when a `v*` tag is pushed), or
+   - From the [Releases](../../releases) page (a release is published on every merge into `main`), or
    - From the **Actions** tab → latest *Build package* run → artifact `luci-app-wireguard-passwall-openwrt-25.12.2` (it's a zip with the `.apk` inside).
 2. Copy it to the router (`-O` is needed because OpenWrt has no SFTP server by default):
    ```sh
