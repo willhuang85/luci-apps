@@ -4,7 +4,7 @@
 
 'use strict';
 
-import { mkdir, symlink, writefile } from 'fs';
+import { mkdir, symlink, unlink, writefile } from 'fs';
 
 const SYS = getenv('TETHER_SYSFS');
 
@@ -23,19 +23,35 @@ function mkdirs(path) {
 	}
 }
 
-// a plugged in iPhone: USB device plus ipheth network device eth2
+// A phone on USB, laid out like the kernel does: the USB device (vendor,
+// product) with an interface directory whose driver is the tethering
+// driver, and a network device whose "device" link points at that interface.
+function plug(usb, vendor, product, driver, netdev, carrier) {
+	const intf = `${SYS}/bus/usb/devices/${usb}/${usb}:1.0`;
+
+	mkdirs(intf);
+	mkdirs(`${SYS}/bus/usb/drivers/${driver}`);
+	mkdirs(`${SYS}/module/${driver}`);
+	writefile(`${SYS}/bus/usb/devices/${usb}/idVendor`, vendor + '\n');
+	writefile(`${SYS}/bus/usb/devices/${usb}/product`, product + '\n');
+
+	if (!netdev)
+		return;
+
+	symlink(`../../../drivers/${driver}`, `${intf}/driver`);
+	mkdirs(`${SYS}/class/net/${netdev}/statistics`);
+	symlink(`../../../bus/usb/devices/${usb}/${usb}:1.0`, `${SYS}/class/net/${netdev}/device`);
+	writefile(`${SYS}/class/net/${netdev}/carrier`, carrier ? '1\n' : '0\n');
+	writefile(`${SYS}/class/net/${netdev}/statistics/rx_bytes`, '1048576\n');
+	writefile(`${SYS}/class/net/${netdev}/statistics/tx_bytes`, '2048\n');
+}
+
+function unplug_netdev(netdev) {
+	unlink(`${SYS}/class/net/${netdev}/device`);
+}
+
 function plug_iphone(carrier) {
-	mkdirs(`${SYS}/bus/usb/devices/1-1`);
-	writefile(`${SYS}/bus/usb/devices/1-1/idVendor`, '05ac\n');
-	writefile(`${SYS}/bus/usb/devices/1-1/product`, 'iPhone\n');
-	mkdirs(`${SYS}/bus/usb/drivers/ipheth`);
-	mkdirs(`${SYS}/class/net/eth2/device`);
-	mkdirs(`${SYS}/class/net/eth2/statistics`);
-	symlink('../../../../bus/usb/drivers/ipheth', `${SYS}/class/net/eth2/device/driver`);
-	writefile(`${SYS}/class/net/eth2/carrier`, carrier ? '1\n' : '0\n');
-	writefile(`${SYS}/class/net/eth2/statistics/rx_bytes`, '1048576\n');
-	writefile(`${SYS}/class/net/eth2/statistics/tx_bytes`, '2048\n');
-	mkdirs(`${SYS}/module/ipheth`);
+	plug('1-1', '05ac', 'iPhone', 'ipheth', 'eth2', carrier);
 }
 
 mkdirs(`${SYS}/class/net/eth0/device`);
@@ -105,8 +121,8 @@ function call(method, args) {
 // --- nothing plugged in
 let r = call('status');
 check('inactive', !r.active && r.method == 'usb');
-check('no iphone', r.usb.iphone == null && r.usb.netdev == null && !r.usb.carrier);
-check('usb support missing', !r.usb.supported && !r.usb.driver);
+check('no phone', r.usb.phone == null && r.usb.netdev == null && !r.usb.carrier);
+check('usb support missing', !r.usb.supported && !r.usb.iphone_support && !r.usb.android_support);
 check('main interfaces', join(',', map(r.main, (i) => i.interface)) == 'wan,wan6,backup');
 check('main state', r.main[0].up && r.main[0].address == '203.0.113.7' && r.main[0].gateway == '203.0.113.1' && r.main[1].ipv6_only);
 check('wifi not configured', !r.wifi.configured && r.wifi.sta_ifname == null);
@@ -120,7 +136,7 @@ check('nothing changed yet', N.tether_usb == null && N.wan.metric == null);
 // --- iPhone over USB
 plug_iphone(true);
 r = call('status');
-check('iphone seen', r.usb.iphone?.name == 'iPhone' && r.usb.netdev == 'eth2' && r.usb.carrier && r.usb.driver);
+check('iphone seen', r.usb.phone?.name == 'iPhone' && r.usb.phone?.kind == 'iphone' && r.usb.netdev == 'eth2' && r.usb.carrier && !r.usb.iphone_support);
 
 check('usb needs usbmuxd', index(call('start', { method: 'usb' }).error ?? '', 'usbmuxd') >= 0);
 writefile(getenv('TETHER_USBMUXD'), '');
@@ -196,6 +212,36 @@ r = call('start', { method: 'wifi' });
 check('switch to wifi', r.result && N.tether_usb.auto == '0' && N.tether_wifi.auto == '1' && W.tether_sta.disabled == null && N.wan.metric == '1000');
 call('stop');
 check('restored after switch', N.wan.metric == null && N.wan6.auto == null);
+
+// --- Android phone over USB (Pixel 9: NCM)
+unplug_netdev('eth2');
+writefile(`${SYS}/bus/usb/devices/1-1/idVendor`, '0000\n');	// iPhone gone
+plug('2-1', '18d1', 'Pixel 9', 'cdc_ncm', null);			// plugged in, USB tethering still off
+r = call('status');
+check('pixel recognised before tethering', r.usb.phone?.name == 'Pixel 9' && r.usb.phone?.kind == 'android' && r.usb.netdev == null && !r.usb.carrier);
+check('android support', r.usb.android_support && r.usb.supported);
+plug('2-1', '18d1', 'Pixel 9', 'cdc_ncm', 'usb0', true);		// USB tethering switched on
+r = call('status');
+check('pixel tethering link', r.usb.netdev == 'usb0' && r.usb.carrier && r.usb.phone?.name == 'Pixel 9' && r.usb.phone?.kind == 'android');
+r = call('start', { method: 'usb' });
+check('pixel start', r.result && N.tether_usb.device == 'usb0' && N.tether_usb.auto == '1');
+call('stop');
+
+// an iPhone wins when both are plugged in
+symlink('../../../bus/usb/devices/1-1/1-1:1.0', `${SYS}/class/net/eth2/device`);
+check('iphone preferred', call('status').usb.netdev == 'eth2');
+unplug_netdev('eth2');
+
+// older Androids use RNDIS; unknown makers still work once tethering is on
+unplug_netdev('usb0');
+plug('3-1', 'abcd', 'Phone X', 'rndis_host', 'usb1', true);
+r = call('status');
+check('rndis phone', r.usb.netdev == 'usb1' && r.usb.phone?.name == 'Phone X' && r.usb.phone?.kind == 'android');
+unplug_netdev('usb1');
+
+// a USB network adapter with another driver is not a phone
+plug('4-1', '0bda', 'USB Ethernet', 'r8152', 'eth3', true);
+check('other usb nic ignored', call('status').usb.netdev == null);
 
 check('stop when inactive is harmless', call('stop').result && N.wan.metric == null);
 

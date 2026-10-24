@@ -43,12 +43,14 @@ printf '#!/bin/sh\n[ "$1" = reload ] && exec /usr/libexec/wifisetup-schedule syn
 chmod +x /etc/init.d/wifisetup
 printf "config interface 'lan'\n\toption proto 'static'\n\toption ipaddr '192.168.1.1'\n\toption netmask '255.255.255.0'\n\nconfig interface 'wan'\n\toption proto 'dhcp'\n\nconfig interface 'wan6'\n\toption proto 'dhcpv6'\n\toption device '@wan'\n" > /etc/config/network
 printf "config zone\n\toption name 'lan'\n\tlist network 'lan'\n\nconfig zone\n\toption name 'wan'\n\tlist network 'wan'\n\tlist network 'wan6'\n" > /etc/config/firewall
-# a plugged in iPhone (ipheth network device eth9) in a fake /sys
+# a plugged in iPhone (ipheth network device eth9) in a fake /sys, laid out
+# like the kernel does: the network device links to the USB interface
 SYSFS="$WORK/sys"
-mkdir -p "$SYSFS/bus/usb/devices/1-1" "$SYSFS/bus/usb/drivers/ipheth" "$SYSFS/class/net/eth9/device" "$SYSFS/class/net/eth9/statistics" "$SYSFS/module/ipheth"
+mkdir -p "$SYSFS/bus/usb/devices/1-1/1-1:1.0" "$SYSFS/bus/usb/drivers/ipheth" "$SYSFS/class/net/eth9/statistics" "$SYSFS/module/ipheth"
 echo 05ac > "$SYSFS/bus/usb/devices/1-1/idVendor"
 echo iPhone > "$SYSFS/bus/usb/devices/1-1/product"
-ln -s ../../../../bus/usb/drivers/ipheth "$SYSFS/class/net/eth9/device/driver"
+ln -s ../../../drivers/ipheth "$SYSFS/bus/usb/devices/1-1/1-1:1.0/driver"
+ln -s ../../../bus/usb/devices/1-1/1-1:1.0 "$SYSFS/class/net/eth9/device"
 echo 1 > "$SYSFS/class/net/eth9/carrier"
 touch "$WORK/usbmuxd"
 printf "config dnsmasq\n\toption domainneeded '1'\n" > /etc/config/dhcp
@@ -172,7 +174,7 @@ ubus -t 10 call luci.wifisetup set_network '{"net":"guest","enabled":false}' | j
 
 echo "== tether: status"
 ubus list luci.tether >/dev/null 2>&1 || fail "rpcd did not register luci.tether"
-ubus -t 10 call luci.tether status | jq -e '.active == false and .usb.supported and .usb.netdev == "eth9" and .usb.carrier and .usb.iphone.name == "iPhone" and (.main | map(.interface) == ["wan","wan6"])' >/dev/null || fail "tether status"
+ubus -t 10 call luci.tether status | jq -e '.active == false and .usb.supported and .usb.netdev == "eth9" and .usb.carrier and .usb.phone.name == "iPhone" and .usb.phone.kind == "iphone" and (.main | map(.interface) == ["wan","wan6"])' >/dev/null || fail "tether status"
 
 echo "== tether: Wi-Fi hotspot"
 ubus -t 10 call luci.tether status | jq -e '(.own_ssids | index("CI Home") != null) and (.own_ssids | index("CI Guest") != null) and .wifi.sta_ifname == null' >/dev/null || fail "tether own ssids"

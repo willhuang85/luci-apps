@@ -1,17 +1,21 @@
 # SPDX-License-Identifier: Apache-2.0
-# luci-app-tether: keeps network.tether_usb on the iPhone's network device
-# (ipheth driver), whose name depends on what else is plugged in.
+# luci-app-tether: keeps network.tether_usb on the phone's network device
+# (iPhone: ipheth, Android: cdc_ncm or rndis_host), whose name depends on
+# what else is plugged in.
 
 [ "$ACTION" = add ] || exit 0
 [ -n "$DEVICENAME" ] || exit 0
 
 driver=$(readlink "/sys/class/net/$DEVICENAME/device/driver" 2>/dev/null)
-[ "${driver##*/}" = ipheth ] || exit 0
+case "${driver##*/}" in
+	ipheth|cdc_ncm|rndis_host) ;;
+	*) exit 0 ;;
+esac
 
 uci -q get network.tether_usb >/dev/null || exit 0
 
 if [ "$(uci -q get network.tether_usb.device)" != "$DEVICENAME" ]; then
-	logger -t tether "iPhone connected as $DEVICENAME"
+	logger -t tether "phone connected as $DEVICENAME (${driver##*/})"
 	uci set network.tether_usb.device="$DEVICENAME"
 	uci commit network
 	ubus call network reload

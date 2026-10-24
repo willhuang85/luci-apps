@@ -5,12 +5,12 @@ Simple, consumer-router style apps for OpenWrt's LuCI web interface. Built and t
 | App | Menu | What it does |
 |---|---|---|
 | [**Wi-Fi Setup**](luci-app-wifisetup/README.md) (`luci-app-wifisetup`) | Network → Wi-Fi Setup | Network name, password and security for all bands, guest network, channels / width / power, connected devices with block, QR code sharing, Wi-Fi schedule |
-| [**iPhone Tethering**](luci-app-tether/README.md) (`luci-app-tether`) | Network → iPhone Tethering | When the main internet is down, use the iPhone's mobile data over USB or its Wi-Fi hotspot; switch back when the main connection works again |
+| [**Phone Tethering**](luci-app-tether/README.md) (`luci-app-tether`) | Network → Phone Tethering | When the main internet is down, use an iPhone's or Android phone's mobile data over USB or its Wi-Fi hotspot; switch back when the main connection works again |
 | [**WireGuard + Passwall**](luci-app-wireguard-passwall/README.md) (`luci-app-wireguard-passwall`) | VPN → WireGuard + Passwall | WireGuard VPN client: import your provider's `.conf`, one-click connect, kill switch, and modes to carry the VPN through a Passwall proxy node |
 
-| Wi-Fi Setup | iPhone Tethering | WireGuard + Passwall |
+| Wi-Fi Setup | Phone Tethering | WireGuard + Passwall |
 |---|---|---|
-| <img src="docs/screenshots/wifisetup/overview.png" alt="Wi-Fi Setup page" width="280"> | <img src="docs/screenshots/tether/main-down.png" alt="iPhone Tethering page" width="280"> | <img src="docs/screenshots/wgpasswall/overview.png" alt="WireGuard + Passwall page" width="280"> |
+| <img src="docs/screenshots/wifisetup/overview.png" alt="Wi-Fi Setup page" width="280"> | <img src="docs/screenshots/tether/main-down.png" alt="Phone Tethering page" width="280"> | <img src="docs/screenshots/wgpasswall/overview.png" alt="WireGuard + Passwall page" width="280"> |
 
 <sub>Screenshots show sample data; colours and fonts follow your LuCI theme.</sub>
 
@@ -76,13 +76,13 @@ echo "https://github.com/willhuang85/luci-apps/releases/latest/download/packages
   nft list ruleset | grep -inE 'drop|reject' | head -30
   ```
   If a proxy app such as Passwall runs with "Localhost proxy", stop it briefly (`/etc/init.d/passwall stop`), run `apk update`, install, then start it again.
-- App specific: see the [Wi-Fi Setup](luci-app-wifisetup/README.md#troubleshooting) and [iPhone Tethering](luci-app-tether/README.md#troubleshooting) READMEs.
+- App specific: see the [Wi-Fi Setup](luci-app-wifisetup/README.md#troubleshooting) and [Phone Tethering](luci-app-tether/README.md#troubleshooting) READMEs.
 
 ## Building
 
 The GitHub Actions workflow (`.github/workflows/build.yml`) runs on every push:
 
-1. **test** – builds ucode, rpcd and friends at the exact revisions of the OpenWrt release (`tests/lib/build-stack.sh`), loads the backends into a real rpcd next to fake `iwinfo` / `network.wireless` / `network.interface` / `hostapd` objects (and a fake `/sys` with a plugged-in iPhone) and walks through every feature, runs the unit tests, tests the WireGuard relay end to end against a stub SOCKS5 proxy, syntax-checks JS/JSON/shell.
+1. **test** – builds ucode, rpcd and friends at the exact revisions of the OpenWrt release (`tests/lib/build-stack.sh`), loads the backends into a real rpcd next to fake `iwinfo` (loaded into rpcd, as on a router) / `network.wireless` / `network.interface` / `hostapd` objects (and a fake `/sys` with a plugged-in iPhone) and walks through every feature, runs the unit tests, tests the WireGuard relay end to end against a stub SOCKS5 proxy, syntax-checks JS/JSON/shell.
 2. **build** – downloads the official OpenWrt 25.12.2 SDK, builds all packages and uploads the `.apk` files as an artifact. The packages are architecture independent, so one build works on every router.
 3. **release** – on every push to `main` (and on pushed `v*` tags), publishes the `.apk` files (plus, when signed, `packages.adb` and the public key) as a GitHub release.
 
@@ -102,7 +102,7 @@ Run the tests (needs a [ucode](https://github.com/jow-/ucode) build, ideally the
 UCODE_DIR=/path/to/ucode/build ./tests/run.sh
 ```
 
-`tests/integration.sh` (Wi-Fi Setup and iPhone Tethering) and `tests/wgpasswall/integration.sh` build libubox, ubus, uci, ucode and rpcd at the revisions used by the OpenWrt release and drive the real plugins over ubus; `tests/wgpasswall/relay_test.sh` tests the WireGuard → SOCKS5 relay. It installs into `/usr` and `/etc/config`, so only run it on a throwaway machine or container (CI does this on every push).
+`tests/integration.sh` (Wi-Fi Setup and Phone Tethering) and `tests/wgpasswall/integration.sh` build libubox, ubus, uci, ucode and rpcd at the revisions used by the OpenWrt release and drive the real plugins over ubus; `tests/wgpasswall/relay_test.sh` tests the WireGuard → SOCKS5 relay. It installs into `/usr` and `/etc/config`, so only run it on a throwaway machine or container (CI does this on every push).
 
 ## License
 

@@ -2,26 +2,27 @@
 //
 // rpcd backend for luci-app-tether.
 //
-// Lets the router use an iPhone as its internet connection, switched on by
+// Lets the router use a phone as its internet connection, switched on by
 // hand when the main internet is down:
 //
-//  - USB: the iPhone's tethering interface (ipheth driver, paired by
-//    usbmuxd) is the netifd interface "tether_usb" (DHCP); a hotplug script
-//    keeps its device name current
-//  - Wi-Fi: the router joins the iPhone's Personal Hotspot as a client
+//  - USB: the phone's tethering interface is the netifd interface
+//    "tether_usb" (DHCP): an iPhone's (ipheth driver, paired by usbmuxd) or
+//    an Android phone's (cdc_ncm on recent phones such as Pixels, rndis_host
+//    on older ones); a hotplug script keeps its device name current
+//  - Wi-Fi: the router joins the phone's hotspot as a client
 //    ("tether_sta" in /etc/config/wireless) on the interface "tether_wifi"
 //
 // Both interfaces are part of the WAN firewall zone, so LAN devices are
 // masqueraded through them like through the normal WAN. While tethering is
 // on, the main internet interfaces stay up but get a high route metric so
 // the phone's default route wins (IPv6-only ones, e.g. wan6, are paused, as
-// the iPhone only offers IPv4); their previous settings are restored when
+// tethering is set up for IPv4 only); their previous settings are restored when
 // tethering is switched off. Keeping the main connection up lets the page
 // notice when it works again.
 
 'use strict';
 
-import { access, glob, lsdir, popen, readfile, readlink } from 'fs';
+import { access, glob, lsdir, popen, readfile, readlink, realpath } from 'fs';
 import { connect } from 'ubus';
 import { cursor } from 'uci';
 
@@ -36,6 +37,14 @@ const TETHER_METRIC = '10';
 // added to the metric of the main internet while tethering
 const MAIN_PENALTY = 1000;
 const APPLE_VENDOR = '05ac';
+// USB vendor IDs of Android phone makers: recognises a plugged in phone
+// before USB tethering is switched on
+const ANDROID_VENDORS = {
+	'18d1': 'Google', '04e8': 'Samsung', '22b8': 'Motorola', '2a70': 'OnePlus', '2717': 'Xiaomi',
+	'0fce': 'Sony', '1004': 'LG', '12d1': 'Huawei', '22d9': 'OPPO', '0bb4': 'HTC'
+};
+// network drivers of USB tethering and the kind of phone that uses them
+const USB_DRIVERS = { ipheth: 'iphone', cdc_ncm: 'android', rndis_host: 'android' };
 // protocols that only carry IPv6, paused while tethering
 const IPV6_ONLY = { dhcpv6: true, '6in4': true, '6to4': true, '6rd': true };
 
@@ -81,30 +90,66 @@ function sysread(path) {
 	return (v != null) ? trim(v) : null;
 }
 
-// network device of a connected iPhone (ipheth driver)
-function usb_netdev() {
-	for (let d in sort(lsdir(`${SYS}/class/net`) ?? [])) {
-		const drv = readlink(`${SYS}/class/net/${d}/device/driver`);
+function module_present(name) {
+	return access(`${SYS}/module/${name}`) || length(glob(`/lib/modules/*/${name}.ko`) ?? []) > 0;
+}
 
-		if (drv && match(drv, /\/ipheth$/))
-			return d;
+// Network device of a tethering phone, { dev, kind }; an iPhone wins if
+// several are plugged in.
+function usb_netdev() {
+	let found = null;
+
+	for (let d in sort(lsdir(`${SYS}/class/net`) ?? [])) {
+		const drv = match(readlink(`${SYS}/class/net/${d}/device/driver`) ?? '', /([^\/]+)$/)?.[1];
+		const kind = USB_DRIVERS[drv];
+
+		if (kind && (!found || (kind == 'iphone' && found.kind != 'iphone')))
+			found = { dev: d, kind };
+	}
+
+	return found;
+}
+
+// { name, kind } of a USB device that is a phone we know, else null
+function usb_device_info(dir) {
+	const vendor = trim(readfile(`${dir}/idVendor`) ?? '');
+	const product = trim(readfile(`${dir}/product`) ?? '');
+
+	if (vendor == APPLE_VENDOR)
+		return { name: length(product) ? product : 'iPhone', kind: 'iphone' };
+
+	if (ANDROID_VENDORS[vendor])
+		return { name: length(product) ? product : `${ANDROID_VENDORS[vendor]} phone`, kind: 'android' };
+
+	return null;
+}
+
+// The plugged in phone: the one behind the tethering device, or else any
+// USB device made by a phone maker (USB tethering not switched on yet).
+function usb_phone(net) {
+	if (net) {
+		const dir = realpath(`${SYS}/class/net/${net.dev}/device/..`);
+		const info = dir ? usb_device_info(dir) : null;
+		const product = dir ? trim(readfile(`${dir}/product`) ?? '') : '';
+
+		return info ?? { name: length(product) ? product : 'Phone', kind: net.kind };
+	}
+
+	for (let d in sort(lsdir(`${SYS}/bus/usb/devices`) ?? [])) {
+		const info = usb_device_info(`${SYS}/bus/usb/devices/${d}`);
+
+		if (info)
+			return info;
 	}
 
 	return null;
 }
 
-function usb_iphone() {
-	for (let d in sort(lsdir(`${SYS}/bus/usb/devices`) ?? []))
-		if (sysread(`bus/usb/devices/${d}/idVendor`) == APPLE_VENDOR)
-			return { name: sysread(`bus/usb/devices/${d}/product`) ?? 'iPhone' };
-
-	return null;
-}
-
 function usb_supported() {
-	const driver = access(`${SYS}/module/ipheth`) || length(glob('/lib/modules/*/ipheth.ko') ?? []) > 0;
-
-	return { driver: !!driver, usbmuxd: access(USBMUXD) == true };
+	return {
+		iphone: module_present('ipheth') && access(USBMUXD) == true,
+		android: module_present('cdc_ncm') || module_present('rndis_host')
+	};
 }
 
 /* --- interfaces */
@@ -182,7 +227,7 @@ function ensure_interfaces(uci) {
 		}
 	}
 
-	const dev = usb_netdev();
+	const dev = usb_netdev()?.dev;
 
 	if (dev && uci.get('network', USB_NET, 'device') != dev) {
 		uci.set('network', USB_NET, 'device', dev);
@@ -371,14 +416,14 @@ function rx_tx(dev) {
 const methods = {
 	/*
 	 * Everything the page shows: whether tethering is on, the state of the
-	 * iPhone over USB and Wi-Fi, and of the main internet.
+	 * phone over USB and Wi-Fi, and of the main internet.
 	 */
 	status: {
 		call: function() {
 			const uci = cursor();
 			const s = settings(uci);
 			const dump = iface_dump();
-			const dev = usb_netdev();
+			const net = usb_netdev();
 			const sup = usb_supported();
 			const sta = sta_config(uci);
 
@@ -393,12 +438,12 @@ const methods = {
 				active: s.active,
 				method: s.method,
 				usb: {
-					supported: sup.driver && sup.usbmuxd,
-					driver: sup.driver,
-					usbmuxd: sup.usbmuxd,
-					iphone: usb_iphone(),
-					netdev: dev,
-					carrier: dev ? sysread(`class/net/${dev}/carrier`) == '1' : false,
+					supported: sup.iphone || sup.android,
+					iphone_support: sup.iphone,
+					android_support: sup.android,
+					phone: usb_phone(net),
+					netdev: net?.dev,
+					carrier: net ? sysread(`class/net/${net.dev}/carrier`) == '1' : false,
 					...tether.usb
 				},
 				wifi: { ...sta, sta_ifname: sta.configured ? sta_ifname() : null, ...tether.wifi },
@@ -504,7 +549,7 @@ const methods = {
 	},
 
 	/*
-	 * Switches the router's internet to the iPhone (`method` usb or wifi),
+	 * Switches the router's internet to the phone (`method` usb or wifi),
 	 * or from one method to the other while tethering.
 	 */
 	start: {
@@ -520,15 +565,15 @@ const methods = {
 			if (method == 'usb') {
 				const sup = usb_supported();
 
-				if (!sup.driver || !sup.usbmuxd)
-					return { error: 'iPhone USB support is not installed (packages kmod-usb-net-ipheth and usbmuxd)' };
+				if (!sup.iphone && !sup.android)
+					return { error: 'USB tethering support is not installed (packages kmod-usb-net-ipheth, usbmuxd, kmod-usb-net-cdc-ncm, kmod-usb-net-rndis)' };
 			}
 
 			if (method == 'wifi') {
 				const sta = sta_config(uci);
 
 				if (!sta.configured)
-					return { error: 'Enter the name and password of the iPhone\'s hotspot first' };
+					return { error: 'Enter the name and password of the phone\'s hotspot first' };
 
 				if (sta.radio_disabled)
 					return { error: `The ${sta.band_label} band is switched off; turn it on or pick another band` };

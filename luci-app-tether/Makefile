@@ -16,16 +16,16 @@ define Package/luci-app-tether
   SECTION:=luci
   CATEGORY:=LuCI
   SUBMENU:=3. Applications
-  TITLE:=Tether: use an iPhone (USB or Wi-Fi hotspot) as backup internet
+  TITLE:=Tether: use a phone (USB or Wi-Fi hotspot) as backup internet
   DEPENDS:=+luci-base +rpcd +rpcd-mod-ucode +rpcd-mod-iwinfo +ucode-mod-fs +ucode-mod-uci \
-	+ucode-mod-ubus +kmod-usb-net-ipheth +usbmuxd
+	+ucode-mod-ubus +kmod-usb-net-ipheth +usbmuxd +kmod-usb-net-cdc-ncm +kmod-usb-net-rndis
   PKGARCH:=all
 endef
 
 define Package/luci-app-tether/description
-  A simple LuCI page to switch the router's internet to an iPhone when the
-  main connection is down: over a USB cable or by joining the iPhone's
-  Personal Hotspot over Wi-Fi. Shows whether the main internet works again
+  A simple LuCI page to switch the router's internet to a phone when the
+  main connection is down: an iPhone or Android phone over a USB cable, or
+  any phone's hotspot over Wi-Fi. Shows whether the main internet works again
   and switches back with one click.
 endef
 
@@ -53,7 +53,7 @@ define Package/luci-app-tether/postinst
 	/etc/init.d/rpcd restart
 	/etc/init.d/usbmuxd enable 2>/dev/null
 	/etc/init.d/usbmuxd start 2>/dev/null
-	echo "luci-app-tether: log out of LuCI and back in, then open Network -> iPhone Tethering"
+	echo "luci-app-tether: log out of LuCI and back in, then open Network -> Phone Tethering"
 }
 exit 0
 endef

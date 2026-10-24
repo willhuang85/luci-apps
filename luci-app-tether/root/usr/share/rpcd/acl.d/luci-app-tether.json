@@ -1,6 +1,6 @@
 {
 	"luci-app-tether": {
-		"description": "Grant access to iPhone tethering",
+		"description": "Grant access to phone tethering",
 		"read": {
 			"ubus": {
 				"luci.tether": [ "status", "check_main" ],

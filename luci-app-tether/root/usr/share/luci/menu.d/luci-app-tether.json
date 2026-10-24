@@ -1,6 +1,6 @@
 {
 	"admin/network/tether": {
-		"title": "iPhone Tethering",
+		"title": "Phone Tethering",
 		"order": 15,
 		"action": {
 			"type": "view",

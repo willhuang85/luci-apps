@@ -3,7 +3,7 @@ config settings 'settings'
 	# managed by the web page: tethering on/off and the method (usb / wifi)
 	option active '0'
 	option method 'usb'
-	# firewall zone of the main internet; the iPhone is added to it
+	# firewall zone of the main internet; the phone is added to it
 	option wan_zone 'wan'
 	# address pinged to check whether the main internet works
 	option check_host '1.1.1.1'

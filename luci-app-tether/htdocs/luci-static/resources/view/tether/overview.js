@@ -20,12 +20,12 @@ const callIwinfoScan = rpc.declare({ object: 'iwinfo', method: 'scan', params: [
 const PHONE_SSID = /iphone|ipad|pixel|galaxy|android|oneplus|redmi|xiaomi|motorola|moto [a-z]/i;
 
 const METHODS = {
-	usb: { icon: '🔌', title: _('USB cable'), desc: _('Most reliable, and charges the iPhone.') },
-	wifi: { icon: '📶', title: _('Wi-Fi hotspot'), desc: _('No cable: the router joins the iPhone\'s Personal Hotspot.') }
+	usb: { icon: '🔌', title: _('USB cable'), desc: _('Most reliable, and charges the phone. iPhone or Android.') },
+	wifi: { icon: '📶', title: _('Wi-Fi hotspot'), desc: _('No cable: the router joins the phone\'s hotspot. Any phone.') }
 };
 
 const SECURITY = [
-	[ 'sae-mixed', _('WPA2/WPA3 (iPhone default)') ],
+	[ 'sae-mixed', _('WPA2/WPA3 (default on most phones)') ],
 	[ 'sae', _('WPA3') ],
 	[ 'psk2', _('WPA2') ],
 	[ 'none', _('Open (no password)') ]
@@ -272,10 +272,10 @@ return view.extend({
 		const st = this.st;
 
 		if (method == 'usb' && !st.usb.supported)
-			return _('iPhone USB support is not installed on the router.');
+			return _('USB tethering support is not installed on the router.');
 
 		if (method == 'wifi' && !st.wifi.configured)
-			return _('Enter the iPhone\'s hotspot name and password first.');
+			return _('Enter the phone\'s hotspot name and password first.');
 
 		return null;
 	},
@@ -286,7 +286,7 @@ return view.extend({
 		if (block)
 			return notifyError(block);
 
-		return this.act(_('Switching to the iPhone…'), () => callStart(method), method == 'wifi' ? 8000 : 4000);
+		return this.act(_('Switching to the phone…'), () => callStart(method), method == 'wifi' ? 8000 : 4000);
 	},
 
 	handleStop() {
@@ -349,7 +349,7 @@ return view.extend({
 						disabled: block ? '' : null,
 						title: block,
 						click: () => this.handleStart(method)
-					}, [ _('Use iPhone (%s)').format(METHODS[method].title) ])
+					}, [ _('Use phone (%s)').format(METHODS[method].title) ])
 				]),
 				E('div', { 'class': 'tt-methods' }, Object.keys(METHODS).map((m) => E('button', {
 					'class': 'tt-method' + (m == method ? ' active' : ''),
@@ -372,13 +372,11 @@ return view.extend({
 				E('div', { 'class': 'tt-orb ' + state }, state == 'ok' ? '📱' : '…'),
 				E('div', { 'class': 'tt-hero-text' }, [
 					E('div', { 'class': 'tt-hero-title' }, state == 'ok'
-						? _('Internet via iPhone (%s)').format(METHODS[m].title)
-						: _('Waiting for the iPhone (%s)…').format(METHODS[m].title)),
+						? _('Internet via %s (%s)').format(this.phoneName(), METHODS[m].title)
+						: _('Waiting for the phone (%s)…').format(METHODS[m].title)),
 					E('div', { 'class': 'tt-sub' }, state == 'ok'
-						? _('All your devices use the iPhone\'s mobile data. Your main internet stays connected in the background.')
-						: (m == 'usb'
-							? _('Plug in the iPhone, unlock it, tap "Trust" if asked and turn on Personal Hotspot.')
-							: _('Open Settings → Personal Hotspot on the iPhone and keep that screen open until the router has joined.'))),
+						? _('All your devices use the phone\'s mobile data. Your main internet stays connected in the background.')
+						: (m == 'usb' ? this.usbHint() : this.hotspotHint())),
 					this.renderMainLine()
 				]),
 				E('div', { 'class': 'tt-actions', style: 'margin-top:0; flex-direction:column; align-items:stretch' }, [
@@ -417,24 +415,47 @@ return view.extend({
 		]);
 	},
 
+	phoneName() {
+		const m = this.st.method;
+
+		return (m == 'usb' && this.st.usb.phone?.name) ? this.st.usb.phone.name : _('phone');
+	},
+
+	// What to do on the phone to start USB tethering, for the plugged in kind.
+	usbHint() {
+		switch (this.st.usb.phone?.kind) {
+		case 'iphone':
+			return _('Unlock the iPhone, tap "Trust" when it asks about this computer, and turn on Settings → Personal Hotspot → Allow Others to Join.');
+
+		case 'android':
+			return _('On the phone, turn on Settings → Network & internet → Hotspot & tethering → USB tethering. Android switches it off when unplugged, so do this every time.');
+
+		default:
+			return _('iPhone: unlock it, tap "Trust" and turn on Personal Hotspot. Android: turn on Settings → Network & internet → Hotspot & tethering → USB tethering.');
+		}
+	},
+
+	hotspotHint() {
+		return _('Turn on the phone\'s hotspot (iPhone: Settings → Personal Hotspot, Android: Settings → Network & internet → Hotspot & tethering → Wi-Fi hotspot) and keep that screen open until the router has joined.');
+	},
+
 	renderUsb() {
 		const u = this.st.usb;
 		const live = this.st.active && this.st.method == 'usb';
+		const phone = u.phone;
+		const install = 'apk update && apk add kmod-usb-net-ipheth usbmuxd kmod-usb-net-cdc-ncm kmod-usb-net-rndis';
+		let note = '';
 
-		if (!u.supported)
-			return E('div', { 'class': 'tt-card' }, [
-				E('p', { 'class': 'tt-h' }, '🔌 ' + _('USB cable')),
-				E('div', { 'class': 'tt-note bad' }, [
-					_('The router is missing iPhone USB support. Install it while your internet still works:'),
-					E('pre', { style: 'margin:8px 0 0' }, 'apk update && apk add kmod-usb-net-ipheth usbmuxd')
-				])
+		if (!u.supported || (phone?.kind == 'iphone' && !u.iphone_support) || (phone?.kind == 'android' && !u.android_support))
+			note = E('div', { 'class': 'tt-note bad' }, [
+				_('The router is missing USB tethering support for this phone. Install it while your internet still works:'),
+				E('pre', { style: 'margin:8px 0 0' }, install)
 			]);
 
 		const steps = [
-			this.step(u.iphone ? 'ok' : 'wait', u.iphone ? _('%s plugged in').format(u.iphone.name) : _('Plug the iPhone into the router\'s USB port'),
-				u.iphone ? null : _('Use a cable that can carry data, not only charge.')),
-			this.step(u.carrier ? 'ok' : (u.iphone ? 'wait' : ''), _('Tethering link'),
-				u.carrier ? null : _('Unlock the iPhone, tap "Trust" when it asks about this computer, and turn on Settings → Personal Hotspot → Allow Others to Join.'))
+			this.step(phone ? 'ok' : 'wait', phone ? _('%s plugged in').format(phone.name) : _('Plug the phone into the router\'s USB port'),
+				phone ? null : _('Use a cable that can carry data, not only charge.')),
+			this.step(u.carrier ? 'ok' : (phone ? 'wait' : ''), _('Tethering link'), u.carrier ? null : this.usbHint())
 		];
 
 		if (live)
@@ -443,7 +464,8 @@ return view.extend({
 
 		return E('div', { 'class': 'tt-card' }, [
 			E('p', { 'class': 'tt-h' }, '🔌 ' + _('USB cable')),
-			E('div', { 'class': 'tt-sub' }, _('The iPhone shows up here as soon as it is plugged in; tethering itself starts only when you switch to it.')),
+			E('div', { 'class': 'tt-sub' }, _('iPhone or Android. The phone shows up here as soon as it is plugged in; tethering itself starts only when you switch to it.')),
+			note,
 			E('ul', { 'class': 'tt-steps' }, steps)
 		]);
 	},
@@ -453,7 +475,7 @@ return view.extend({
 	showWifiEditor() {
 		const w = this.st.wifi;
 		const radios = this.st.radios.filter((r) => r.enabled);
-		const ssid = E('input', { type: 'text', 'class': 'cbi-input-text', maxlength: 32, value: w.ssid ?? '', placeholder: _('e.g. Will\'s iPhone') });
+		const ssid = E('input', { type: 'text', 'class': 'cbi-input-text', maxlength: 32, value: w.ssid ?? '', placeholder: _('e.g. Will\'s iPhone, Pixel 9') });
 		const key = E('input', { type: 'password', 'class': 'cbi-input-text', maxlength: 63, value: w.key ?? '', autocomplete: 'off' });
 		const enc = E('select', { 'class': 'cbi-input-select' }, SECURITY.map(([ v, l ]) =>
 			E('option', { value: v, selected: v == (w.encryption ?? 'sae-mixed') ? '' : null }, l)));
@@ -471,9 +493,9 @@ return view.extend({
 			keyRow.forEach((el) => el.style.display = keyed ? '' : 'none');
 
 			if (!ssid.value.length)
-				err = _('Enter the hotspot name (on the iPhone: Settings → General → About → Name)');
+				err = _('Enter the hotspot name, as shown in the phone\'s hotspot settings');
 			else if (keyed && (key.value.length < 8 || key.value.length > 63))
-				err = _('The password is shown in Settings → Personal Hotspot');
+				err = _('The password is shown in the phone\'s hotspot settings');
 
 			hint.textContent = err ?? '';
 			hint.className = 'tt-hint' + (err ? ' bad' : '');
@@ -486,7 +508,7 @@ return view.extend({
 		enc.addEventListener('change', validate);
 
 		const scan = () => {
-			dom.content(list, E('p', { 'class': 'spinning' }, _('Looking for hotspots… keep the Personal Hotspot screen open on the iPhone.')));
+			dom.content(list, E('p', { 'class': 'spinning' }, _('Looking for hotspots… keep the hotspot screen open on the phone.')));
 
 			return scanHotspots(this.st).then((results) => {
 				if (!results.length)
@@ -517,10 +539,10 @@ return view.extend({
 				this.st.active && this.st.method == 'wifi' ? 8000 : 500);
 		};
 
-		ui.showModal(_('iPhone hotspot'), [
+		ui.showModal(_('Phone hotspot'), [
 			E('div', { 'class': 'tt' }, [
 				E('div', { 'class': 'tt-row' }, [
-					E('div', { 'class': 'tt-sub tt-grow', style: 'margin:0' }, _('Turn on Personal Hotspot on the iPhone, then search for it or type its name.')),
+					E('div', { 'class': 'tt-sub tt-grow', style: 'margin:0' }, _('Turn on the phone\'s hotspot, then search for it or type its name.')),
 					E('button', { 'class': 'btn cbi-button', click: scan }, [ '🔍 ' + _('Search') ])
 				]),
 				list,
@@ -530,7 +552,7 @@ return view.extend({
 					...keyRow,
 					E('label', {}, _('Band')), E('div', {}, [
 						radio,
-						E('div', { 'class': 'tt-hint' }, _('The router\'s own Wi-Fi on this band moves to the iPhone\'s channel while tethering. iPhones use 2.4 GHz when "Maximize Compatibility" is on.'))
+						E('div', { 'class': 'tt-hint' }, _('The router\'s own Wi-Fi on this band moves to the phone\'s channel while tethering. iPhones use 2.4 GHz when "Maximize Compatibility" is on; Android lets you pick the band in the hotspot settings.'))
 					])
 				]),
 				hint
@@ -561,7 +583,7 @@ return view.extend({
 		else {
 			const steps = [
 				this.step(live ? (w.connected ? 'ok' : 'wait') : '', w.connected ? _('Joined "%s"').format(w.ssid) : _('Join "%s" (%s)').format(w.ssid, w.band_label ?? '?'),
-					live && !w.connected ? _('Keep Settings → Personal Hotspot open on the iPhone until the router has joined.') : null)
+					live && !w.connected ? this.hotspotHint() : null)
 			];
 
 			if (live)
@@ -578,7 +600,7 @@ return view.extend({
 
 		return E('div', { 'class': 'tt-card' }, [
 			E('p', { 'class': 'tt-h' }, '📶 ' + _('Wi-Fi hotspot')),
-			E('div', { 'class': 'tt-sub' }, _('The router joins the iPhone\'s Personal Hotspot like a laptop would.')),
+			E('div', { 'class': 'tt-sub' }, _('The router joins the phone\'s hotspot like a laptop would. Works with any phone.')),
 			body
 		]);
 	},
@@ -587,10 +609,10 @@ return view.extend({
 		return E('div', { 'class': 'tt-card' }, [
 			E('p', { 'class': 'tt-h' }, '💡 ' + _('Good to know')),
 			E('ul', { 'class': 'tt-tips' }, [
-				E('li', {}, _('All devices on your network share the iPhone\'s mobile data; streaming and updates can use a lot of it.')),
-				E('li', {}, _('The iPhone may turn Personal Hotspot off after a while without devices; over USB it stays on as long as the cable is in.')),
+				E('li', {}, _('All devices on your network share the phone\'s mobile data; streaming and updates can use a lot of it.')),
+				E('li', {}, _('Phones turn their Wi-Fi hotspot off after a while without devices. Over USB, an iPhone stays on while plugged in; Android needs USB tethering switched on again after each plug-in.')),
 				E('li', {}, _('Tethering stays on until you switch back, even after a reboot. The router keeps checking your main internet and tells you here when it works again.')),
-				E('li', {}, _('Only IPv4 goes through the iPhone; IPv6 of the main connection is paused meanwhile.'))
+				E('li', {}, _('Only IPv4 goes through the phone; IPv6 of the main connection is paused meanwhile.'))
 			])
 		]);
 	},
@@ -611,9 +633,9 @@ return view.extend({
 
 		return E([], [
 			E('style', {}, CSS),
-			E('h2', {}, _('iPhone Tethering')),
+			E('h2', {}, _('Phone Tethering')),
 			E('div', { 'class': 'cbi-map-descr', style: 'margin-bottom:16px' },
-				_('When your main internet is down, use the iPhone\'s mobile data for the whole network: over a USB cable or the iPhone\'s Wi-Fi hotspot.')),
+				_('When your main internet is down, use your phone\'s mobile data for the whole network: over a USB cable or the phone\'s Wi-Fi hotspot.')),
 			this.root
 		]);
 	}
