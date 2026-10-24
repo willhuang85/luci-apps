@@ -13,6 +13,7 @@ const callRemove = rpc.declare({ object: 'luci.wgclient', method: 'remove', para
 const callConnect = rpc.declare({ object: 'luci.wgclient', method: 'connect', params: [ 'id' ] });
 const callDisconnect = rpc.declare({ object: 'luci.wgclient', method: 'disconnect', params: [ 'id' ] });
 const callSetKillswitch = rpc.declare({ object: 'luci.wgclient', method: 'set_killswitch', params: [ 'enabled' ] });
+const callSetPasswall = rpc.declare({ object: 'luci.wgclient', method: 'set_passwall', params: [ 'enabled', 'node' ] });
 
 // A handshake older than this means the peer is not answering anymore.
 const HANDSHAKE_TIMEOUT = 180;
@@ -215,6 +216,31 @@ return view.extend({
 
 	handleDisconnect(p) {
 		return this.act(_('Disconnecting from %s…').format(p.label), () => callDisconnect(p.id));
+	},
+
+	handlePasswall(ev) {
+		const enabled = ev.target.checked;
+		const node = this.root.querySelector('select[name="wgc-pw-node"]')?.value ?? '';
+
+		if (enabled && !confirm(_('Passwall will be switched on with the selected node and set up to wrap the WireGuard tunnel: "Localhost Proxy" on, "Client Proxy" off, your VPN servers added to its proxy list (and taken out of its direct list), and the tunnel MTU lowered to 1280.\n\nTurning this off restores your previous Passwall settings. Continue?'))) {
+			ev.target.checked = false;
+			return;
+		}
+
+		if (!enabled && !confirm(_('Restore the Passwall settings from before "Tunnel through Passwall" was turned on?'))) {
+			ev.target.checked = true;
+			return;
+		}
+
+		return this.act(enabled ? _('Setting up Passwall…') : _('Restoring Passwall settings…'),
+			() => callSetPasswall(enabled, node));
+	},
+
+	handlePasswallNode(ev) {
+		if (!this.data?.passwall?.enabled)
+			return;
+
+		return this.act(_('Switching Passwall node…'), () => callSetPasswall(true, ev.target.value));
 	},
 
 	handleKillswitch(ev) {
@@ -461,7 +487,10 @@ return view.extend({
 				this.renderStat(_('Last handshake'), formatAge(live.handshake_age)),
 				this.renderStat(_('Uptime'), formatUptime(live.uptime)),
 				this.renderStat(_('Downloaded'), formatBytes(live.rx_bytes)),
-				this.renderStat(_('Uploaded'), formatBytes(live.tx_bytes))
+				this.renderStat(_('Uploaded'), formatBytes(live.tx_bytes)),
+				data.passwall?.enabled
+					? this.renderStat(_('Route'), live.proxied === true ? '✓ ' + _('Via Passwall') : live.proxied === false ? '⚠ ' + _('Direct') : _('Checking…'))
+					: ''
 			])
 		]);
 	},
@@ -506,8 +535,69 @@ return view.extend({
 		]);
 	},
 
+	// "Tunnel through Passwall": one switch that configures Passwall.
+	renderPasswall(data) {
+		const pw = data.passwall;
+		const live = data.profiles.find((p) => p.up);
+		let note = '';
+
+		if (!pw.nodes.length) {
+			note = E('div', { 'class': 'wgc-note' }, [
+				_('Add a node in Passwall first, then come back here. '),
+				E('a', { href: L.url('admin/services/passwall') }, _('Open Passwall'))
+			]);
+		}
+		else if (pw.enabled && !pw.running) {
+			note = E('div', { 'class': 'wgc-note' }, _('Passwall is starting… this can take up to a minute.'));
+		}
+		else if (pw.enabled && live?.proxied === true) {
+			note = E('div', { 'class': 'wgc-note ok' }, _('Wrapped: WireGuard\'s traffic to the VPN server is going through Passwall.'));
+		}
+		else if (pw.enabled && live?.proxied === false) {
+			note = E('div', { 'class': 'wgc-note bad' }, _('Not wrapped yet: the tunnel still goes out directly. This normally fixes itself within 30 seconds of Passwall starting; if it doesn\'t, Disconnect and Connect the profile, and check that the Passwall node supports UDP.'));
+		}
+		else if (pw.enabled && live) {
+			note = E('div', { 'class': 'wgc-note' }, _('Checking whether the tunnel is wrapped…'));
+		}
+
+		const nodeSelect = E('select', {
+			'class': 'cbi-input-select',
+			name: 'wgc-pw-node',
+			style: 'max-width:100%',
+			change: ui.createHandlerFn(this, 'handlePasswallNode')
+		}, pw.nodes.map((n) => E('option', { value: n.id, selected: (n.id == pw.node) ? '' : null }, n.label)));
+
+		return E('div', { 'class': 'wgc-card' }, [
+			E('div', { 'class': 'wgc-row' }, [
+				E('div', { 'class': 'wgc-grow' }, [
+					E('p', { 'class': 'wgc-h' }, '🔀 ' + _('Tunnel through Passwall')),
+					E('div', { 'class': 'wgc-sub' }, _('Hide the VPN inside a Passwall proxy connection, e.g. where WireGuard is blocked or throttled.'))
+				]),
+				E('label', { 'class': 'wgc-switch', title: _('Tunnel through Passwall') }, [
+					E('input', {
+						type: 'checkbox',
+						role: 'switch',
+						'aria-label': _('Tunnel through Passwall'),
+						checked: pw.enabled ? '' : null,
+						disabled: pw.nodes.length ? null : '',
+						change: ui.createHandlerFn(this, 'handlePasswall')
+					}),
+					E('span', { 'class': 'wgc-slider' })
+				])
+			]),
+			pw.nodes.length ? E('div', { 'class': 'wgc-row', style: 'margin-top:12px; flex-wrap:wrap; gap:8px' }, [
+				E('span', { 'class': 'wgc-sub', style: 'margin:0' }, _('Passwall node')),
+				nodeSelect
+			]) : '',
+			note
+		]);
+	},
+
 	// Shown when a transparent proxy app is installed next to this one.
 	renderProxyInfo(data) {
+		if (data.passwall?.installed)
+			return this.renderPasswall(data);
+
 		const apps = data.proxy_apps ?? [];
 
 		if (!apps.length)

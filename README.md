@@ -81,13 +81,27 @@ How it stays out of the proxy's way:
 - The ip rules use priority 30100/30110, after Passwall's TPROXY rule (priority 999).
 - Passwall only intercepts *new* connections, and at boot WireGuard is up long before Passwall starts. The `wgclient` service therefore watches Passwall's nftables rules and, whenever Passwall (re)starts, moves each tunnel to a new random source port. That starts a fresh connection Passwall can catch; the server follows the new port automatically.
 
-To wrap the tunnel with Passwall:
+### One switch: "Tunnel through Passwall"
+
+With Passwall (not Passwall 2) installed, the app shows a **Tunnel through Passwall** card. Pick a node and turn it on, and the app:
+
+- switches Passwall on with that node, sets **Localhost Proxy** on and **Client Proxy** off (LAN traffic goes into WireGuard, WireGuard's packets go into the proxy), and makes sure **Use Proxy List** is on
+- adds your VPN servers' IPs to Passwall's proxy list (`/etc/passwall/rules/proxy_ip`, under a marker line) and comments them out of its direct list
+- removes the VPN server's port from Passwall's blocked UDP ports, if it was there
+- lowers the tunnel MTU to 1280 for the proxy overhead
+- enables and restarts the Passwall service
+
+Every value is saved first. Turning the switch off (or uninstalling the app) restores Passwall's settings, rule lists, service state and your MTUs. The card and the status panel show whether the tunnel is really wrapped, read from Passwall's mark on the connection.
+
+### Manual setup
+
+To wrap the tunnel with Passwall by hand:
 
 1. Import and connect your WireGuard profile here as usual.
 2. In Passwall enable **Localhost proxy** (proxy the router's own traffic) with UDP proxying turned on, and pick a node that supports UDP (VLESS, VMess, Trojan, Shadowsocks, ...).
 3. Make sure the WireGuard server's address goes through the proxy. In *Global* mode it does; in rule-based modes add the server IP/domain to the proxy list, and keep it out of the direct list.
 4. If some sites stall, set `MTU = 1280` in the profile (Edit) because the proxy adds overhead.
-5. Check it: `grep <server-ip> /proc/net/nf_conntrack` should show the WireGuard connection with `mark=1347639089` (Passwall's mark). `mark=0` means it still goes out directly; run `/etc/init.d/wgclient restart` or Disconnect/Connect the profile.
+5. Check it (the app's status panel does this for you): `grep <server-ip> /proc/net/nf_conntrack` should show the WireGuard connection with `mark=1347639089` (Passwall's mark). `mark=0` means it still goes out directly; run `/etc/init.d/wgclient restart` or Disconnect/Connect the profile.
 
 Alternatively, point the profile's `Endpoint` at a local Xray `dokodemo-door` inbound (e.g. `127.0.0.1:51821`) that forwards to the real server through the proxy.
 
