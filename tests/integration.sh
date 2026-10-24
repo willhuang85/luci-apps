@@ -37,6 +37,7 @@ echo "== installing package files"
 R="$SRC/luci-app-wgclient/root"
 install -D -m 0644 "$R/usr/share/rpcd/ucode/luci.wgclient" /usr/share/rpcd/ucode/luci.wgclient
 install -D -m 0644 "$R/usr/share/ucode/wgclient/conf.uc" /usr/share/ucode/wgclient/conf.uc
+install -D -m 0644 "$R/usr/share/ucode/wgclient/proxy.uc" /usr/share/ucode/wgclient/proxy.uc
 install -D -m 0644 "$R/etc/config/wgclient" /etc/config/wgclient
 printf "config interface 'lan'\n\toption proto 'static'\n\nconfig interface 'wan'\n\toption proto 'dhcp'\n" > /etc/config/network
 printf "config zone\n\toption name 'lan'\n\nconfig zone\n\toption name 'wan'\n" > /etc/config/firewall

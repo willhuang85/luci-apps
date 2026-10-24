@@ -29,6 +29,7 @@ import { access, popen, readfile, writefile } from 'fs';
 import { connect } from 'ubus';
 import { cursor } from 'uci';
 import * as conf from 'wgclient.conf';
+import { wrapped_state } from 'wgclient.proxy';
 
 const PREFIX = 'wgc_';
 const ZONE = 'wgclient';
@@ -394,7 +395,7 @@ function runtime_status() {
 		const f = split(line, '\t');
 
 		if (length(f) == 5)
-			wg[f[0]] = { public_key: f[2], peers: [] };
+			wg[f[0]] = { public_key: f[2], listen_port: f[3], peers: [] };
 		else if (length(f) == 9 && wg[f[0]])
 			push(wg[f[0]].peers, {
 				public_key: f[1],
@@ -715,33 +716,16 @@ function pw_after_profile_change(uci) {
 		pw_restart(false);
 }
 
-// true if the tunnel's connection carries Passwall's mark, false if it
-// leaves directly, null if unknown (no connection seen, IPv6, ...)
-function pw_wrapped(endpoint) {
+// Whether the tunnel's current connection to its server is wrapped by
+// Passwall, see wgclient/proxy.uc. IPv4 servers only.
+function pw_wrapped(endpoint, lport) {
 	const m = match(endpoint ?? '', /^([0-9.]+):([0-9]+)$/);
 
-	if (!m)
+	if (!m || !lport)
 		return null;
 
-	const ip = m[1], port = m[2];
-
-	for (let line in split(run(`grep -F ${shell_quote(ip)} /proc/net/nf_conntrack`) ?? '', '\n')) {
-		const t = match(line, /src=([^ ]+) dst=([^ ]+) sport=([0-9]+) dport=([0-9]+)/);
-		const mark = match(line, /mark=([0-9]+)/);
-
-		if (!t || !match(line, /^ipv4 +[0-9]+ udp /))
-			continue;
-
-		if (t[2] == ip && t[4] == port)
-			return mark != null && +mark[1] == PW_MARK;
-
-		// connection was opened by the server: Passwall treats our packets
-		// as replies and never wraps them
-		if (t[1] == ip && t[3] == port)
-			return false;
-	}
-
-	return null;
+	return wrapped_state(run(`grep -F ${shell_quote(m[1])} /proc/net/nf_conntrack`),
+		m[1], m[2], lport, PW_MARK);
 }
 
 function local_pubkey(private_key) {
@@ -804,7 +788,7 @@ const methods = {
 					handshake_age: handshake ? now - handshake : null,
 					rx_bytes: rx,
 					tx_bytes: tx,
-					proxied: (pw_on && ifc?.up) ? pw_wrapped(endpoint) : null
+					proxied: (pw_on && ifc?.up) ? pw_wrapped(endpoint, wg?.listen_port) : null
 				});
 			}
 

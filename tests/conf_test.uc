@@ -4,6 +4,7 @@
 'use strict';
 
 import * as conf from 'wgclient.conf';
+import { wrapped_state } from 'wgclient.proxy';
 
 let failures = 0, total = 0;
 
@@ -84,6 +85,17 @@ check('no address', conf.parse(`[Interface]\nPrivateKey=${PRIV}\n[Peer]\nPublicK
 check('bad cidr', ep('1.2.3.4').error == null && conf.parse(`[Interface]\nPrivateKey=${PRIV}\nAddress=10.0.0.2/33\n[Peer]\nPublicKey=${PUB}\n`).error != null);
 check('garbage line', conf.parse(`[Interface]\nfoo bar\n`).error != null);
 check('unknown section', conf.parse(`[Foo]\n`).error != null);
+
+// wrapped detection from conntrack
+const MARK = 1347639089;
+const stale = 'ipv4     2 udp      17 179 src=47.189.48.153 dst=192.168.42.174 sport=51820 dport=55743 packets=3285 bytes=1934280 src=192.168.42.174 dst=47.189.48.153 sport=55743 dport=51820 packets=2987 bytes=1232344 [ASSURED] mark=0 zone=0 use=2';
+const fresh = 'ipv4     2 udp      17 175 src=192.168.42.174 dst=47.189.48.153 sport=40001 dport=51820 packets=12 bytes=2000 src=47.189.48.153 dst=192.168.42.174 sport=51820 dport=40001 packets=10 bytes=1500 [ASSURED] mark=1347639089 zone=0 use=2';
+const direct = replace(fresh, 'mark=1347639089', 'mark=0');
+check('stale entry ignored', wrapped_state(stale + '\n' + fresh, '47.189.48.153', 51820, 40001, MARK) === true);
+check('fresh direct', wrapped_state(stale + '\n' + direct, '47.189.48.153', 51820, 40001, MARK) === false);
+check('server-opened is direct', wrapped_state(stale, '47.189.48.153', 51820, 55743, MARK) === false);
+check('no entry', wrapped_state(stale, '47.189.48.153', 51820, 40001, MARK) === null);
+check('empty', wrapped_state(null, '1.2.3.4', 51820, 1, MARK) === null);
 
 print(`${total - failures}/${total} passed\n`);
 exit(failures ? 1 : 0);
