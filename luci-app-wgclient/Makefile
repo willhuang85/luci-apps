@@ -50,6 +50,9 @@ define Package/luci-app-wgclient/postinst
 [ -n "$${IPKG_INSTROOT}" ] || {
 	rm -f /tmp/luci-indexcache* /tmp/luci-modulecache/* 2>/dev/null
 	/etc/init.d/rpcd reload
+	# OpenWrt only enables new init scripts on fresh installs, not upgrades
+	/etc/init.d/wgclient enable
+	/etc/init.d/wgclient start
 	echo "luci-app-wgclient: log out of LuCI and back in, then open VPN -> WireGuard Client"
 }
 exit 0
