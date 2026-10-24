@@ -54,25 +54,25 @@ GitHub → repository → *Settings → Secrets and variables → Actions → Ne
 **Releases:** every merge into `main` publishes a GitHub release `v<PKG_VERSION>-r<N>` (e.g. `v1.1.0-r45`), where `N` is the number of commits on `main`, set automatically by CI; only bump `PKG_VERSION` in the Makefile for a new version. Each release contains the signed `.apk`, `packages.adb` (the signed package list a router reads when the release is used as a feed) and the public key `wireguard-passwall.pem`. The latest release's files are always at:
 
 ```
-https://github.com/willhuang85/luci-wireguard/releases/latest/download/<file>
+https://github.com/willhuang85/luci-wireguard-passwall-client/releases/latest/download/<file>
 ```
 
 **Once, on the router:** trust the public key.
 
 ```sh
 wget -O /etc/apk/keys/wireguard-passwall.pem \
-  https://github.com/willhuang85/luci-wireguard/releases/latest/download/wireguard-passwall.pem
+  https://github.com/willhuang85/luci-wireguard-passwall-client/releases/latest/download/wireguard-passwall.pem
 ```
 
 Then install from **System → Software → Upload Package…** (download the `.apk` from the release first) with no extra flags. Or, to have the app show up and update in *System → Software* like any other package, add the release as a package feed:
 
 ```sh
-echo "https://github.com/willhuang85/luci-wireguard/releases/latest/download/packages.adb" >> /etc/apk/repositories.d/customfeeds.list
+echo "https://github.com/willhuang85/luci-wireguard-passwall-client/releases/latest/download/packages.adb" >> /etc/apk/repositories.d/customfeeds.list
 ```
 
 and use *System → Software → Update lists*, search for `luci-app-wireguard-passwall`, *Install*.
 
-> The `wget` and feed commands need the repository to be **public**: GitHub only serves a private repository's release files to logged-in users, and the router cannot log in. With a private repository, download `wireguard-passwall.pem` and the `.apk` from the release page in your browser, then `scp -O wireguard-passwall.pem root@192.168.1.1:/etc/apk/keys/` and use *Upload Package…*.
+> If you ever make the repository private again, the `wget` and feed commands stop working (GitHub only serves a private repository's release files to logged-in users). Then download `wireguard-passwall.pem` and the `.apk` from the release page in your browser, `scp -O wireguard-passwall.pem root@192.168.1.1:/etc/apk/keys/` and use *Upload Package…*.
 
 ### Troubleshooting
 
