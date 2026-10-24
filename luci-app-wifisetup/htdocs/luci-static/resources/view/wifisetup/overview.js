@@ -737,6 +737,28 @@ return view.extend({
 		});
 	},
 
+	// Describes only the bands this router has.
+	bandsHint() {
+		const radios = this.cfg.radios ?? [];
+		const ghz = { '5g': '5', '6g': '6', '60g': '60' };
+		const faster = [ ...new Set(radios.filter((r) => ghz[r.band]).map((r) => ghz[r.band])) ];
+
+		if (radios.length == 1)
+			return _('This router has one Wi-Fi band (%s).').format(radios[0].label);
+
+		if (!radios.some((r) => r.band == '2g') || !faster.length)
+			return _('Leave all bands on and devices pick the best one.');
+
+		const speed = (faster.length == 1)
+			? _('2.4 GHz reaches further, %s GHz is faster at short range.').format(faster[0])
+			: _('2.4 GHz reaches further, %s GHz are faster at short range.')
+				.format(faster.slice(0, -1).join(', ') + ' ' + _('and') + ' ' + faster[faster.length - 1]);
+
+		return speed + ' ' + ((radios.length == 2)
+			? _('Leave both on and devices pick the best one.')
+			: _('Leave them all on and devices pick the best one.'));
+	},
+
 	renderBands() {
 		const cfg = this.cfg;
 		const region = E('select', { 'class': 'cbi-input-select', change: (ev) => {
@@ -758,7 +780,7 @@ return view.extend({
 
 		return E('div', { 'class': 'tw-card' }, [
 			E('p', { 'class': 'tw-h' }, '📡 ' + _('Bands')),
-			E('div', { 'class': 'tw-sub' }, _('2.4 GHz reaches further, 5 and 6 GHz are faster at short range. Leave them all on and devices pick the best one.')),
+			E('div', { 'class': 'tw-sub' }, this.bandsHint()),
 			this.bandsEl,
 			(cfg.countries ?? []).length ? E('div', { 'class': 'tw-row', style: 'margin-top:12px; flex-wrap:wrap; gap:8px' }, [
 				E('span', { 'class': 'tw-sub', style: 'margin:0' }, _('Country')),
