@@ -16,6 +16,16 @@ fi
 SRC="$PWD/luci-app-wifisetup/root/usr/share/ucode/*.uc"
 MOCKS="$PWD/tests/mocks/*.uc"
 
+echo "== backends do not call rpcd's own ubus objects"
+# rpcd is single threaded: a plugin calling an object that rpcd itself serves
+# (iwinfo, session, uci, file, luci, luci-rpc, rc) waits for itself and
+# blocks every LuCI request for the ubus timeout. Do those from the browser.
+if grep -nE "ubus\.call\(\s*['\"\`](iwinfo|session|uci|file|luci|luci-rpc|rc)['\"\`]" luci-app-*/root/usr/share/rpcd/ucode/*; then
+	echo "FAIL: a backend calls an object served by rpcd itself"
+	exit 1
+fi
+echo ok
+
 echo "== schedule"
 "$UCODE" ${UCODE_DIR:+-L "$UCODE_DIR/*.so"} -L "$SRC" tests/schedule_test.uc
 echo "== rpcd backend"

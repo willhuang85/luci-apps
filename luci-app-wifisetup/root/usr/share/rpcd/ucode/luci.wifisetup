@@ -45,7 +45,6 @@ const ENCRYPTIONS = {
 };
 
 const BAND_LABELS = { '2g': '2.4 GHz', '5g': '5 GHz', '6g': '6 GHz', '60g': '60 GHz' };
-const STANDARDS = [ 'EHT', 'HE', 'VHT', 'HT' ];
 
 // Keep the connection outside of the handlers to prevent premature GC.
 const ubus = connect();
@@ -411,80 +410,40 @@ function ensure_settings(uci) {
 		uci.set('wifisetup', 'settings', 'settings');
 }
 
-function iwinfo(method, device) {
-	return ubus.call('iwinfo', method, { device }) ?? {};
-}
+// Checks an htmode such as "HE80" against what the band allows. What the
+// radio itself supports comes from iwinfo, which the page asks directly:
+// iwinfo is served by rpcd, so this plugin must not call it (rpcd would wait
+// for itself).
+function valid_htmode(htmode, band) {
+	const p = match(htmode ?? '', /^(EHT|HE|VHT|HT)(20|40|80|160|320)$/);
 
-// Channel widths the radio supports, each with the newest standard that can
-// do it, e.g. [ { width: 20, htmode: 'HE20' }, { width: 80, htmode: 'HE80' } ].
-function width_options(htmodes, band, current) {
-	let best = {};
+	if (!p)
+		return false;
 
-	for (let m in htmodes ?? []) {
-		const p = match(m, /^(EHT|HE|VHT|HT)([0-9]+)$/);
+	const std = p[1], w = +p[2];
 
-		if (!p)
-			continue;
+	if (band == '2g')
+		return std != 'VHT' && w <= 40;
 
-		const std = p[1], w = +p[2];
+	if (band == '6g')
+		return std == 'HE' || std == 'EHT';
 
-		if (band == '2g' && (std == 'VHT' || w > 40))
-			continue;
-
-		if (band == '6g' && (std == 'HT' || std == 'VHT'))
-			continue;
-
-		if (best[w] == null || index(STANDARDS, std) < index(STANDARDS, best[w]))
-			best[w] = std;
-	}
-
-	let list = map(sort(map(keys(best), (k) => +k)), (w) => ({ width: w, htmode: best[w] + w }));
-
-	if (!length(list) && current) {
-		const p = match(current, /^([A-Z]+?)([0-9]+)/);
-
-		if (p)
-			push(list, { width: +p[2], htmode: p[1] + p[2] });
-	}
-
-	return list;
+	return w != 320 || std == 'EHT';
 }
 
 function radio_config(uci, s) {
-	const id = s['.name'];
 	const band = radio_band(s);
-	const info = iwinfo('info', id);
-	const ghz = { '2g': 2, '5g': 5, '6g': 6, '60g': 60 }[band];
 	const cur_w = match(s.htmode ?? '', /([0-9]+)/);
 
-	let channels = [];
-
-	for (let f in iwinfo('freqlist', id)?.results ?? [])
-		if ((f.band == null || f.band == ghz) && !f.restricted)
-			push(channels, {
-				channel: f.channel,
-				mhz: f.mhz,
-				dfs: ('RADAR' in (f.flags ?? [])) || (band == '5g' && f.channel >= 52 && f.channel <= 144)
-			});
-
-	let txpowers = [];
-
-	for (let t in iwinfo('txpowerlist', id)?.results ?? [])
-		push(txpowers, { dbm: t.dbm, mw: t.mw });
-
 	return {
-		id,
+		id: s['.name'],
 		band,
 		label: BAND_LABELS[band],
 		enabled: s.disabled != '1',
-		hardware: info.hardware?.name ?? null,
 		channel: (s.channel == null || s.channel == 'auto') ? 'auto' : `${s.channel}`,
-		channels,
 		htmode: s.htmode ?? null,
 		width: cur_w ? +cur_w[1] : null,
-		widths: width_options(info.htmodes, band, s.htmode),
 		txpower: (s.txpower != null && match(s.txpower, /^[0-9]+$/)) ? +s.txpower : null,
-		txpowers,
 		country: s.country ?? null
 	};
 }
@@ -562,26 +521,22 @@ function live_ifaces() {
 	return { radios: st, ifaces: res };
 }
 
-function find_client(mac) {
-	const live = live_ifaces();
+// Access point interfaces of the managed main / guest networks that are up.
+function managed_ifnames(uci) {
+	const l = layout(uci);
+	const live = live_ifaces().ifaces;
+	let names = [];
 
-	for (let sid, i in live.ifaces)
-		for (let c in iwinfo('assoclist', i.ifname)?.results ?? [])
-			if (uc(c.mac) == mac)
-				return i.ifname;
+	for (let s in [ ...values(l.main), ...values(l.guest) ])
+		if (live[s['.name']])
+			push(names, live[s['.name']].ifname);
 
-	return null;
+	return names;
 }
 
-function kick(mac, ban_time) {
-	const ifname = find_client(mac);
-
-	if (!ifname)
-		return false;
-
-	ubus.call(`hostapd.${ifname}`, 'del_client', { addr: lc(mac), reason: 5, deauth: true, ban_time: ban_time ?? 0 });
-
-	return true;
+// hostapd runs outside rpcd, so it can be called from here.
+function kick(ifname, mac) {
+	ubus.call(`hostapd.${ifname}`, 'del_client', { addr: lc(mac), reason: 5, deauth: true, ban_time: 0 });
 }
 
 function wifi_string(net) {
@@ -600,8 +555,9 @@ function wifi_string(net) {
 
 const methods = {
 	/*
-	 * Everything the settings page needs: networks, radios with their
-	 * capabilities, blocked devices and the schedule.
+	 * Everything the settings page needs: networks, radios, blocked devices
+	 * and the schedule. The radios' capabilities (channels, widths, power)
+	 * come from iwinfo, which the page queries itself.
 	 */
 	get: {
 		call: function() {
@@ -617,12 +573,6 @@ const methods = {
 				push(list, r);
 			}
 
-			let countries = [];
-
-			if (length(list))
-				for (let c in iwinfo('countrylist', list[0].id)?.results ?? [])
-					push(countries, { code: c.iso3166, name: c.country });
-
 			const guest = network_config(uci, l.guest, band_of);
 
 			if (guest) {
@@ -635,7 +585,6 @@ const methods = {
 				main: network_config(uci, l.main, band_of),
 				guest: guest ?? { enabled: false },
 				country,
-				countries,
 				blocked: blocked_list(uci),
 				schedule: schedule_config(uci),
 				features: hostapd_features(),
@@ -646,21 +595,16 @@ const methods = {
 	},
 
 	/*
-	 * Live state: which radios are up, the channel they really use and the
-	 * connected devices.
+	 * Live state: which radios are up and their access point interfaces
+	 * (the page asks iwinfo for their channel and connected devices), plus
+	 * DHCP names and blocked devices to label those devices with.
 	 */
 	status: {
 		call: function() {
 			const uci = cursor();
 			const l = layout(uci);
 			const live = live_ifaces();
-			const names = leases();
-			let blocked = {};
-
-			for (let b in blocked_list(uci))
-				blocked[b.mac] = true;
-
-			let net_of = {};
+			let net_of = {}, radios_st = {}, ifaces = [];
 
 			for (let dev, s in l.main)
 				net_of[s['.name']] = 'main';
@@ -668,51 +612,26 @@ const methods = {
 			for (let dev, s in l.guest)
 				net_of[s['.name']] = 'guest';
 
-			let radios_st = {}, clients = [];
-
 			for (let s in radios(uci)) {
-				const id = s['.name'];
-				const r = live.radios[id] ?? {};
+				const r = live.radios[s['.name']] ?? {};
 
-				radios_st[id] = { up: !!r.up, pending: !!r.pending, channel: null, frequency: null, txpower: null, width: null };
+				radios_st[s['.name']] = { up: !!r.up, pending: !!r.pending };
 			}
 
-			for (let sid, i in live.ifaces) {
-				const rs = radios_st[i.radio];
+			for (let sid, i in live.ifaces)
+				push(ifaces, {
+					ifname: i.ifname,
+					radio: i.radio,
+					network: net_of[sid] ?? 'other',
+					ssid: uci.get('wireless', sid, 'ssid')
+				});
 
-				if (rs && rs.channel == null) {
-					const info = iwinfo('info', i.ifname);
-
-					rs.channel = info.channel ?? null;
-					rs.frequency = info.frequency ?? null;
-					rs.txpower = info.txpower ?? null;
-					rs.width = match(info.htmode ?? '', /([0-9]+)/)?.[1] ?? null;
-				}
-
-				for (let c in iwinfo('assoclist', i.ifname)?.results ?? []) {
-					const mac = uc(c.mac);
-					const lease = names[mac] ?? {};
-
-					push(clients, {
-						mac,
-						name: lease.name,
-						ip: lease.ip,
-						radio: i.radio,
-						network: net_of[sid] ?? 'other',
-						ssid: uci.get('wireless', sid, 'ssid'),
-						signal: c.signal,
-						connected_time: c.connected_time,
-						inactive: c.inactive,
-						rx_rate: c.rx?.rate,
-						tx_rate: c.tx?.rate,
-						rx_bytes: c.rx?.bytes,
-						tx_bytes: c.tx?.bytes,
-						blocked: !!blocked[mac]
-					});
-				}
-			}
-
-			return { radios: radios_st, clients };
+			return {
+				radios: radios_st,
+				ifaces: sort(ifaces, (a, b) => (a.ifname < b.ifname) ? -1 : (a.ifname > b.ifname)),
+				leases: leases(),
+				blocked: map(blocked_list(uci), (b) => b.mac)
+			};
 		}
 	},
 
@@ -826,11 +745,11 @@ const methods = {
 	},
 
 	/*
-	 * Band settings: on/off, channel ('auto' or a number), channel width in
-	 * MHz and transmit power in dBm (0 = maximum).
+	 * Band settings: on/off, channel ('auto' or a number), htmode (standard
+	 * and channel width, e.g. "HE80") and transmit power in dBm (0 = maximum).
 	 */
 	set_radio: {
-		args: { id: '', enabled: true, channel: '', width: 0, txpower: 0 },
+		args: { id: '', enabled: true, channel: '', htmode: '', txpower: 0 },
 		call: function(req) {
 			const a = req.args;
 			const uci = cursor();
@@ -881,20 +800,18 @@ const methods = {
 				else {
 					const ch = match(`${a.channel}`, /^[0-9]+$/) ? +a.channel : null;
 
-					if (ch == null || (length(r.channels) && !length(filter(r.channels, (c) => c.channel == ch))))
+					if (ch == null || ch < 1 || ch > 233)
 						return { error: 'This channel is not available' };
 
 					uci.set('wireless', a.id, 'channel', `${ch}`);
 				}
 			}
 
-			if (a.width) {
-				const w = filter(r.widths, (o) => o.width == a.width)[0];
-
-				if (!w)
+			if (length(a.htmode ?? '')) {
+				if (!valid_htmode(a.htmode, r.band))
 					return { error: 'This channel width is not supported' };
 
-				uci.set('wireless', a.id, 'htmode', w.htmode);
+				uci.set('wireless', a.id, 'htmode', a.htmode);
 			}
 
 			if (a.txpower == null || a.txpower == 0)
@@ -929,17 +846,20 @@ const methods = {
 		}
 	},
 
-	// Disconnects a device; it may reconnect right away unless blocked.
+	// Disconnects a device from the access point `ifname`; it may reconnect
+	// right away unless blocked.
 	kick: {
-		args: { mac: '' },
+		args: { mac: '', ifname: '' },
 		call: function(req) {
 			const mac = norm_mac(req.args.mac);
 
 			if (!mac)
 				return { error: 'Invalid MAC address' };
 
-			if (!kick(mac, 0))
+			if (!(req.args.ifname in map(values(live_ifaces().ifaces), (i) => i.ifname)))
 				return { error: 'This device is not connected' };
+
+			kick(req.args.ifname, mac);
 
 			return { result: true };
 		}
@@ -968,7 +888,8 @@ const methods = {
 			uci.save('wireless');
 
 			// the deny list only applies to new connections
-			kick(mac, 0);
+			for (let ifname in managed_ifnames(uci))
+				kick(ifname, mac);
 			apply(uci, [ 'wifisetup', 'wireless' ]);
 
 			return { result: true };

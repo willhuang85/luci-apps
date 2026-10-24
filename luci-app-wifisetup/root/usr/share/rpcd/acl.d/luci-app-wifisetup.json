@@ -3,7 +3,8 @@
 		"description": "Grant access to the Wi-Fi setup page",
 		"read": {
 			"ubus": {
-				"luci.wifisetup": [ "get", "status", "qrcode" ]
+				"luci.wifisetup": [ "get", "status", "qrcode" ],
+				"iwinfo": [ "info", "freqlist", "txpowerlist", "countrylist", "assoclist" ]
 			},
 			"uci": [ "wifisetup" ]
 		},

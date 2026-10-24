@@ -299,39 +299,29 @@ function sta_config(uci) {
 	};
 }
 
-function sta_status() {
+// Client interface of the hotspot connection while it is up. Whether it is
+// associated (and the signal) the page asks iwinfo: iwinfo is served by
+// rpcd, which this plugin runs in, so calling it from here would block rpcd.
+function sta_ifname() {
 	const st = ubus.call('network.wireless', 'status', {}) ?? {};
 
 	for (let radio, r in st)
 		for (let i in r.interfaces ?? [])
-			if (i.section == STA_SID && i.ifname) {
-				const info = ubus.call('iwinfo', 'info', { device: i.ifname }) ?? {};
-				const bssid = info.bssid ?? '00:00:00:00:00:00';
+			if (i.section == STA_SID && i.ifname)
+				return i.ifname;
 
-				return {
-					ifname: i.ifname,
-					connected: bssid != '00:00:00:00:00:00',
-					signal: info.signal ?? null,
-					channel: info.channel ?? null
-				};
-			}
-
-	return { connected: false };
+	return null;
 }
 
-function scan_encryption(e) {
-	if (!e?.enabled)
-		return 'none';
+function own_ssids(uci) {
+	let list = [];
 
-	const auth = e.authentication ?? [];
+	uci.foreach('wireless', 'wifi-iface', (s) => {
+		if ((s.mode ?? 'ap') == 'ap' && s.ssid && !(s.ssid in list))
+			push(list, s.ssid);
+	});
 
-	if ('owe' in auth)
-		return 'owe';
-
-	if ('sae' in auth)
-		return ('psk' in auth) ? 'sae-mixed' : 'sae';
-
-	return ('1' in map(e.wpa ?? [], (v) => `${v}`)) ? 'psk-mixed' : 'psk2';
+	return list;
 }
 
 function radios(uci) {
@@ -411,9 +401,11 @@ const methods = {
 					carrier: dev ? sysread(`class/net/${dev}/carrier`) == '1' : false,
 					...tether.usb
 				},
-				wifi: { ...sta, ...(sta.configured ? sta_status() : { connected: false }), ...tether.wifi },
+				wifi: { ...sta, sta_ifname: sta.configured ? sta_ifname() : null, ...tether.wifi },
 				main: map(main_ifaces(uci), (m) => ({ ...iface_info(dump, m.name), proto: m.proto, ipv6_only: m.ipv6_only })),
 				radios: radios(uci),
+				// the router's own networks, left out of the hotspot search
+				own_ssids: own_ssids(uci),
 				check_host: s.check_host
 			};
 		}
@@ -452,50 +444,6 @@ const methods = {
 			}
 
 			return { ok: false, interface: null, reason: 'down' };
-		}
-	},
-
-	/*
-	 * Looks for Wi-Fi networks on all radios, iPhone hotspots first.
-	 */
-	scan: {
-		call: function() {
-			const uci = cursor();
-			let best = {}, own = {};
-
-			// the router's own networks are no hotspot to join
-			uci.foreach('wireless', 'wifi-iface', (s) => {
-				if ((s.mode ?? 'ap') == 'ap' && s.ssid)
-					own[s.ssid] = true;
-			});
-
-			for (let r in radios(uci)) {
-				if (!r.enabled)
-					continue;
-
-				for (let n in ubus.call('iwinfo', 'scan', { device: r.id })?.results ?? []) {
-					if (!length(n.ssid ?? '') || own[n.ssid])
-						continue;
-
-					const e = {
-						ssid: n.ssid,
-						signal: n.signal ?? -100,
-						channel: n.channel,
-						radio: r.id,
-						band_label: r.label,
-						encryption: scan_encryption(n.encryption),
-						iphone: !!match(n.ssid, /iphone/i)
-					};
-
-					// the same hotspot on two bands: keep the stronger one
-					if (!best[n.ssid] || best[n.ssid].signal < e.signal)
-						best[n.ssid] = e;
-				}
-			}
-
-			return {
-				results: sort(values(best), (a, b) => (a.iphone != b.iphone) ? (a.iphone ? -1 : 1) : b.signal - a.signal)
-			};
 		}
 	},
 

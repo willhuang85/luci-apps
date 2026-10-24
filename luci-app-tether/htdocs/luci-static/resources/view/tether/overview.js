@@ -7,10 +7,17 @@
 
 const callStatus = rpc.declare({ object: 'luci.tether', method: 'status' });
 const callCheckMain = rpc.declare({ object: 'luci.tether', method: 'check_main' });
-const callScan = rpc.declare({ object: 'luci.tether', method: 'scan' });
 const callSetWifi = rpc.declare({ object: 'luci.tether', method: 'set_wifi', params: [ 'ssid', 'key', 'encryption', 'radio' ] });
 const callStart = rpc.declare({ object: 'luci.tether', method: 'start', params: [ 'method' ] });
 const callStop = rpc.declare({ object: 'luci.tether', method: 'stop' });
+
+// Wi-Fi details come straight from iwinfo, like on LuCI's own pages: iwinfo
+// is served by rpcd, which the luci.tether backend runs in, so the backend
+// must not call it itself (rpcd would wait for itself).
+const callIwinfoInfo = rpc.declare({ object: 'iwinfo', method: 'info', params: [ 'device' ] });
+const callIwinfoScan = rpc.declare({ object: 'iwinfo', method: 'scan', params: [ 'device' ], expect: { results: [] } });
+
+const PHONE_SSID = /iphone|ipad|pixel|galaxy|android|oneplus|redmi|xiaomi|motorola|moto [a-z]/i;
 
 const METHODS = {
 	usb: { icon: '🔌', title: _('USB cable'), desc: _('Most reliable, and charges the iPhone.') },
@@ -128,6 +135,65 @@ function sleep(ms) {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Backend status plus whether the router has joined the hotspot.
+function loadStatus() {
+	return callStatus().then((st) => {
+		if (!st.wifi?.sta_ifname)
+			return st;
+
+		return L.resolveDefault(callIwinfoInfo(st.wifi.sta_ifname), {}).then((info) => {
+			const bssid = info?.bssid ?? '00:00:00:00:00:00';
+
+			st.wifi.connected = bssid != '00:00:00:00:00:00';
+			st.wifi.signal = info?.signal ?? null;
+			return st;
+		});
+	});
+}
+
+function scanEncryption(e) {
+	if (!e?.enabled)
+		return 'none';
+
+	const auth = e.authentication ?? [];
+
+	if (auth.includes('owe'))
+		return 'owe';
+
+	if (auth.includes('sae'))
+		return auth.includes('psk') ? 'sae-mixed' : 'sae';
+
+	return (e.wpa ?? []).includes(1) ? 'psk-mixed' : 'psk2';
+}
+
+// Wi-Fi networks seen by the switched on radios, phone hotspots first.
+function scanHotspots(st) {
+	const own = new Set(st.own_ssids ?? []);
+	const best = {};
+
+	return Promise.all((st.radios ?? []).filter((r) => r.enabled).map((r) =>
+		L.resolveDefault(callIwinfoScan(r.id), []).then((list) => {
+			for (let n of list ?? []) {
+				if (!n.ssid || own.has(n.ssid))
+					continue;
+
+				const e = {
+					ssid: n.ssid,
+					signal: n.signal ?? -100,
+					channel: n.channel,
+					radio: r.id,
+					band_label: r.label,
+					encryption: scanEncryption(n.encryption),
+					phone: PHONE_SSID.test(n.ssid)
+				};
+
+				// the same hotspot on two bands: keep the stronger one
+				if (!best[n.ssid] || best[n.ssid].signal < e.signal)
+					best[n.ssid] = e;
+			}
+		}))).then(() => Object.values(best).sort((a, b) => (a.phone != b.phone) ? (a.phone ? -1 : 1) : b.signal - a.signal));
+}
+
 return view.extend({
 	handleSaveApply: null,
 	handleSave: null,
@@ -139,11 +205,11 @@ return view.extend({
 	lastCheck: 0,
 
 	load() {
-		return callStatus();
+		return loadStatus();
 	},
 
 	refresh() {
-		return callStatus().then((st) => {
+		return loadStatus().then((st) => {
 			this.st = st;
 
 			// keep an eye on the main connection while tethering
@@ -188,7 +254,7 @@ return view.extend({
 
 		return Promise.resolve().then(fn).then(check)
 			.then(() => sleep(wait ?? 3000))
-			.then(() => callStatus().then((st) => { this.st = st; }))
+			.then(() => loadStatus().then((st) => { this.st = st; }))
 			.catch(notifyError)
 			.finally(() => {
 				ui.hideModal();
@@ -422,11 +488,11 @@ return view.extend({
 		const scan = () => {
 			dom.content(list, E('p', { 'class': 'spinning' }, _('Looking for hotspots… keep the Personal Hotspot screen open on the iPhone.')));
 
-			return callScan().then(check).then((res) => {
-				if (!res.results.length)
+			return scanHotspots(this.st).then((results) => {
+				if (!results.length)
 					return dom.content(list, E('div', { 'class': 'tt-sub' }, _('No networks found. Is Personal Hotspot on?')));
 
-				dom.content(list, res.results.slice(0, 15).map((n) => E('button', { type: 'button', click: () => {
+				dom.content(list, results.slice(0, 15).map((n) => E('button', { type: 'button', click: () => {
 					ssid.value = n.ssid;
 					enc.value = SECURITY.some(([ v ]) => v == n.encryption) ? n.encryption : 'sae-mixed';
 					radio.value = n.radio;
@@ -434,7 +500,7 @@ return view.extend({
 					validate();
 					key.focus();
 				} }, [
-					E('span', {}, n.iphone ? '📱' : '📶'),
+					E('span', {}, n.phone ? '📱' : '📶'),
 					E('span', { 'class': 'tt-grow' }, [ E('strong', {}, n.ssid), E('div', { 'class': 'tt-sub', style: 'margin:0' },
 						'%s · %d dBm%s'.format(n.band_label, n.signal, n.encryption == 'none' ? ' · ' + _('open') : '')) ])
 				])));

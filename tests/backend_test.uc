@@ -77,17 +77,11 @@ let r = call('get');
 check('three radios', length(r.radios) == 3);
 check('radio band labels', r.radios[0].label == '2.4 GHz' && r.radios[1].label == '5 GHz' && r.radios[2].label == '6 GHz');
 check('radio disabled', !r.radios[0].enabled && r.radios[2].enabled);
-check('channels filtered', length(r.radios[0].channels) == 2 && r.radios[0].channels[1].channel == 6);
-check('dfs flagged', r.radios[1].channels[1].dfs && !r.radios[1].channels[0].dfs);
-check('2g widths', join(',', map(r.radios[0].widths, (w) => w.htmode)) == 'HE20,HE40');
-check('5g widths', join(',', map(r.radios[1].widths, (w) => w.htmode)) == 'HE20,HE40,HE80,HE160');
-check('6g widths', join(',', map(r.radios[2].widths, (w) => w.htmode)) == 'HE20,HE80,HE160,EHT320');
-check('current width', r.radios[1].width == 80 && r.radios[1].channel == '36' && r.radios[2].channel == 'auto');
-check('txpowers', length(r.radios[0].txpowers) == 2 && r.radios[0].txpower == null);
+check('current width', r.radios[1].width == 80 && r.radios[1].htmode == 'HE80' && r.radios[1].channel == '36' && r.radios[2].channel == 'auto');
+check('txpower unset', r.radios[0].txpower == null);
 check('main found', r.main.ssid == 'OpenWrt' && r.main.encryption == 'none' && r.main.same_name);
 check('station ignored', r.main.ssids.radio1 == 'OpenWrt');
 check('no guest', !r.guest.enabled);
-check('countries', r.countries[1].code == 'DE');
 check('schedule default', !r.schedule.enabled && r.schedule.off == '23:00' && length(r.schedule.days) == 7);
 
 // --- main network
@@ -126,15 +120,19 @@ check('6g open -> owe', W.wifisetup_main_radio2.encryption == 'owe');
 call('set_network', { net: 'main', ssid: 'Home', key: 'correct horse', encryption: 'sae-mixed' });
 
 // --- radios
-r = call('set_radio', { id: 'radio1', enabled: true, channel: '100', width: 160, txpower: 0 });
+r = call('set_radio', { id: 'radio1', enabled: true, channel: '100', htmode: 'HE160', txpower: 0 });
 check('radio enabled', !r.error && W.radio1.disabled == null && W.radio1.channel == '100' && W.radio1.htmode == 'HE160');
-check('bad channel', call('set_radio', { id: 'radio1', enabled: true, channel: '13', width: 80 }).error != null);
-check('restricted channel', call('set_radio', { id: 'radio0', enabled: true, channel: '13', width: 20 }).error != null);
-check('bad width', call('set_radio', { id: 'radio0', enabled: true, channel: 'auto', width: 80 }).error != null);
+check('bad channel', call('set_radio', { id: 'radio1', enabled: true, channel: '300', htmode: 'HE80' }).error != null);
+check('junk channel', call('set_radio', { id: 'radio1', enabled: true, channel: '36; reboot', htmode: 'HE80' }).error != null);
+check('2g no 80 MHz', call('set_radio', { id: 'radio0', enabled: true, channel: 'auto', htmode: 'HE80' }).error != null);
+check('2g no VHT', call('set_radio', { id: 'radio0', enabled: true, channel: 'auto', htmode: 'VHT20' }).error != null);
+check('6g needs HE/EHT', call('set_radio', { id: 'radio2', enabled: true, channel: 'auto', htmode: 'VHT80' }).error != null);
+check('junk htmode', call('set_radio', { id: 'radio1', enabled: true, channel: 'auto', htmode: 'HE80 x' }).error != null);
 check('bad radio', call('set_radio', { id: 'default_radio0', enabled: true }).error != null);
-r = call('set_radio', { id: 'radio0', enabled: true, channel: 'auto', width: 40, txpower: 10 });
+check('htmode kept when not given', !call('set_radio', { id: 'radio1', enabled: true, channel: '36' }).error && W.radio1.htmode == 'HE160');
+r = call('set_radio', { id: 'radio0', enabled: true, channel: 'auto', htmode: 'HE40', txpower: 10 });
 check('radio0 set', !r.error && W.radio0.channel == 'auto' && W.radio0.htmode == 'HE40' && W.radio0.txpower == '10');
-call('set_radio', { id: 'radio0', enabled: true, channel: 'auto', width: 40, txpower: 0 });
+call('set_radio', { id: 'radio0', enabled: true, channel: 'auto', htmode: 'HE40', txpower: 0 });
 check('txpower max', W.radio0.txpower == null);
 call('set_radio', { id: 'radio2', enabled: false });
 check('radio off', W.radio2.disabled == '1');
@@ -184,26 +182,26 @@ global.__wifi.status = {
 	radio2: { up: false, interfaces: [] }
 };
 r = call('status');
-check('status radios', r.radios.radio1.up && r.radios.radio1.channel == 36 && !r.radios.radio2.up);
-check('status clients', length(r.clients) == 2);
-const c1 = filter(r.clients, (c) => c.mac == 'AA:BB:CC:DD:EE:01')[0];
-const c2 = filter(r.clients, (c) => c.mac == 'AA:BB:CC:DD:EE:02')[0];
-check('client main', c1?.network == 'main' && c1?.radio == 'radio1' && c1?.rx_rate == 866700 && c1?.ssid == 'Home');
-check('client guest', c2?.network == 'guest' && c2?.radio == 'radio0');
+check('status radios', r.radios.radio1.up && !r.radios.radio2.up);
+check('status ifaces', join(',', map(r.ifaces, (i) => `${i.ifname}:${i.network}:${i.radio}`)) == 'phy0-ap0:main:radio0,phy0-ap1:guest:radio0,phy1-ap0:main:radio1');
+check('status ssid', filter(r.ifaces, (i) => i.ifname == 'phy1-ap0')[0].ssid == 'Home');
+check('status blocked empty', length(r.blocked) == 0);
 
 // --- kick / block
-check('kick', call('kick', { mac: 'aa:bb:cc:dd:ee:01' }).result && 'hostapd.phy1-ap0.del_client aa:bb:cc:dd:ee:01' in global.__ubus_calls);
-check('kick unknown', call('kick', { mac: '00:11:22:33:44:55' }).error != null);
-check('kick bad mac', call('kick', { mac: 'nope' }).error != null);
+check('kick', call('kick', { mac: 'aa:bb:cc:dd:ee:01', ifname: 'phy1-ap0' }).result && 'hostapd.phy1-ap0.del_client aa:bb:cc:dd:ee:01' in global.__ubus_calls);
+check('kick unknown interface', call('kick', { mac: '00:11:22:33:44:55', ifname: 'eth0' }).error != null);
+check('kick bad mac', call('kick', { mac: 'nope', ifname: 'phy1-ap0' }).error != null);
 
 r = call('block', { mac: 'aa:bb:cc:dd:ee:02', name: 'Tablet' });
 check('block', !r.error && length(call('get').blocked) == 1 && call('get').blocked[0].name == 'Tablet');
+check('block kicks everywhere', 'hostapd.phy0-ap0.del_client aa:bb:cc:dd:ee:02' in global.__ubus_calls &&
+	'hostapd.phy0-ap1.del_client aa:bb:cc:dd:ee:02' in global.__ubus_calls && 'hostapd.phy1-ap0.del_client aa:bb:cc:dd:ee:02' in global.__ubus_calls);
 check('macfilter main', W.default_radio0.macfilter == 'deny' && W.default_radio1.maclist?.[0] == 'AA:BB:CC:DD:EE:02');
 check('macfilter guest', W.wifisetup_guest_radio0.macfilter == 'deny');
 check('macfilter not on station', W.sta.macfilter == null);
 call('block', { mac: 'AA:BB:CC:DD:EE:02' });
 check('block idempotent', length(call('get').blocked) == 1);
-check('status blocked flag', filter(call('status').clients, (c) => c.mac == 'AA:BB:CC:DD:EE:02')[0].blocked);
+check('status blocked list', call('status').blocked[0] == 'AA:BB:CC:DD:EE:02');
 
 W.default_radio1.macfilter = 'allow';
 W.default_radio1.maclist = [ '11:11:11:11:11:11' ];
@@ -232,6 +230,9 @@ W.default_radio0.ssid = 'My;Net';
 W.default_radio0.key = 'a"b:c\\d';
 check('qr escaping', call('qrcode', { net: 'main' }).text == 'WIFI:T:WPA;S:My\\;Net;P:a\\"b\\:c\\\\d;;');
 check('qr guest open', call('qrcode', { net: 'guest' }).text == 'WIFI:T:nopass;S:Home Guest;;');
+
+// rpcd serves iwinfo itself: calling it from the plugin would block rpcd
+check('never calls iwinfo', !length(filter(global.__ubus_calls, (c) => index(c, 'iwinfo.') == 0)));
 
 print(`${total - failures}/${total} passed\n`);
 exit(failures ? 1 : 0);

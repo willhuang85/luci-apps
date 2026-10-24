@@ -3,12 +3,13 @@
 		"description": "Grant access to iPhone tethering",
 		"read": {
 			"ubus": {
-				"luci.tether": [ "status", "check_main" ]
+				"luci.tether": [ "status", "check_main" ],
+				"iwinfo": [ "info", "scan" ]
 			}
 		},
 		"write": {
 			"ubus": {
-				"luci.tether": [ "scan", "set_wifi", "start", "stop" ]
+				"luci.tether": [ "set_wifi", "start", "stop" ]
 			}
 		}
 	}

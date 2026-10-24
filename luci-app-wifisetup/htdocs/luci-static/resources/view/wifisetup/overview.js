@@ -9,13 +9,25 @@ const callGet = rpc.declare({ object: 'luci.wifisetup', method: 'get' });
 const callStatus = rpc.declare({ object: 'luci.wifisetup', method: 'status' });
 const callSetNetwork = rpc.declare({ object: 'luci.wifisetup', method: 'set_network',
 	params: [ 'net', 'ssid', 'key', 'encryption', 'hidden', 'same_name', 'ssids', 'enabled', 'isolate', 'bands' ] });
-const callSetRadio = rpc.declare({ object: 'luci.wifisetup', method: 'set_radio', params: [ 'id', 'enabled', 'channel', 'width', 'txpower' ] });
+const callSetRadio = rpc.declare({ object: 'luci.wifisetup', method: 'set_radio', params: [ 'id', 'enabled', 'channel', 'htmode', 'txpower' ] });
 const callSetRegion = rpc.declare({ object: 'luci.wifisetup', method: 'set_region', params: [ 'country' ] });
-const callKick = rpc.declare({ object: 'luci.wifisetup', method: 'kick', params: [ 'mac' ] });
+const callKick = rpc.declare({ object: 'luci.wifisetup', method: 'kick', params: [ 'mac', 'ifname' ] });
 const callBlock = rpc.declare({ object: 'luci.wifisetup', method: 'block', params: [ 'mac', 'name' ] });
 const callUnblock = rpc.declare({ object: 'luci.wifisetup', method: 'unblock', params: [ 'mac' ] });
 const callSetSchedule = rpc.declare({ object: 'luci.wifisetup', method: 'set_schedule', params: [ 'enabled', 'off', 'on', 'days' ] });
 const callQrcode = rpc.declare({ object: 'luci.wifisetup', method: 'qrcode', params: [ 'net' ] });
+
+// Radio details come straight from iwinfo, like on LuCI's own pages: iwinfo
+// is served by rpcd, which the luci.wifisetup backend runs in, so the
+// backend must not call it itself (rpcd would wait for itself).
+const callIwinfoInfo = rpc.declare({ object: 'iwinfo', method: 'info', params: [ 'device' ] });
+const callIwinfoFreqlist = rpc.declare({ object: 'iwinfo', method: 'freqlist', params: [ 'device' ], expect: { results: [] } });
+const callIwinfoTxpowerlist = rpc.declare({ object: 'iwinfo', method: 'txpowerlist', params: [ 'device' ], expect: { results: [] } });
+const callIwinfoCountrylist = rpc.declare({ object: 'iwinfo', method: 'countrylist', params: [ 'device' ], expect: { results: [] } });
+const callIwinfoAssoclist = rpc.declare({ object: 'iwinfo', method: 'assoclist', params: [ 'device' ], expect: { results: [] } });
+
+const STANDARDS = [ 'EHT', 'HE', 'VHT', 'HT' ];
+const GHZ = { '2g': 2, '5g': 5, '6g': 6, '60g': 60 };
 
 const SECURITY = [
 	{ value: 'sae-mixed', label: _('WPA2/WPA3 Personal (recommended)'), key: true, sae: true },
@@ -231,6 +243,118 @@ function sleep(ms) {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Channel widths the radio supports, each with the newest standard that can
+// do it, e.g. [ { width: 20, htmode: 'HE20' }, { width: 80, htmode: 'HE80' } ].
+function widthOptions(htmodes, band, current) {
+	const best = {};
+
+	for (let m of htmodes ?? []) {
+		const p = /^(EHT|HE|VHT|HT)([0-9]+)$/.exec(m);
+
+		if (!p)
+			continue;
+
+		const std = p[1], w = +p[2];
+
+		if (band == '2g' && (std == 'VHT' || w > 40))
+			continue;
+
+		if (band == '6g' && (std == 'HT' || std == 'VHT'))
+			continue;
+
+		if (best[w] == null || STANDARDS.indexOf(std) < STANDARDS.indexOf(best[w]))
+			best[w] = std;
+	}
+
+	const list = Object.keys(best).map(Number).sort((a, b) => a - b).map((w) => ({ width: w, htmode: best[w] + w }));
+
+	if (!list.length && current) {
+		const p = /^([A-Z]+?)([0-9]+)/.exec(current);
+
+		if (p)
+			list.push({ width: +p[2], htmode: p[1] + p[2] });
+	}
+
+	return list;
+}
+
+// Adds what each radio can do (from iwinfo) to the configuration.
+function loadConfig() {
+	return callGet().then((cfg) => Promise.all((cfg.radios ?? []).map((r) => Promise.all([
+		L.resolveDefault(callIwinfoInfo(r.id), {}),
+		L.resolveDefault(callIwinfoFreqlist(r.id), []),
+		L.resolveDefault(callIwinfoTxpowerlist(r.id), [])
+	]).then(([ info, freqs, powers ]) => {
+		r.hardware = info?.hardware?.name ?? null;
+		r.widths = widthOptions(info?.htmodes, r.band, r.htmode);
+		r.channels = (freqs ?? []).filter((f) => (f.band == null || f.band == GHZ[r.band]) && !f.restricted).map((f) => ({
+			channel: f.channel,
+			mhz: f.mhz,
+			dfs: (f.flags ?? []).includes('RADAR') || (r.band == '5g' && f.channel >= 52 && f.channel <= 144)
+		}));
+		r.txpowers = (powers ?? []).map((t) => ({ dbm: t.dbm, mw: t.mw }));
+	}))).then(() => cfg.radios?.length ? L.resolveDefault(callIwinfoCountrylist(cfg.radios[0].id), []) : []).then((countries) => {
+		cfg.countries = (countries ?? []).map((c) => ({ code: c.iso3166, name: c.country }));
+		return cfg;
+	}));
+}
+
+// Live state: radios and access points from the backend, channel and
+// connected devices from iwinfo.
+function loadStatus() {
+	return callStatus().then((st) => {
+		const radios = {};
+		const clients = [];
+		const blocked = new Set(st.blocked ?? []);
+
+		for (let id in st.radios ?? {})
+			radios[id] = Object.assign({ channel: null, frequency: null, txpower: null, width: null }, st.radios[id]);
+
+		return Promise.all((st.ifaces ?? []).map((i) => {
+			const rs = radios[i.radio];
+			const first = rs && !rs.asked;
+
+			if (first)
+				rs.asked = true;
+
+			return Promise.all([
+				first ? L.resolveDefault(callIwinfoInfo(i.ifname), {}) : null,
+				L.resolveDefault(callIwinfoAssoclist(i.ifname), [])
+			]).then(([ info, assoc ]) => {
+				if (info) {
+					rs.channel = info.channel ?? null;
+					rs.frequency = info.frequency ?? null;
+					rs.txpower = info.txpower ?? null;
+					rs.width = (/([0-9]+)/.exec(info.htmode ?? '') ?? [])[1] ?? null;
+				}
+
+				for (let c of assoc ?? []) {
+					const mac = (c.mac ?? '').toUpperCase();
+					const lease = st.leases?.[mac] ?? {};
+
+					clients.push({
+						mac,
+						ifname: i.ifname,
+						name: lease.name,
+						ip: lease.ip,
+						radio: i.radio,
+						network: i.network,
+						ssid: i.ssid,
+						signal: c.signal,
+						connected_time: c.connected_time,
+						inactive: c.inactive,
+						rx_rate: c.rx?.rate,
+						tx_rate: c.tx?.rate,
+						rx_bytes: c.rx?.bytes,
+						tx_bytes: c.tx?.bytes,
+						blocked: blocked.has(mac)
+					});
+				}
+			});
+		})).then(() => ({ radios, clients }));
+	});
+}
+
 return view.extend({
 	handleSaveApply: null,
 	handleSave: null,
@@ -239,12 +363,12 @@ return view.extend({
 	busy: false,
 
 	load() {
-		return Promise.all([ callGet(), L.resolveDefault(callStatus(), { radios: {}, clients: [] }) ]);
+		return Promise.all([ loadConfig(), L.resolveDefault(loadStatus(), { radios: {}, clients: [] }) ]);
 	},
 
 	// Re-renders the live parts only, so typing in a form is never disturbed.
 	refreshStatus() {
-		return callStatus().then((st) => {
+		return loadStatus().then((st) => {
 			this.status = st;
 
 			if (this.busy)
@@ -258,7 +382,7 @@ return view.extend({
 
 	// Reads the configuration again after a change and redraws everything.
 	reload() {
-		return Promise.all([ callGet(), L.resolveDefault(callStatus(), this.status) ]).then(([ cfg, st ]) => {
+		return Promise.all([ loadConfig(), L.resolveDefault(loadStatus(), this.status) ]).then(([ cfg, st ]) => {
 			this.cfg = cfg;
 			this.status = st;
 			dom.content(this.root, this.renderContent());
@@ -637,7 +761,7 @@ return view.extend({
 		}
 
 		return this.act(enabled ? _('Turning on %s…').format(r.label) : _('Turning off %s…').format(r.label),
-			() => callSetRadio(r.id, enabled, r.channel, r.width ?? 0, r.txpower ?? 0), { restartsWifi: true });
+			() => callSetRadio(r.id, enabled, r.channel, '', r.txpower ?? 0), { restartsWifi: true });
 	},
 
 	showRadioSettings(r) {
@@ -652,7 +776,7 @@ return view.extend({
 			channel.appendChild(E('option', { value: r.channel, selected: '' }, r.channel));
 
 		const width = E('select', { 'class': 'cbi-input-select' }, r.widths.map((w) =>
-			E('option', { value: String(w.width), selected: w.width == r.width ? '' : null },
+			E('option', { value: w.htmode, selected: w.width == r.width ? '' : null },
 				'%d MHz%s'.format(w.width, (r.band == '2g' && w.width == 20) || (r.band == '5g' && w.width == 80) ? ' (' + _('recommended') + ')' : ''))));
 
 		const power = E('select', { 'class': 'cbi-input-select' }, [
@@ -694,7 +818,7 @@ return view.extend({
 				E('button', { 'class': 'btn cbi-button cbi-button-save important', click: () => {
 					ui.hideModal();
 					this.act(_('Saving %s settings…').format(r.label),
-						() => callSetRadio(r.id, r.enabled, channel.value, +width.value || 0, +power.value || 0), { restartsWifi: true });
+						() => callSetRadio(r.id, r.enabled, channel.value, width.value || '', +power.value || 0), { restartsWifi: true });
 				} }, [ _('Save') ])
 			])
 		], 'cbi-modal');
@@ -792,7 +916,7 @@ return view.extend({
 	/* --- Devices */
 
 	handleKick(c) {
-		return this.act(_('Disconnecting %s…').format(c.name ?? c.mac), () => callKick(c.mac));
+		return this.act(_('Disconnecting %s…').format(c.name ?? c.mac), () => callKick(c.mac, c.ifname));
 	},
 
 	handleBlock(c) {

@@ -109,7 +109,8 @@ check('no iphone', r.usb.iphone == null && r.usb.netdev == null && !r.usb.carrie
 check('usb support missing', !r.usb.supported && !r.usb.driver);
 check('main interfaces', join(',', map(r.main, (i) => i.interface)) == 'wan,wan6,backup');
 check('main state', r.main[0].up && r.main[0].address == '203.0.113.7' && r.main[0].gateway == '203.0.113.1' && r.main[1].ipv6_only);
-check('wifi not configured', !r.wifi.configured && !r.wifi.connected);
+check('wifi not configured', !r.wifi.configured && r.wifi.sta_ifname == null);
+check('own networks listed for the search', join(',', r.own_ssids) == 'Cafe');
 check('radios', length(r.radios) == 3 && r.radios[1].label == '5 GHz' && !r.radios[2].enabled);
 check('usb start needs support', index(call('start', { method: 'usb' }).error ?? '', 'not installed') >= 0);
 check('wifi start needs hotspot', call('start', { method: 'wifi' }).error != null);
@@ -126,12 +127,8 @@ writefile(getenv('TETHER_USBMUXD'), '');
 check('usb supported', call('status').usb.supported);
 
 // --- Wi-Fi hotspot
-r = call('scan');
-check('scan dedupes bands', length(filter(r.results, (n) => n.ssid == 'Will’s iPhone')) == 1);
-check('scan iphone first', r.results[0].ssid == 'Will’s iPhone' && r.results[0].iphone && r.results[0].radio == 'radio0');
-check('scan encryption', r.results[0].encryption == 'sae-mixed' && filter(r.results, (n) => n.ssid == 'Neighbour')[0].encryption == 'psk2');
-check('scan skips own network', length(filter(r.results, (n) => n.ssid == 'Cafe')) == 0);
-check('scan skips hidden', length(filter(r.results, (n) => n.ssid == '')) == 0);
+// the hotspot search itself runs in the browser (iwinfo scan)
+check('no backend scan', m.scan == null);
 
 check('short password', call('set_wifi', { ssid: 'Will’s iPhone', key: 'abc', encryption: 'sae-mixed', radio: 'radio0' }).error != null);
 check('bad radio', call('set_wifi', { ssid: 'Will’s iPhone', key: 'abcdefgh', encryption: 'sae-mixed', radio: 'lan' }).error != null);
@@ -145,7 +142,7 @@ check('interfaces created', N.tether_wifi?.proto == 'dhcp' && N.tether_wifi?.aut
 check('in wan zone', join(',', st.firewall.z2.network) == 'wan,wan6,backup,tether_usb,tether_wifi');
 check('main untouched by setup', N.wan.metric == null);
 r = call('status');
-check('wifi configured', r.wifi.configured && r.wifi.ssid == 'Will’s iPhone' && r.wifi.band_label == '2.4 GHz' && !r.wifi.connected);
+check('wifi configured', r.wifi.configured && r.wifi.ssid == 'Will’s iPhone' && r.wifi.band_label == '2.4 GHz' && r.wifi.sta_ifname == null);
 
 r = call('start', { method: 'wifi' });
 check('wifi started', r.result && r.method == 'wifi');
@@ -164,7 +161,7 @@ global.__wifi.status = { radio0: { up: true, interfaces: [ { section: 'tether_st
 global.__wifi.devices['phy0-sta0'] = { info: { bssid: '6A:1B:2C:3D:4E:5F', signal: -42, channel: 6 } };
 push(global.__wifi.ifaces, { interface: 'tether_wifi', up: true, uptime: 300, l3_device: 'phy0-sta0', 'ipv4-address': [ { address: '172.20.10.2' } ] });
 r = call('status');
-check('wifi connected', r.active && r.method == 'wifi' && r.wifi.connected && r.wifi.signal == -42 && r.wifi.address == '172.20.10.2' && r.wifi.uptime == 300);
+check('wifi up', r.active && r.method == 'wifi' && r.wifi.sta_ifname == 'phy0-sta0' && r.wifi.address == '172.20.10.2' && r.wifi.uptime == 300);
 
 // band switched off
 W.radio1.disabled = '1';
@@ -209,6 +206,9 @@ delete st.tether.settings.check_host;
 global.__wifi.ifaces[0].up = false;
 r = call('check_main');
 check('check main down', !r.ok && r.reason == 'down');
+
+// rpcd serves iwinfo itself: calling it from the plugin would block rpcd
+check('never calls iwinfo', !length(filter(global.__ubus_calls, (c) => index(c, 'iwinfo.') == 0)));
 
 print(`${total - failures}/${total} passed\n`);
 exit(failures ? 1 : 0);
