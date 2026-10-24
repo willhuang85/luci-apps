@@ -147,6 +147,9 @@ jobs:
           cp "$keys/wireguard-passwall.pem" .
           rm -f "$RUNNER_TEMP/signing-key.pem"
           ls -l
+          # the public key is not secret; print it so it can be copied
+          echo "Public key (wireguard-passwall.pem):"
+          cat wireguard-passwall.pem
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
