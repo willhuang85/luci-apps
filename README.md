@@ -7,6 +7,7 @@ A simple WireGuard VPN **client** for OpenWrt's LuCI web interface.
 - **Live status**: handshake, uptime, traffic, server and tunnel address
 - **Kill switch** toggle: LAN devices can only reach the internet through the VPN
 - Edit, export and delete profiles; works on desktop and phone
+- **Works with Passwall / Xray / sing-box**, which can even wrap the WireGuard tunnel (see below)
 
 Built and tested for **OpenWrt 25.12** (apk package manager).
 
@@ -53,18 +54,42 @@ The router itself can still reach the internet (it needs that to contact the VPN
 - **IPv6**: if your provider's config only contains IPv4 `AllowedIPs`, LAN IPv6 traffic bypasses the VPN unless the kill switch is on.
 - `PreUp`/`PostUp`/`Table` lines from wg-quick have no meaning on OpenWrt and are ignored (you'll see a note when importing).
 
+## Using it together with Passwall / Xray
+
+The app is built to run next to transparent proxies (Passwall, Passwall 2, HomeProxy, OpenClash) and lets them **wrap the WireGuard tunnel**, i.e. send WireGuard's encrypted UDP packets through an Xray/sing-box proxy (useful when WireGuard is blocked or throttled).
+
+How it stays out of the proxy's way:
+
+- The VPN routes live in their own routing table (`51820`) instead of replacing the default route.
+- Only *unmarked* traffic is routed into the VPN. Passwall's Xray and sing-box mark their own connections with `255`, so the proxy's connection to its server always leaves via WAN and never loops into the tunnel.
+- WireGuard's own packets carry the mark `0xca6c`. That also keeps them out of the VPN table, and because the low byte isn't `0xff`, Passwall's router-traffic rules still pick them up and can wrap them.
+- The ip rules use priority 30100/30110, after Passwall's TPROXY rule (priority 999).
+
+To wrap the tunnel with Passwall:
+
+1. Import and connect your WireGuard profile here as usual.
+2. In Passwall enable **Localhost proxy** (proxy the router's own traffic) with UDP proxying turned on, and pick a node that supports UDP (VLESS, VMess, Trojan, Shadowsocks, ...).
+3. Make sure the WireGuard server's address goes through the proxy. In *Global* mode it does; in rule-based modes add the server IP/domain to the proxy list, and keep it out of the direct list.
+4. If some sites stall, set `MTU = 1280` in the profile (Edit) because the proxy adds overhead.
+
+Alternatively, point the profile's `Endpoint` at a local Xray `dokodemo-door` inbound (e.g. `127.0.0.1:51821`) that forwards to the real server through the proxy.
+
+Notes: traffic that Passwall itself proxies for LAN devices goes through Xray and therefore *not* through WireGuard; traffic Passwall sends *direct* goes through the VPN. The kill switch only blocks LAN traffic forwarded straight to WAN, so it does not interfere with Passwall. The routing table, rule priority and marks can be changed in `/etc/config/wgclient` if another app already uses them.
+
 ## How it works
 
-Each profile is a normal netifd WireGuard interface named `wgc_<name>` in `/etc/config/network` (peers in `wireguard_wgc_<name>` sections), so you can also see it under *Network → Interfaces*. The app creates:
+Each profile is a normal netifd WireGuard interface named `wgc_<name>` in `/etc/config/network` (peers in `wireguard_wgc_<name>` sections) with `ip4table`/`ip6table 51820` and `fwmark 0xca6c`, so you can also see it under *Network → Interfaces*. The app creates:
 
 | UCI section | Purpose |
 |---|---|
 | `firewall.wgclient_zone` | Zone `wgclient` with all profiles, masquerading on |
 | `firewall.wgclient_fwd` | Forwarding `lan` → `wgclient` |
 | `firewall.wgclient_killswitch` | Rule `lan` → `wan` REJECT, enabled by the toggle |
+| `network.wgclient_rule_main` / `wgclient_rule6_main` | `lookup main suppress_prefixlength 0` keeps LAN and other specific routes |
+| `network.wgclient_rule_vpn` / `wgclient_rule6_vpn` | Unmarked traffic → VPN table 51820 |
 | `wgclient.<iface>` | Display name of each profile |
 
-Full-tunnel `AllowedIPs` (`0.0.0.0/0`, `::/0`) are stored as two `/1` halves so the VPN routes always win over the WAN default route; exports turn them back into `/0`.
+Full-tunnel `AllowedIPs` (`0.0.0.0/0`, `::/0`) are stored as two `/1` halves so the tunnel can never replace a default route; exports turn them back into `/0`.
 
 Code layout:
 

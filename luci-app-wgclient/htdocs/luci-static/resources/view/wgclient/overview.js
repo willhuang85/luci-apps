@@ -506,6 +506,24 @@ return view.extend({
 		]);
 	},
 
+	// Shown when a transparent proxy app is installed next to this one.
+	renderProxyInfo(data) {
+		const apps = data.proxy_apps ?? [];
+
+		if (!apps.length)
+			return '';
+
+		return E('div', { 'class': 'wgc-card' }, [
+			E('p', { 'class': 'wgc-h' }, '🔀 ' + _('Works with %s').format(apps.join(', '))),
+			E('div', { 'class': 'wgc-sub' }, _('The VPN uses its own routing table, so the proxy keeps working side by side:')),
+			E('ul', { style: 'margin:8px 0 0 18px; padding:0' }, [
+				E('li', {}, _('Connections made by the proxy core (Xray / sing-box) bypass the VPN, so they never loop into the tunnel.')),
+				E('li', {}, _('To send the WireGuard tunnel itself through the proxy, enable the proxy for the router\'s own traffic (Passwall: "Localhost proxy") and make sure the VPN server address is proxied, not direct.')),
+				E('li', {}, _('A wrapped tunnel adds overhead: if pages stall, set MTU = 1280 in the profile.'))
+			])
+		]);
+	},
+
 	renderProfile(p) {
 		const state = profileState(p);
 		const isOn = p.up || p.auto;
@@ -565,6 +583,7 @@ return view.extend({
 		return [
 			this.renderHero(data),
 			this.renderKillswitch(data),
+			this.renderProxyInfo(data),
 			E('div', { 'class': 'wgc-list-head' }, [
 				E('p', { 'class': 'wgc-h' }, _('VPN profiles')),
 				profiles.length ? E('button', { 'class': 'btn cbi-button cbi-button-add', click: () => this.showEditor({}) }, [ '+ ' + _('Import') ]) : ''

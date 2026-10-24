@@ -72,10 +72,11 @@ function parse_endpoint(value) {
 }
 
 /*
- * A route for 0.0.0.0/0 on the tunnel would clash with the default route of
- * the WAN interface, so full-tunnel configs are stored as two /1 halves which
- * always win over the default route regardless of metrics (same trick as
- * OpenVPN's "def1"). Cryptokey routing is unaffected by the split.
+ * Full-tunnel configs are stored as two /1 halves instead of 0.0.0.0/0 so the
+ * tunnel can never replace a default route, even if its routes end up in the
+ * main table (e.g. when edited by hand); more specific routes always win
+ * regardless of metrics (same trick as OpenVPN's "def1"). Cryptokey routing
+ * is unaffected by the split.
  */
 export function expand_default_routes(list) {
 	let out = [];

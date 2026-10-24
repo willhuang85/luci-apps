@@ -49,6 +49,9 @@ const methods = {
 	},
 
 	get_all: function(pkg, sid) {
+		if (sid == null)
+			return store[pkg] ? { ...store[pkg] } : null;
+
 		const s = section(pkg, sid);
 
 		return s ? { ...s } : null;

@@ -8,6 +8,20 @@
 // "wgclient". The kill switch is a firewall rule rejecting all forwarded
 // traffic from the LAN zone to the WAN zone, so LAN clients can only reach
 // the internet through the tunnel.
+//
+// Routing is policy based (like wg-quick) so that transparent proxies such as
+// Passwall, Passwall2, HomeProxy or OpenClash keep working and can even wrap
+// the WireGuard tunnel itself:
+//
+//  - the tunnel's routes live in their own table (default 51820)
+//  - "lookup main suppress_prefixlength 0" keeps LAN and other specific routes
+//  - only packets whose mark has no bits in bypass_mask (default 0xff) are
+//    sent to the VPN table; proxy cores mark their own sockets (Xray and
+//    sing-box in Passwall use mark 255), so their upstream connections leave
+//    via WAN instead of looping into the tunnel
+//  - WireGuard's own UDP packets carry fwmark 0xca6c: they bypass the VPN
+//    table too, and since the low byte is not 0xff a proxy's OUTPUT rules can
+//    still intercept them, which is what "wrapping" the tunnel means
 
 'use strict';
 
@@ -21,6 +35,15 @@ const ZONE = 'wgclient';
 const ZONE_SID = 'wgclient_zone';
 const FWD_SID = 'wgclient_fwd';
 const KS_SID = 'wgclient_killswitch';
+const RULE_SIDS = {
+	rule: [ 'wgclient_rule_main', 'wgclient_rule_vpn' ],
+	rule6: [ 'wgclient_rule6_main', 'wgclient_rule6_vpn' ]
+};
+
+// uci config of known transparent proxy apps
+const PROXY_APPS = {
+	passwall: 'Passwall', passwall2: 'Passwall 2', homeproxy: 'HomeProxy', openclash: 'OpenClash'
+};
 
 // Keep the connection outside of the handlers to prevent premature GC.
 const ubus = connect();
@@ -48,12 +71,39 @@ function as_list(v) {
 	return (type(v) == 'array') ? v : [ v ];
 }
 
+function opt_uint(uci, name, def, min, max) {
+	const v = uci.get('wgclient', 'settings', name);
+	const n = match(v ?? '', /^(0x[0-9a-fA-F]+|[0-9]+)$/) ? int(v, index(v, '0x') == 0 ? 16 : 10) : null;
+
+	return (n != null && n >= min && n <= max) ? n : def;
+}
+
 function settings(uci) {
+	let table = opt_uint(uci, 'route_table', 51820, 1, 0x7fffffff);
+
+	// never hijack the reserved local/main/default tables
+	if (table >= 253 && table <= 255)
+		table = 51820;
+
 	return {
 		killswitch: uci.get('wgclient', 'settings', 'killswitch') == '1',
 		lan_zone: uci.get('wgclient', 'settings', 'lan_zone') || 'lan',
-		wan_zone: uci.get('wgclient', 'settings', 'wan_zone') || 'wan'
+		wan_zone: uci.get('wgclient', 'settings', 'wan_zone') || 'wan',
+		route_table: table,
+		rule_priority: opt_uint(uci, 'rule_priority', 30100, 1000, 32000),
+		bypass_mask: opt_uint(uci, 'bypass_mask', 0xff, 1, 0xffffffff),
+		wg_fwmark: opt_uint(uci, 'wg_fwmark', 0xca6c, 1, 0xffffffff)
 	};
+}
+
+function detect_proxy_apps(uci) {
+	let found = [];
+
+	for (let cfg, name in PROXY_APPS)
+		if (uci.get_all(cfg) != null)
+			push(found, name);
+
+	return found;
 }
 
 function profile_ids(uci) {
@@ -182,6 +232,45 @@ function write_profile(uci, id, cfg, auto) {
 		if (p.persistent_keepalive)
 			uci.set('network', sid, 'persistent_keepalive', `${p.persistent_keepalive}`);
 	}
+}
+
+function set_routing_opts(uci, id) {
+	const s = settings(uci);
+
+	uci.set('network', id, 'ip4table', `${s.route_table}`);
+	uci.set('network', id, 'ip6table', `${s.route_table}`);
+	uci.set('network', id, 'fwmark', sprintf('0x%x', s.wg_fwmark));
+}
+
+// Creates or removes the policy routing rules shared by all profiles and
+// makes sure every profile routes into the VPN table.
+function sync_routing(uci) {
+	const s = settings(uci);
+	const ids = profile_ids(uci);
+
+	for (let t, sids in RULE_SIDS) {
+		if (!length(ids)) {
+			for (let sid in sids)
+				uci.delete('network', sid);
+
+			continue;
+		}
+
+		uci.set('network', sids[0], t);
+		uci.set('network', sids[0], 'lookup', 'main');
+		uci.set('network', sids[0], 'suppress_prefixlength', '0');
+		uci.set('network', sids[0], 'priority', `${s.rule_priority}`);
+
+		uci.set('network', sids[1], t);
+		uci.set('network', sids[1], 'mark', sprintf('0x0/0x%x', s.bypass_mask));
+		uci.set('network', sids[1], 'lookup', `${s.route_table}`);
+		uci.set('network', sids[1], 'priority', `${s.rule_priority + 10}`);
+	}
+
+	for (let id in ids)
+		set_routing_opts(uci, id);
+
+	uci.save('network');
 }
 
 // Creates or refreshes the firewall zone, forwarding and kill switch rule.
@@ -333,6 +422,7 @@ const methods = {
 				lan_zone_ok: zone_exists(uci, s.lan_zone),
 				wan_zone_ok: zone_exists(uci, s.wan_zone),
 				killswitch_active: s.killswitch && uci.get('firewall', KS_SID, 'enabled') == '1',
+				proxy_apps: detect_proxy_apps(uci),
 				profiles
 			};
 		}
@@ -418,7 +508,7 @@ const methods = {
 			}
 
 			write_profile(uci, id, r, connect_now);
-			uci.save('network');
+			sync_routing(uci);
 
 			if (uci.get('wgclient', 'settings') == null)
 				uci.set('wgclient', 'settings', 'settings');
@@ -456,7 +546,7 @@ const methods = {
 				uci.delete('network', sid);
 
 			uci.delete('network', id);
-			uci.save('network');
+			sync_routing(uci);
 			uci.delete('wgclient', id);
 			uci.save('wgclient');
 
@@ -485,7 +575,7 @@ const methods = {
 			}
 
 			uci.set('network', id, 'auto', '1');
-			uci.save('network');
+			sync_routing(uci);
 			apply(uci, [ 'network' ]);
 			iface_up(id);
 
