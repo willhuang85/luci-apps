@@ -146,6 +146,13 @@ function get_mode(uci) {
 	return MODES[m] ? m : 'vpn';
 }
 
+// true in the modes that use the VPN
+function vpn_mode(uci) {
+	const m = get_mode(uci);
+
+	return m == 'vpn' || m == 'vpn_passwall';
+}
+
 // The kill switch is paused while nothing should use the VPN: in
 // Passwall-only mode (Passwall sends some traffic direct on purpose) and
 // when everything is off.
@@ -582,6 +589,10 @@ function sync_firewall(uci) {
 		uci.set('firewall', MARK_SID, 'family', 'any');
 		uci.set('firewall', MARK_SID, 'target', 'MARK');
 		uci.set('firewall', MARK_SID, 'set_mark', sprintf('0x%x/0x%x', s.device_mark, s.device_mark));
+		// only in the VPN modes: in Passwall only mode the bit would be added
+		// to the mark Passwall sets for its proxy, so Passwall's routing rule
+		// (exact mark) no longer matches and the device goes out directly
+		uci.set('firewall', MARK_SID, 'enabled', vpn_mode(uci) ? '1' : '0');
 	}
 	else {
 		uci.delete('firewall', KS_SID, 'src_mac');
@@ -1082,7 +1093,7 @@ function drift(uci) {
 	if (uci.get('firewall', KS_SID, 'enabled') == '1')
 		push(want, 'WireGuard + Passwall kill switch');
 
-	if (devices)
+	if (devices && vpn_mode(uci))
 		push(want, 'WireGuard + Passwall: devices that use the VPN');
 
 	if (uci.get('firewall', NO_V6_SID, 'enabled') == '1')

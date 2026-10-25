@@ -130,7 +130,7 @@ check('devices: saved', r.result && join(',', st.wgpasswall.settings.vpn_device)
 check('devices: rule by mark', st.network.wgpasswall_rule_vpn?.mark == '0x1000000/0x1000000' && st.network.wgpasswall_rule_vpn?.in == null &&
 	st.network.wgpasswall_rule6_vpn?.mark == '0x1000000/0x1000000' && st.network.wgpasswall_rule_vpn_lan == null);
 check('devices: router itself still in the VPN', st.network.wgpasswall_rule_vpn_loopback?.in == 'loopback' && st.network.wgpasswall_rule_vpn_loopback?.mark == '0x0/0xff');
-check('devices: mark rule', st.firewall.wgpasswall_devices?.target == 'MARK' && st.firewall.wgpasswall_devices?.set_mark == '0x1000000/0x1000000' &&
+check('devices: mark rule', st.firewall.wgpasswall_devices?.enabled == '1' && st.firewall.wgpasswall_devices?.target == 'MARK' && st.firewall.wgpasswall_devices?.set_mark == '0x1000000/0x1000000' &&
 	st.firewall.wgpasswall_devices?.src == 'lan' && st.firewall.wgpasswall_devices?.dest == '*' && length(st.firewall.wgpasswall_devices?.src_mac) == 2 && st.firewall.wgpasswall_devices?.family == 'any');
 check('devices: kill switch per device', join(',', st.firewall.wgpasswall_killswitch.src_mac ?? []) == 'AA:BB:CC:DD:EE:FF,11:22:33:44:55:66');
 check('devices: status', call('status').scope == 'devices');
@@ -175,6 +175,9 @@ call('save', { id: 'wgc_myhomevpn', label: 'Renamed', conf: text });
 check('all: LAN device from netifd', index(dns_nft(), 'iifname { "br-home" }') >= 0);
 check('off: mode set', call('set_mode', { mode: 'off' }).mode == 'off');
 check('off: no dns redirect', index(dns_nft(), 'dnat') < 0);
+call('set_devices', { scope: 'devices', devices: [ '11:22:33:44:55:66' ] });
+check('off: device mark not active', st.firewall.wgpasswall_devices?.enabled == '0');
+call('set_devices', { scope: 'all', devices: [ '11:22:33:44:55:66' ] });
 call('set_mode', { mode: 'vpn', id: 'wgc_myhomevpn' });
 check('all: chosen devices kept', join(',', st.wgpasswall.settings.vpn_device) == '11:22:33:44:55:66' && call('status').scope == 'all');
 call('set_killswitch', { enabled: false });

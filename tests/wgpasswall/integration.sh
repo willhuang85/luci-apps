@@ -258,6 +258,7 @@ check_devices() {
 	[ "$(uci -q get network.wgpasswall_rule_vpn.mark)" = 0x1000000/0x1000000 ] || fail "VPN rule does not match the device mark"
 	uci -q get network.wgpasswall_rule_vpn_lan >/dev/null && fail "LAN-wide VPN rule left behind"
 	[ "$(uci -q get firewall.wgpasswall_devices.target)" = MARK ] || fail "no firewall rule marking the VPN devices"
+	[ "$(uci -q get firewall.wgpasswall_devices.enabled)" = 1 ] || fail "VPN device mark not active in a VPN mode"
 	[ "$(uci -q get firewall.wgpasswall_devices.src_mac)" = "AA:BB:CC:DD:EE:01 AA:BB:CC:DD:EE:02" ] || fail "mark rule devices"
 	[ "$(uci -q get firewall.wgpasswall_killswitch.src_mac)" = "AA:BB:CC:DD:EE:01 AA:BB:CC:DD:EE:02" ] || fail "kill switch not limited to the VPN devices"
 	ubus call luci.wgpasswall status | jq -e '.scope == "devices"' >/dev/null || fail "status scope"
@@ -274,6 +275,8 @@ check_devices() {
 check_devices
 ubus call luci.wgpasswall set_mode '{"mode":"passwall"}' >/dev/null || fail "Passwall only with chosen devices"
 uci -q get passwall.wgpasswall_vpn_devices >/dev/null && fail "VPN devices skip Passwall in Passwall-only mode"
+# the device mark would break Passwall's own (exact) mark for its proxy
+[ "$(uci -q get firewall.wgpasswall_devices.enabled)" = 0 ] || fail "VPN device mark active in Passwall-only mode"
 uci -q get passwall.@global[0].acl_enable >/dev/null && fail "access control switch not back to original in Passwall-only mode"
 ubus call luci.wgpasswall set_mode '{"mode":"vpn_passwall"}' >/dev/null || fail "back to VPN through Passwall with chosen devices"
 check_devices
