@@ -179,6 +179,10 @@ check_wrapped() {
 	[ "$(uci -q get firewall.wgpasswall_killswitch.enabled)" = 1 ] || fail "kill switch not active"
 	ubus call luci.wgpasswall get '{"id":"wgc_civpn"}' | jq -e '.conf | contains("MTU") | not' >/dev/null || fail "editor shows lowered MTU"
 	ubus call luci.wgpasswall status | jq -e '.mode == "vpn_passwall" and .passwall.enabled' >/dev/null || fail "status mode"
+	# the profile only carries IPv4 (0.0.0.0/0): LAN IPv6 must not go out directly
+	[ "$(uci -q get firewall.wgpasswall_no_ipv6.enabled)" = 1 ] || fail "LAN IPv6 not blocked with an IPv4-only VPN"
+	[ "$(uci -q get firewall.wgpasswall_no_ipv6.family)" = ipv6 ] || fail "IPv6 block rule family"
+	! uci -q get firewall.wgpasswall_no_ipv6.src_mac >/dev/null || fail "IPv6 block limited to devices with all devices"
 }
 check_wrapped
 sleep 1; grep -qx restart /tmp/wgpasswall-init.log || fail "relay service not restarted on mode change"
@@ -198,6 +202,7 @@ uci show network | grep -q "wgpasswall_orig_host" && fail "relay endpoint left i
 [ "$(uci -q get network.@wireguard_wgc_civpn[0].endpoint_host)" = 1.2.3.4 ] || fail "endpoint not restored"
 uci -q get network.wgc_civpn.mtu >/dev/null && fail "MTU not restored"
 [ "$(uci -q get firewall.wgpasswall_killswitch.enabled)" = 0 ] || fail "kill switch not paused"
+[ "$(uci -q get firewall.wgpasswall_no_ipv6.enabled)" = 0 ] || fail "IPv6 blocked in Passwall-only mode"
 [ "$(uci -q get network.wgpasswall_rule_vpn.lookup)" = 51820 ] || fail "normal VPN rule missing"
 ubus call luci.wgpasswall connect '{"id":"wgc_civpn"}' | jq -e '.error' >/dev/null || fail "connect allowed in Passwall-only mode"
 ubus call luci.wgpasswall status | jq -e '.mode == "passwall" and .killswitch_paused' >/dev/null || fail "status passwall mode"
@@ -262,6 +267,7 @@ check_devices() {
 		{ cat /etc/wgpasswall/devices-dns.nft; fail "VPN devices' DNS not sent to the VPN's DNS server"; }
 	nft -c -f /etc/wgpasswall/devices-dns.nft || fail "DNS rules do not load"
 	ubus call luci.wgpasswall status | jq -e '.vpn_dns.v4 == "10.2.0.1"' >/dev/null || fail "status vpn_dns"
+	[ "$(uci -q get firewall.wgpasswall_no_ipv6.src_mac)" = "AA:BB:CC:DD:EE:01 AA:BB:CC:DD:EE:02" ] || fail "IPv6 block not limited to the VPN devices"
 }
 check_devices
 ubus call luci.wgpasswall set_mode '{"mode":"passwall"}' >/dev/null || fail "Passwall only with chosen devices"

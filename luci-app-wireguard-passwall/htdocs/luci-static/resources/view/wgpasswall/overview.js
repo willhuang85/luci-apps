@@ -730,6 +730,8 @@ return view.extend({
 				E('button', { 'class': 'btn cbi-button', click: () => this.showDevices() }, [ _('Change…') ])
 			]) : '',
 			dns ? E('div', { 'class': 'wgc-sub', style: 'margin-top:10px' }, dns) : '',
+			data.ipv6_blocked ? E('div', { 'class': 'wgc-sub', style: 'margin-top:10px' },
+				_('Their IPv6 internet traffic is blocked: the VPN profile only carries IPv4, so IPv6 would go around the VPN. Apps use IPv4 instead.')) : '',
 			others ? E('div', { 'class': 'wgc-sub', style: 'margin-top:10px' }, others) : ''
 		]);
 	},

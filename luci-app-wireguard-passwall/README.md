@@ -69,7 +69,9 @@ So while a profile is connected (VPN and VPN through Passwall modes), the DNS qu
 
 ### Good to know
 
-- **IPv6**: if your provider's config only contains IPv4 `AllowedIPs`, LAN IPv6 traffic bypasses the VPN unless the kill switch is on.
+- **IPv6**: while a profile that sends all IPv4 through the VPN (`0.0.0.0/0`) but has no `::/0` is connected, IPv6 internet traffic of the devices that use the VPN is refused (firewall rule `wgpasswall_no_ipv6`), so it cannot go around the VPN; apps use IPv4 instead. IPv6 inside your network keeps working.
+- **What does not use the VPN** for devices that do: addresses reachable without the internet (your LAN, and the network on the router's WAN side, e.g. the home router it is plugged into) and Tailscale addresses (`100.x`). If the VPN interface is down, traffic uses the normal connection unless the kill switch is on.
+- **Guest network** (e.g. from Wi-Fi Setup): it is a firewall zone of its own. In **VPN through Passwall** mode its devices do not use the VPN (handy for reaching local sites directly), in **VPN** mode they do; the kill switch does not cover them.
 - `PreUp`/`PostUp`/`Table` lines from wg-quick have no meaning on OpenWrt and are ignored (you'll see a note when importing).
 
 ## Using it together with Passwall / Xray
@@ -111,6 +113,7 @@ Each profile is a normal netifd WireGuard interface named `wgc_<name>` in `/etc/
 | `firewall.wgpasswall_fwd` | Forwarding `lan` → `wgpasswall` |
 | `firewall.wgpasswall_killswitch` | Rule `lan` → `wan` REJECT, enabled by the toggle (only for the chosen devices if the VPN is limited to them) |
 | `firewall.wgpasswall_devices` | Only chosen devices: sets mark bit `0x1000000` (`device_mark`) on everything they send |
+| `firewall.wgpasswall_no_ipv6` | Rule `lan` → `wan` IPv6 REJECT, enabled while the connected profile carries all IPv4 but no IPv6 |
 | `firewall.wgpasswall_devices_dns` | Includes `/etc/wgpasswall/devices-dns.nft`, table `inet wgpasswall_dns` sending the DNS of the devices that use the VPN to the VPN's DNS server (before Passwall's DNS redirect) |
 | `passwall.wgpasswall_vpn_devices` | Only chosen devices, VPN through Passwall: access control rule "No Proxy" for them, ahead of your own rules |
 | `network.wgpasswall_rule_main` / `wgpasswall_rule6_main` | `lookup main suppress_prefixlength 0` keeps LAN and other specific routes |

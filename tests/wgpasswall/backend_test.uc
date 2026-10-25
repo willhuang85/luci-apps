@@ -142,7 +142,11 @@ check('dns: include', st.firewall.wgpasswall_devices_dns?.['.type'] == 'include'
 check('dns: redirect to VPN DNS', index(dns_nft(), 'ether saddr { aa:bb:cc:dd:ee:ff, 11:22:33:44:55:66 } meta l4proto { tcp, udp } meta nfproto ipv4 th dport 53 counter dnat ip to 10.2.0.1:53') >= 0);
 check('dns: before Passwall', index(dns_nft(), 'priority dstnat - 10;') >= 0);
 check('dns: router IPv6 DNS refused', index(dns_nft(), 'meta nfproto ipv6 ct original proto-dst 53 counter reject') >= 0);
+check('ipv6: blocked for the chosen devices (IPv4-only full tunnel)', st.firewall.wgpasswall_no_ipv6?.enabled == '1' &&
+	st.firewall.wgpasswall_no_ipv6?.family == 'ipv6' && st.firewall.wgpasswall_no_ipv6?.target == 'REJECT' &&
+	st.firewall.wgpasswall_no_ipv6?.dest == 'wan' && length(st.firewall.wgpasswall_no_ipv6?.src_mac) == 2 && call('status').ipv6_blocked);
 call('disconnect', { id: 'wgc_myhomevpn' });
+check('ipv6: not blocked while disconnected', st.firewall.wgpasswall_no_ipv6.enabled == '0');
 check('dns: no redirect while disconnected', index(dns_nft(), 'dnat') < 0 && index(dns_nft(), 'delete table inet wgpasswall_dns') >= 0);
 call('connect', { id: 'wgc_myhomevpn' });
 st.wgpasswall.settings.device_mark = '0x4000000';
@@ -156,6 +160,12 @@ check('all: dns still kept off the router resolver', st.network.wgc_myhomevpn.dn
 check('all: whole LAN gets the VPN DNS', index(dns_nft(), 'iifname { "br-lan" } meta l4proto { tcp, udp } meta nfproto ipv4 th dport 53 counter dnat ip to 10.2.0.1:53') >= 0);
 global.__ifaces = [ { interface: 'lan', l3_device: 'br-home' }, { interface: 'wgc_myhomevpn', up: true } ];
 call('connect', { id: 'wgc_myhomevpn' });
+check('ipv6: blocked for all devices', st.firewall.wgpasswall_no_ipv6.enabled == '1' && st.firewall.wgpasswall_no_ipv6.src_mac == null);
+call('save', { id: 'wgc_myhomevpn', label: 'Renamed', conf: replace(text, 'AllowedIPs = 0.0.0.0/0', 'AllowedIPs = 0.0.0.0/0, ::/0') });
+check('ipv6: not blocked with ::/0', st.firewall.wgpasswall_no_ipv6.enabled == '0' && !call('status').ipv6_blocked);
+call('save', { id: 'wgc_myhomevpn', label: 'Renamed', conf: replace(text, 'AllowedIPs = 0.0.0.0/0', 'AllowedIPs = 10.0.0.0/8') });
+check('ipv6: not blocked for a split tunnel', st.firewall.wgpasswall_no_ipv6.enabled == '0');
+call('save', { id: 'wgc_myhomevpn', label: 'Renamed', conf: text });
 check('all: LAN device from netifd', index(dns_nft(), 'iifname { "br-home" }') >= 0);
 check('off: mode set', call('set_mode', { mode: 'off' }).mode == 'off');
 check('off: no dns redirect', index(dns_nft(), 'dnat') < 0);

@@ -49,6 +49,7 @@ const ACL_SID = 'wgpasswall_vpn_devices';
 // DNS of the chosen devices: an nftables table of its own, loaded by fw4
 // through an include, ahead of Passwall's DNS redirect
 const DNS_SID = 'wgpasswall_devices_dns';
+const NO_V6_SID = 'wgpasswall_no_ipv6';
 const DNS_NFT = getenv('WGPASSWALL_DNS_NFT') ?? '/etc/wgpasswall/devices-dns.nft';
 const DNS_TABLE = 'wgpasswall_dns';
 const RULE_SIDS = {
@@ -341,26 +342,49 @@ function sync_dns(uci, ids) {
 	}
 }
 
-// The DNS servers the devices that use the VPN get while a profile is
-// connected: { v4, v6 } from the connected profile's DNS, or null.
-function vpn_dns(uci) {
+// The connected profile in the VPN modes, or null.
+function connected_profile(uci) {
 	const mode = get_mode(uci);
 
 	if (mode != 'vpn' && mode != 'vpn_passwall')
 		return null;
 
-	for (let id in profile_ids(uci)) {
-		if (uci.get('network', id, 'auto') == '0')
-			continue;
-
-		const dns = load_profile(uci, id).iface.dns;
-		const v4 = filter(dns, (a) => match(a, /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) != null)[0];
-		const v6 = filter(dns, (a) => match(a, /^[0-9A-Fa-f:.]+$/) != null && index(a, ':') >= 0)[0];
-
-		return (v4 || v6) ? { v4, v6 } : null;
-	}
+	for (let id in profile_ids(uci))
+		if (uci.get('network', id, 'auto') != '0')
+			return id;
 
 	return null;
+}
+
+// true if the connected profile sends all IPv4 traffic through the VPN but
+// has no IPv6 default route: the devices' IPv6 would then go out directly
+function ipv6_outside_vpn(uci) {
+	const id = connected_profile(uci);
+
+	if (!id)
+		return false;
+
+	let allowed = [];
+
+	for (let p in load_profile(uci, id).peers)
+		push(allowed, ...conf.collapse_default_routes(p.allowed_ips));
+
+	return ('0.0.0.0/0' in allowed) && !('::/0' in allowed);
+}
+
+// The DNS servers the devices that use the VPN get while a profile is
+// connected: { v4, v6 } from the connected profile's DNS, or null.
+function vpn_dns(uci) {
+	const id = connected_profile(uci);
+
+	if (!id)
+		return null;
+
+	const dns = load_profile(uci, id).iface.dns;
+	const v4 = filter(dns, (a) => match(a, /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) != null)[0];
+	const v6 = filter(dns, (a) => match(a, /^[0-9A-Fa-f:.]+$/) != null && index(a, ':') >= 0)[0];
+
+	return (v4 || v6) ? { v4, v6 } : null;
 }
 
 // Linux devices of the LAN zone's networks (e.g. br-lan)
@@ -509,6 +533,22 @@ function sync_firewall(uci) {
 	uci.set('firewall', KS_SID, 'family', 'any');
 	uci.set('firewall', KS_SID, 'target', 'REJECT');
 	uci.set('firewall', KS_SID, 'enabled', (s.killswitch && !killswitch_paused(uci)) ? '1' : '0');
+
+	// IPv6 of the devices that use the VPN must not go out directly while
+	// the VPN only carries IPv4 (see ipv6_outside_vpn)
+	uci.set('firewall', NO_V6_SID, 'rule');
+	uci.set('firewall', NO_V6_SID, 'name', 'WireGuard + Passwall: no IPv6 outside the VPN');
+	uci.set('firewall', NO_V6_SID, 'src', s.lan_zone);
+	uci.set('firewall', NO_V6_SID, 'dest', s.wan_zone);
+	uci.set('firewall', NO_V6_SID, 'proto', 'all');
+	uci.set('firewall', NO_V6_SID, 'family', 'ipv6');
+	uci.set('firewall', NO_V6_SID, 'target', 'REJECT');
+	uci.set('firewall', NO_V6_SID, 'enabled', ipv6_outside_vpn(uci) ? '1' : '0');
+
+	if (devices_only(uci))
+		uci.set('firewall', NO_V6_SID, 'src_mac', s.devices);
+	else
+		uci.delete('firewall', NO_V6_SID, 'src_mac');
 
 	if (devices_only(uci)) {
 		// the kill switch only holds back the devices that use the VPN
@@ -1023,6 +1063,9 @@ function drift(uci) {
 	if (devices)
 		push(want, 'WireGuard + Passwall: devices that use the VPN');
 
+	if (uci.get('firewall', NO_V6_SID, 'enabled') == '1')
+		push(want, 'WireGuard + Passwall: no IPv6 outside the VPN');
+
 	const dns_rules = index(vpn_dns_nft(uci), 'dnat') >= 0;
 
 	if ((devices && uci.get('firewall', MARK_SID) == null) ||
@@ -1136,6 +1179,7 @@ const methods = {
 				proxy_apps: detect_proxy_apps(uci),
 				drift: drift(uci),
 				vpn_dns: vpn_dns(uci),
+				ipv6_blocked: ipv6_outside_vpn(uci),
 				mode: get_mode(uci),
 				last_profile: uci.get('wgpasswall', 'settings', 'last_profile'),
 				killswitch_paused: s.killswitch && killswitch_paused(uci),

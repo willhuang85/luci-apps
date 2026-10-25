@@ -87,10 +87,11 @@ define Package/luci-app-wireguard-passwall/prerm
 	done
 	uci -q commit network
 	if uci -q get firewall.wgpasswall_killswitch >/dev/null || uci -q get firewall.wgpasswall_devices >/dev/null || \
-	   uci -q get firewall.wgpasswall_devices_dns >/dev/null; then
+	   uci -q get firewall.wgpasswall_devices_dns >/dev/null || uci -q get firewall.wgpasswall_no_ipv6 >/dev/null; then
 		uci -q delete firewall.wgpasswall_killswitch
 		uci -q delete firewall.wgpasswall_devices
 		uci -q delete firewall.wgpasswall_devices_dns
+		uci -q delete firewall.wgpasswall_no_ipv6
 		uci -q commit firewall
 		/etc/init.d/firewall reload >/dev/null 2>&1
 	fi
