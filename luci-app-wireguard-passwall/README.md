@@ -84,6 +84,7 @@ Details:
 - In **Passwall only** the kill switch is paused, since Passwall sends some traffic directly on purpose; Connect is disabled until you pick a VPN mode.
 - **Off** turns everything off in one click: VPN disconnected, Passwall's main switch off (its other settings untouched), relay stopped, kill switch paused, so devices use the regular internet connection. Pick another mode to turn things back on; Connect is disabled while off.
 - Uninstalling the app switches back to **VPN** mode first, so Passwall is restored.
+- **Reapply settings** (bottom of the page) applies the current mode again: Passwall's settings for it, the device rule, routing and firewall rules, then reloads the firewall and restarts Passwall. Use it after changing things on Passwall's own page. The page also warns ("Settings out of step") when Passwall's settings no longer match the mode or the app's firewall rules are saved but not active. In **VPN** mode Passwall is yours and left alone.
 
 ### Why not Passwall's "Localhost Proxy"?
 

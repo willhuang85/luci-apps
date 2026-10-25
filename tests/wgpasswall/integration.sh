@@ -242,7 +242,11 @@ check_devices() {
 	[ "$(uci -q get passwall.@global[0].acl_enable)" = 1 ] || fail "Passwall's access control not switched on, so it ignores the rule"
 	[ "$(uci -q get passwall.wgpasswall_vpn_devices.tcp_no_redir_ports)" = 1:65535 ] || fail "older Passwall would proxy the VPN devices' TCP"
 	[ "$(uci -q get passwall.wgpasswall_vpn_devices.udp_no_redir_ports)" = 1:65535 ] || fail "older Passwall would proxy the VPN devices' UDP"
-	[ "$(uci -q get passwall.wgpasswall_vpn_devices.sources)" = "AA:BB:CC:DD:EE:01 AA:BB:CC:DD:EE:02" ] || fail "VPN devices not in the Passwall rule"
+	[ "$(uci -q show passwall.wgpasswall_vpn_devices.sources)" = "passwall.wgpasswall_vpn_devices.sources='AA:BB:CC:DD:EE:01 AA:BB:CC:DD:EE:02'" ] || \
+		fail "VPN devices not in the Passwall rule as one value: $(uci -q show passwall.wgpasswall_vpn_devices.sources)"
+	# the way Passwall reads its rules (app.sh: acl_app / nftables.sh: load_acl)
+	( eval "$(uci -q show passwall.wgpasswall_vpn_devices | cut -d'.' -sf 3-)" 2>&1 && [ "$sources" = "AA:BB:CC:DD:EE:01 AA:BB:CC:DD:EE:02" ] ) >/dev/null || \
+		fail "Passwall cannot read the rule's sources"
 	[ "$(uci show passwall | sed -n 's/^passwall\.\([^.=]*\)=acl_rule$/\1/p' | head -n 1)" = wgpasswall_vpn_devices ] || fail "VPN device rule not ahead of other access rules"
 	[ "$(uci -q get network.wgpasswall_rule_vpn.mark)" = 0x1000000/0x1000000 ] || fail "VPN rule does not match the device mark"
 	uci -q get network.wgpasswall_rule_vpn_lan >/dev/null && fail "LAN-wide VPN rule left behind"
@@ -257,6 +261,22 @@ uci -q get passwall.wgpasswall_vpn_devices >/dev/null && fail "VPN devices skip 
 uci -q get passwall.@global[0].acl_enable >/dev/null && fail "access control switch not back to original in Passwall-only mode"
 ubus call luci.wgpasswall set_mode '{"mode":"vpn_passwall"}' >/dev/null || fail "back to VPN through Passwall with chosen devices"
 check_devices
+
+echo "== reapply after changes on Passwall's own page"
+ubus call luci.wgpasswall status | jq -e '.drift == []' >/dev/null || fail "drift reported right after applying"
+uci set passwall.@global[0].client_proxy=0
+uci set passwall.@global[0].acl_enable=0
+uci delete passwall.wgpasswall_vpn_devices
+uci delete firewall.wgpasswall_devices
+uci commit passwall; uci commit firewall
+ubus call luci.wgpasswall status | jq -e '(.drift | index("pw_settings")) and (.drift | index("pw_acl")) and (.drift | index("fw_missing"))' >/dev/null || \
+	fail "changes made elsewhere not reported: $(ubus call luci.wgpasswall status | jq -c .drift)"
+: > /tmp/order.log
+ubus call luci.wgpasswall reapply | jq -e '.result' >/dev/null || fail "reapply"
+check_devices
+ubus call luci.wgpasswall status | jq -e '.drift == []' >/dev/null || fail "drift left after reapply"
+for i in $(seq 1 20); do grep -q restart-end /tmp/order.log && break; sleep 0.5; done
+grep -q firewall-reload /tmp/order.log && grep -q restart-end /tmp/order.log || fail "reapply did not reload the firewall and restart Passwall"
 ubus call luci.wgpasswall set_devices '{"scope":"all","devices":["AA:BB:CC:DD:EE:01"]}' | jq -e '.result' >/dev/null || fail "set_devices all"
 uci -q get passwall.wgpasswall_vpn_devices >/dev/null && fail "VPN device rule left behind"
 uci -q get passwall.@global[0].acl_enable >/dev/null && fail "access control switch left on"
@@ -285,6 +305,11 @@ uci -q get network.wgpasswall_rule_vpn_lan >/dev/null && fail "LAN-only VPN rule
 # Passwall commands run in the background, queued behind earlier restarts
 for i in $(seq 1 30); do grep -qx disable /tmp/passwall-init.log && break; sleep 0.5; done
 grep -qx disable /tmp/passwall-init.log || fail "passwall service not disabled again"
+uci set passwall.@global[0].node=realitynode; uci commit passwall
+ubus call luci.wgpasswall reapply >/dev/null || fail "reapply in VPN mode"
+[ "$(uci -q get passwall.@global[0].node)" = realitynode ] || fail "reapply in VPN mode changed Passwall"
+ubus call luci.wgpasswall status | jq -e '.drift == []' >/dev/null || fail "Passwall's own settings reported as drift in VPN mode"
+uci delete passwall.@global[0].node; uci commit passwall
 
 echo "== firewall reloads and Passwall restarts never overlap"
 # quick mode changes, as when toggling in the UI

@@ -14,6 +14,7 @@ const callConnect = rpc.declare({ object: 'luci.wgpasswall', method: 'connect', 
 const callDisconnect = rpc.declare({ object: 'luci.wgpasswall', method: 'disconnect', params: [ 'id' ] });
 const callSetKillswitch = rpc.declare({ object: 'luci.wgpasswall', method: 'set_killswitch', params: [ 'enabled' ] });
 const callSetMode = rpc.declare({ object: 'luci.wgpasswall', method: 'set_mode', params: [ 'mode', 'node', 'id' ] });
+const callReapply = rpc.declare({ object: 'luci.wgpasswall', method: 'reapply' });
 const callSetDevices = rpc.declare({ object: 'luci.wgpasswall', method: 'set_devices', params: [ 'scope', 'devices' ] });
 
 const MODE_INFO = {
@@ -27,6 +28,14 @@ const MODE_INFO = {
 const MODE_DESC_DEVICES = {
 	vpn: _('Your chosen devices use the WireGuard VPN.'),
 	vpn_passwall: _('Chosen devices: the VPN hidden inside Passwall. Others: Passwall.')
+};
+
+// What the backend found out of step with the current mode (status.drift)
+const DRIFT_TEXT = {
+	pw_settings: _('Passwall\'s settings were changed outside this page (main switch, node or Client Proxy).'),
+	pw_acl: _('Passwall\'s rule for the devices that use the VPN is missing or out of date.'),
+	fw_rules: _('Firewall rules of this page are saved but not active.'),
+	fw_missing: _('Firewall rules of this page were removed.')
 };
 
 const MAC_RE = /^[0-9A-Fa-f]{2}([:-][0-9A-Fa-f]{2}){5}$/;
@@ -715,6 +724,31 @@ return view.extend({
 		]);
 	},
 
+	handleReapply() {
+		if (!confirm(_('Apply the current mode again?\n\nThe Passwall settings this mode uses, the routing and the firewall rules are set again; then the firewall reloads and, in the Passwall modes, Passwall restarts. Proxied devices lose the connection for a few seconds.')))
+			return;
+
+		return this.act(_('Reapplying settings…'), () => callReapply());
+	},
+
+	// Shown when something no longer matches what the current mode set up.
+	renderDrift(data) {
+		const issues = (data.drift ?? []).filter((d) => DRIFT_TEXT[d]);
+
+		if (!issues.length)
+			return '';
+
+		return E('div', { 'class': 'wgc-card' }, [
+			E('div', { 'class': 'wgc-row', style: 'flex-wrap:wrap' }, [
+				E('div', { 'class': 'wgc-grow' }, [
+					E('p', { 'class': 'wgc-h' }, '⚠ ' + _('Settings out of step')),
+					E('ul', { 'class': 'wgc-list', style: 'margin:6px 0 0 18px; padding:0' }, issues.map((d) => E('li', {}, DRIFT_TEXT[d])))
+				]),
+				E('button', { 'class': 'btn cbi-button cbi-button-action important', click: ui.createHandlerFn(this, 'handleReapply') }, [ _('Reapply settings') ])
+			])
+		]);
+	},
+
 	handleScopeAll() {
 		if (this.data?.scope != 'devices')
 			return;
@@ -886,6 +920,7 @@ return view.extend({
 
 		return [
 			this.renderHero(data),
+			this.renderDrift(data),
 			this.renderKillswitch(data),
 			this.renderProxyInfo(data),
 			profiles.length ? this.renderDevices(data) : '',
@@ -894,7 +929,11 @@ return view.extend({
 				profiles.length ? E('button', { 'class': 'btn cbi-button cbi-button-add', click: () => this.showEditor({}) }, [ '+ ' + _('Import') ]) : ''
 			]),
 			...profiles.map((p) => this.renderProfile(p)),
-			this.renderDropZone(!profiles.length)
+			this.renderDropZone(!profiles.length),
+			E('div', { 'class': 'wgc-row', style: 'justify-content:flex-end; flex-wrap:wrap; gap:8px; margin-top:16px' }, [
+				E('span', { 'class': 'wgc-sub', style: 'margin:0' }, _('Changed something in Passwall or the firewall?')),
+				E('button', { 'class': 'btn cbi-button', click: ui.createHandlerFn(this, 'handleReapply') }, [ _('Reapply settings') ])
+			])
 		];
 	},
 

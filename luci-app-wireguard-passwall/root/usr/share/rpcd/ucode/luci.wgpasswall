@@ -716,7 +716,9 @@ function pw_sync_acl(uci) {
 	uci.set('passwall', ACL_SID, 'acl_rule');
 	uci.set('passwall', ACL_SID, 'enabled', '1');
 	uci.set('passwall', ACL_SID, 'remarks', 'WireGuard + Passwall: devices that use the VPN');
-	uci.set('passwall', ACL_SID, 'sources', devices);
+	// one space separated option, as Passwall's page stores it: Passwall
+	// reads its rules with eval and a uci list breaks that
+	uci.set('passwall', ACL_SID, 'sources', join(' ', devices));
 	uci.set('passwall', ACL_SID, 'mode', '0');
 	// what "No Proxy" means; Passwall before 26.8.10 has no "mode" option
 	// and only understands this
@@ -847,6 +849,77 @@ function lan_devices(uci, rt) {
 	return devs;
 }
 
+/*
+ * What differs from the settings the current mode applied, e.g. after a
+ * change on Passwall's own page or a firewall reload that did not happen.
+ * Returns a list of codes: pw_settings (Passwall's main options), pw_acl
+ * (the rule for the VPN devices), fw_rules (firewall rules saved but not
+ * active) and fw_missing (firewall rules removed). In VPN mode Passwall is
+ * the user's own and not checked.
+ */
+function drift(uci) {
+	const mode = get_mode(uci);
+	const devices = devices_only(uci);
+	let issues = [];
+
+	if (mode != 'vpn' && pw_installed(uci)) {
+		const g = first_section(uci, 'passwall', 'global');
+		const get = (opt) => g ? uci.get('passwall', g, opt) : null;
+		const node = pw_chosen_node(uci);
+		let ok = true;
+
+		if (mode == 'off')
+			ok = get('enabled') != '1';
+		else {
+			ok = get('enabled') == '1' && (!node || get('node') == node);
+
+			if (mode == 'vpn_passwall' && !devices)
+				ok = ok && get('client_proxy') == '0';
+			else
+				ok = ok && get('client_proxy') == '1' && get('tcp_proxy_mode') == 'proxy' && get('udp_proxy_mode') == 'proxy';
+		}
+
+		if (!ok)
+			push(issues, 'pw_settings');
+
+		const acl = uci.get_all('passwall', ACL_SID);
+		const want_acl = mode == 'vpn_passwall' && devices;
+
+		if (want_acl
+			? (!acl || acl['.type'] != 'acl_rule' || acl.enabled != '1' || acl.mode != '0' || get('acl_enable') != '1' ||
+			   join(' ', sort(map(split(join(' ', as_list(acl.sources)), /\s+/), (v) => uc(v)))) != join(' ', sort([ ...settings(uci).devices ])))
+			: (acl != null && mode != 'off'))
+			push(issues, 'pw_acl');
+	}
+
+	// rules that must be active; the firewall marks its rules with these comments
+	let want = [];
+
+	if (uci.get('firewall', KS_SID, 'enabled') == '1')
+		push(want, 'WireGuard + Passwall kill switch');
+
+	if (devices)
+		push(want, 'WireGuard + Passwall: devices that use the VPN');
+
+	if ((devices && uci.get('firewall', MARK_SID) == null) ||
+	    (length(profile_ids(uci)) && uci.get('firewall', ZONE_SID) == null))
+		push(issues, 'fw_missing');
+	// skipped while queued reloads are still running (they hold the lock)
+	else if (length(want) && system(`flock -n ${FW_LOCK} true >/dev/null 2>&1`) == 0) {
+		const live = run('nft list table inet fw4');
+
+		// no fw4 table (another firewall, or not started): nothing to compare
+		if (length(live))
+			for (let c in want)
+				if (index(live, `!fw4: ${c}"`) < 0) {
+					push(issues, 'fw_rules');
+					break;
+				}
+	}
+
+	return issues;
+}
+
 // Called after profiles changed: keeps Passwall's lists and MTUs in step.
 function pw_after_profile_change(uci) {
 	if (!pw_installed(uci) || !pw_enabled(uci))
@@ -930,6 +1003,7 @@ const methods = {
 				wan_zone_ok: zone_exists(uci, s.wan_zone),
 				killswitch_active: s.killswitch && uci.get('firewall', KS_SID, 'enabled') == '1',
 				proxy_apps: detect_proxy_apps(uci),
+				drift: drift(uci),
 				mode: get_mode(uci),
 				last_profile: uci.get('wgpasswall', 'settings', 'last_profile'),
 				killswitch_paused: s.killswitch && killswitch_paused(uci),
@@ -1231,6 +1305,39 @@ const methods = {
 	 * MAC addresses (scope "devices"). In "VPN through Passwall" mode the
 	 * other devices then go through Passwall.
 	 */
+	/*
+	 * Applies the current mode again: Passwall's options and rule for it,
+	 * routing and firewall rules, then reloads the firewall and restarts
+	 * Passwall. For when something was changed elsewhere or did not apply.
+	 */
+	reapply: {
+		call: function() {
+			const uci = cursor();
+			const mode = get_mode(uci);
+			let pw = [];
+
+			if (mode != 'vpn' && pw_installed(uci)) {
+				const r = pw_apply_mode(uci, mode, null);
+
+				if (r.error)
+					return { error: r.error };
+
+				uci.save('wgpasswall');
+				uci.save('passwall');
+				pw = pw_restart(mode != 'off');
+			}
+
+			sync_routing(uci);
+			sync_firewall(uci);
+			apply(uci, [ 'wgpasswall', 'passwall', 'network', 'firewall' ], pw);
+
+			if (mode == 'vpn_passwall')
+				relay_restart();
+
+			return { result: true, mode };
+		}
+	},
+
 	set_devices: {
 		args: { scope: '', devices: [] },
 		call: function(req) {

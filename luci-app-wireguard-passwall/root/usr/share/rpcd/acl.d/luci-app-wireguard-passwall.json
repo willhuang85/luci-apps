@@ -9,7 +9,7 @@
 		},
 		"write": {
 			"ubus": {
-				"luci.wgpasswall": [ "save", "remove", "connect", "disconnect", "set_killswitch", "set_mode", "set_devices" ]
+				"luci.wgpasswall": [ "save", "remove", "connect", "disconnect", "set_killswitch", "set_mode", "set_devices", "reapply" ]
 			},
 			"uci": [ "wgpasswall" ]
 		}
