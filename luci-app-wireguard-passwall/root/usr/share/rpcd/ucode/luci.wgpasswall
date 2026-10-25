@@ -1085,11 +1085,9 @@ function pw_sync_acl(uci) {
 // The values of PW_MANAGED while Passwall is needed (UNSET: not set, null:
 // left alone). Client Proxy is off: the networks Passwall carries have their
 // own rules, so a guest network, the LAN and the VPN network stay out.
-// Localhost Proxy is off: with it, the node's own connection to its server
-// can be caught by the rules for the router's traffic and loop back into
-// Passwall (seen with an Xray hysteria node: nothing got through, for the
-// Passwall network either). The router's own traffic goes through a
-// directly connected tunnel, or out directly; Passwall's own DNS lookups
+// Localhost Proxy is off: the router's own traffic goes through a directly
+// connected tunnel, or out directly like the home network's, so package
+// updates and NTP do not depend on the node. Passwall's own DNS lookups
 // through its node do not need Localhost Proxy, nor does the relay.
 function pw_wanted_options(uci) {
 	const own_acl = uci.get('wgpasswall', 'passwall', 'pw_acl_enable');
