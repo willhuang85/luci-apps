@@ -116,6 +116,29 @@ check('remove bad id', call('remove', { id: 'lan' }).error != null);
 check('connect bad id', call('connect', { id: 'wan' }).error != null);
 check('save bad label', call('save', { label: '', conf: text }).error != null);
 
+// only chosen devices use the VPN
+check('devices: bad mac', call('set_devices', { scope: 'devices', devices: [ 'nope' ] }).error != null);
+check('devices: none chosen', call('set_devices', { scope: 'devices', devices: [] }).error != null);
+check('devices: bad scope', call('set_devices', { scope: 'some' }).error != null);
+call('set_killswitch', { enabled: true });
+r = call('set_devices', { scope: 'devices', devices: [ 'aa:bb:cc:dd:ee:ff', 'AA:BB:CC:DD:EE:FF', '11:22:33:44:55:66' ] });
+check('devices: saved', r.result && join(',', st.wgpasswall.settings.vpn_device) == 'AA:BB:CC:DD:EE:FF,11:22:33:44:55:66');
+check('devices: rule by mark', st.network.wgpasswall_rule_vpn?.mark == '0x1000000/0x1000000' && st.network.wgpasswall_rule_vpn?.in == null &&
+	st.network.wgpasswall_rule6_vpn?.mark == '0x1000000/0x1000000');
+check('devices: mark rule', st.firewall.wgpasswall_devices?.target == 'MARK' && st.firewall.wgpasswall_devices?.set_mark == '0x1000000/0x1000000' &&
+	st.firewall.wgpasswall_devices?.src == 'lan' && st.firewall.wgpasswall_devices?.dest == '*' && length(st.firewall.wgpasswall_devices?.src_mac) == 2 && st.firewall.wgpasswall_devices?.family == 'any');
+check('devices: kill switch per device', join(',', st.firewall.wgpasswall_killswitch.src_mac ?? []) == 'AA:BB:CC:DD:EE:FF,11:22:33:44:55:66');
+check('devices: status', call('status').scope == 'devices');
+st.wgpasswall.settings.device_mark = '0x4000000';
+call('set_devices', { scope: 'devices', devices: st.wgpasswall.settings.vpn_device });
+check('devices: custom mark', st.network.wgpasswall_rule_vpn.mark == '0x4000000/0x4000000' && st.firewall.wgpasswall_devices.set_mark == '0x4000000/0x4000000');
+delete st.wgpasswall.settings.device_mark;
+r = call('set_devices', { scope: 'all', devices: [ '11:22:33:44:55:66' ] });
+check('all: rule for all traffic', st.network.wgpasswall_rule_vpn.mark == '0x0/0xff');
+check('all: mark rule removed', st.firewall.wgpasswall_devices == null && st.firewall.wgpasswall_killswitch.src_mac == null);
+check('all: chosen devices kept', join(',', st.wgpasswall.settings.vpn_device) == '11:22:33:44:55:66' && call('status').scope == 'all');
+call('set_killswitch', { enabled: false });
+
 call('remove', { id: 'wgc_myhomevpn' });
 check('rules removed with last profile', st.network.wgpasswall_rule_main == null && st.network.wgpasswall_rule6_vpn == null);
 

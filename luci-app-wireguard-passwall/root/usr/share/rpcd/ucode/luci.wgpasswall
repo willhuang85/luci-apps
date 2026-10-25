@@ -25,6 +25,12 @@
 // "VPN through Passwall" mode points each tunnel's endpoint at a local relay
 // (/usr/libexec/wgpasswall-relay) that forwards WireGuard's packets through
 // Passwall's SOCKS port to the real server.
+//
+// The VPN can be limited to chosen devices (scope "devices"): a firewall rule
+// sets the device_mark bit on everything those MAC addresses send, and only
+// packets with that bit are routed into the VPN table. In "VPN through
+// Passwall" mode Passwall then proxies all other devices, while an access
+// control rule tells it to leave the chosen ones alone.
 
 'use strict';
 
@@ -38,6 +44,8 @@ const ZONE = 'wgpasswall';
 const ZONE_SID = 'wgpasswall_zone';
 const FWD_SID = 'wgpasswall_fwd';
 const KS_SID = 'wgpasswall_killswitch';
+const MARK_SID = 'wgpasswall_devices';
+const ACL_SID = 'wgpasswall_vpn_devices';
 const RULE_SIDS = {
 	rule: [ 'wgpasswall_rule_main', 'wgpasswall_rule_vpn' ],
 	rule6: [ 'wgpasswall_rule6_main', 'wgpasswall_rule6_vpn' ]
@@ -81,6 +89,15 @@ function opt_uint(uci, name, def, min, max) {
 	return (n != null && n >= min && n <= max) ? n : def;
 }
 
+function valid_mac(v) {
+	return type(v) == 'string' && match(v, /^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$/) != null;
+}
+
+// MAC addresses of the devices chosen to use the VPN, upper case
+function vpn_devices(uci) {
+	return uniq(map(filter(as_list(uci.get('wgpasswall', 'settings', 'vpn_device')), (v) => valid_mac(v)), (v) => uc(v)));
+}
+
 function settings(uci) {
 	let table = opt_uint(uci, 'route_table', 51820, 1, 0x7fffffff);
 
@@ -95,8 +112,18 @@ function settings(uci) {
 		route_table: table,
 		rule_priority: opt_uint(uci, 'rule_priority', 30100, 1000, 32000),
 		bypass_mask: opt_uint(uci, 'bypass_mask', 0xff, 1, 0xffffffff),
-		wg_fwmark: opt_uint(uci, 'wg_fwmark', 0xca6c, 1, 0xffffffff)
+		wg_fwmark: opt_uint(uci, 'wg_fwmark', 0xca6c, 1, 0xffffffff),
+		device_mark: opt_uint(uci, 'device_mark', 0x1000000, 1, 0xffffffff),
+		scope: (uci.get('wgpasswall', 'settings', 'scope') == 'devices') ? 'devices' : 'all',
+		devices: vpn_devices(uci)
 	};
+}
+
+// true while only the chosen devices use the VPN
+function devices_only(uci) {
+	const s = settings(uci);
+
+	return s.scope == 'devices' && length(s.devices) > 0;
 }
 
 function pw_installed(uci) {
@@ -299,6 +326,7 @@ function sync_routing(uci) {
 	const s = settings(uci);
 	const ids = profile_ids(uci);
 	const lan_only = pw_installed(uci) && pw_enabled(uci);
+	const by_mark = devices_only(uci);
 	let stale = [];
 
 	for (let t in keys(RULE_SIDS))
@@ -317,11 +345,13 @@ function sync_routing(uci) {
 			uci.set('network', sids[0], 'suppress_prefixlength', '0');
 			uci.set('network', sids[0], 'priority', `${s.rule_priority}`);
 
-			for (let net in (lan_only ? lan_networks(uci, s.lan_zone) : [ null ])) {
+			for (let net in ((lan_only && !by_mark) ? lan_networks(uci, s.lan_zone) : [ null ])) {
 				const sid = net ? `${sids[1]}_${replace(net, /[^A-Za-z0-9_]/g, '_')}` : sids[1];
 
 				uci.set('network', sid, t);
-				uci.set('network', sid, 'mark', sprintf('0x0/0x%x', s.bypass_mask));
+				uci.set('network', sid, 'mark', by_mark
+					? sprintf('0x%x/0x%x', s.device_mark, s.device_mark)	// marked by MARK_SID
+					: sprintf('0x0/0x%x', s.bypass_mask));
 				uci.set('network', sid, 'lookup', `${s.route_table}`);
 				uci.set('network', sid, 'priority', `${s.rule_priority + 10}`);
 
@@ -370,6 +400,25 @@ function sync_firewall(uci) {
 	uci.set('firewall', KS_SID, 'family', 'any');
 	uci.set('firewall', KS_SID, 'target', 'REJECT');
 	uci.set('firewall', KS_SID, 'enabled', (s.killswitch && !killswitch_paused(uci)) ? '1' : '0');
+
+	if (devices_only(uci)) {
+		// the kill switch only holds back the devices that use the VPN
+		uci.set('firewall', KS_SID, 'src_mac', s.devices);
+
+		uci.set('firewall', MARK_SID, 'rule');
+		uci.set('firewall', MARK_SID, 'name', 'WireGuard + Passwall: devices that use the VPN');
+		uci.set('firewall', MARK_SID, 'src', s.lan_zone);
+		uci.set('firewall', MARK_SID, 'dest', '*');	// fw4: mangle_prerouting, before routing
+		uci.set('firewall', MARK_SID, 'src_mac', s.devices);
+		uci.set('firewall', MARK_SID, 'proto', 'all');
+		uci.set('firewall', MARK_SID, 'family', 'any');
+		uci.set('firewall', MARK_SID, 'target', 'MARK');
+		uci.set('firewall', MARK_SID, 'set_mark', sprintf('0x%x/0x%x', s.device_mark, s.device_mark));
+	}
+	else {
+		uci.delete('firewall', KS_SID, 'src_mac');
+		uci.delete('firewall', MARK_SID);
+	}
 
 	uci.save('firewall');
 }
@@ -630,6 +679,28 @@ function pw_restore_baseline(uci, g, fw) {
 		uci.set('passwall', fw, 'udp_proxy_drop_ports', drop);
 }
 
+// Passwall must not proxy the devices that use the VPN while it proxies the
+// others in "VPN through Passwall" mode: an access control rule ("No Proxy")
+// for their MAC addresses, ahead of any other rule. It is removed in all
+// other cases.
+function pw_sync_acl(uci) {
+	const devices = settings(uci).devices;
+
+	if (get_mode(uci) != 'vpn_passwall' || !devices_only(uci)) {
+		if (uci.get('passwall', ACL_SID) != null)
+			uci.delete('passwall', ACL_SID);
+
+		return;
+	}
+
+	uci.set('passwall', ACL_SID, 'acl_rule');
+	uci.set('passwall', ACL_SID, 'enabled', '1');
+	uci.set('passwall', ACL_SID, 'remarks', 'WireGuard + Passwall: devices that use the VPN');
+	uci.set('passwall', ACL_SID, 'sources', devices);
+	uci.set('passwall', ACL_SID, 'mode', '0');
+	uci.reorder('passwall', ACL_SID, 0);
+}
+
 /*
  * Switches Passwall's configuration to what a mode needs. Returns
  * { error } on failure, otherwise { service } where service is the saved
@@ -673,12 +744,14 @@ function pw_apply_mode(uci, mode, node) {
 		uci.set('passwall', g, 'enabled', '1');
 		uci.set('passwall', g, 'node', node);
 
-		if (mode == 'vpn_passwall') {
+		if (mode == 'vpn_passwall' && !devices_only(uci)) {
 			// LAN traffic goes into WireGuard, not straight to the proxy;
 			// WireGuard reaches the proxy through its SOCKS port (relay)
 			uci.set('passwall', g, 'client_proxy', '0');
 		}
 		else {
+			// all devices, or in "VPN through Passwall" mode all but the
+			// chosen ones (see pw_sync_acl)
 			uci.set('passwall', g, 'client_proxy', '1');		// proxy the LAN devices
 			uci.set('passwall', g, 'tcp_proxy_mode', 'proxy');
 			uci.set('passwall', g, 'udp_proxy_mode', 'proxy');
@@ -693,6 +766,9 @@ function pw_apply_mode(uci, mode, node) {
 		uci.set('wgpasswall', 'settings', 'settings');
 
 	uci.set('wgpasswall', 'settings', 'mode', mode);
+
+	if (installed)
+		pw_sync_acl(uci);
 
 	// Off leaves the (disconnected) profiles alone; the next mode sets them up
 	for (let id in profile_ids(uci)) {
@@ -711,6 +787,33 @@ function pw_apply_mode(uci, mode, node) {
 	}
 
 	return { service };
+}
+
+// Devices seen on the LAN, keyed by MAC: DHCP leases plus the neighbour
+// table (devices with a static address).
+function lan_devices(uci, rt) {
+	const s = settings(uci);
+	let devs = {}, lan_dev = {};
+
+	for (let net in lan_networks(uci, s.lan_zone))
+		if (rt.ifaces[net]?.l3_device)
+			lan_dev[rt.ifaces[net].l3_device] = true;
+
+	for (let line in split(readfile('/tmp/dhcp.leases') ?? '', '\n')) {
+		const f = split(line, ' ');
+
+		if (length(f) >= 4 && valid_mac(f[1]))
+			devs[uc(f[1])] = { mac: uc(f[1]), ip: f[2], name: (f[3] != '*') ? f[3] : null };
+	}
+
+	for (let line in split(run('ip -4 neigh show') ?? '', '\n')) {
+		const m = match(line, /^([0-9.]+) dev (\S+) lladdr ([0-9a-fA-F:]+)/);
+
+		if (m && lan_dev[m[2]] && valid_mac(m[3]) && !devs[uc(m[3])])
+			devs[uc(m[3])] = { mac: uc(m[3]), ip: m[1], name: null };
+	}
+
+	return devs;
 }
 
 // Called after profiles changed: keeps Passwall's lists and MTUs in step.
@@ -799,6 +902,8 @@ const methods = {
 				mode: get_mode(uci),
 				last_profile: uci.get('wgpasswall', 'settings', 'last_profile'),
 				killswitch_paused: s.killswitch && killswitch_paused(uci),
+				scope: devices_only(uci) ? 'devices' : 'all',
+				lan_devices: values(lan_devices(uci, rt)),
 				passwall: {
 					installed: pw_installed(uci),
 					enabled: pw_on,
@@ -1087,6 +1192,67 @@ const methods = {
 			relay_restart();
 
 			return { result: true, mode };
+		}
+	},
+
+	/*
+	 * Chooses who uses the VPN: all devices (scope "all") or only the given
+	 * MAC addresses (scope "devices"). In "VPN through Passwall" mode the
+	 * other devices then go through Passwall.
+	 */
+	set_devices: {
+		args: { scope: '', devices: [] },
+		call: function(req) {
+			const uci = cursor();
+			const scope = req.args.scope;
+			let devices = [];
+
+			if (scope != 'all' && scope != 'devices')
+				return { error: 'Unknown scope' };
+
+			for (let d in as_list(req.args.devices)) {
+				if (!valid_mac(d))
+					return { error: `Not a valid MAC address: ${d}` };
+
+				push(devices, uc(d));
+			}
+
+			devices = uniq(devices);
+
+			if (scope == 'devices' && !length(devices))
+				return { error: 'Choose at least one device' };
+
+			if (uci.get('wgpasswall', 'settings') == null)
+				uci.set('wgpasswall', 'settings', 'settings');
+
+			uci.set('wgpasswall', 'settings', 'scope', scope);
+
+			if (length(devices))
+				uci.set('wgpasswall', 'settings', 'vpn_device', devices);
+			else
+				uci.delete('wgpasswall', 'settings', 'vpn_device');
+
+			uci.save('wgpasswall');
+
+			let pw = [];
+
+			// Passwall proxies either nobody or everybody but the VPN devices
+			if (pw_installed(uci) && pw_enabled(uci)) {
+				const r = pw_apply_mode(uci, 'vpn_passwall', null);
+
+				if (r.error)
+					return { error: r.error };
+
+				uci.save('wgpasswall');
+				uci.save('passwall');
+				pw = pw_restart(false);
+			}
+
+			sync_routing(uci);
+			sync_firewall(uci);
+			apply(uci, [ 'wgpasswall', 'passwall', 'network', 'firewall' ], pw);
+
+			return { result: true, scope, devices };
 		}
 	},
 

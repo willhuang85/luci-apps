@@ -14,3 +14,5 @@ config settings 'settings'
 	option bypass_mask '0xff'
 	# fwmark of WireGuard's own encrypted packets
 	option wg_fwmark '0xca6c'
+	# mark bit set on the traffic of the devices chosen to use the VPN
+	option device_mark '0x1000000'

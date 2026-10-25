@@ -72,8 +72,15 @@ define Package/luci-app-wireguard-passwall/prerm
 	ubus call luci.wgpasswall set_mode '{"mode":"vpn","connect":false}' >/dev/null 2>&1
 	uci -q set wgpasswall.settings.killswitch='0'
 	uci -q commit wgpasswall
-	if uci -q get firewall.wgpasswall_killswitch >/dev/null; then
+	# the Passwall rule that keeps it away from the VPN devices (gone after
+	# the switch to VPN mode, unless that failed)
+	if uci -q get passwall.wgpasswall_vpn_devices >/dev/null; then
+		uci -q delete passwall.wgpasswall_vpn_devices
+		uci -q commit passwall
+	fi
+	if uci -q get firewall.wgpasswall_killswitch >/dev/null || uci -q get firewall.wgpasswall_devices >/dev/null; then
 		uci -q delete firewall.wgpasswall_killswitch
+		uci -q delete firewall.wgpasswall_devices
 		uci -q commit firewall
 		/etc/init.d/firewall reload >/dev/null 2>&1
 	fi

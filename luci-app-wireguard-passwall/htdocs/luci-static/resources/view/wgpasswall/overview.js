@@ -14,6 +14,7 @@ const callConnect = rpc.declare({ object: 'luci.wgpasswall', method: 'connect', 
 const callDisconnect = rpc.declare({ object: 'luci.wgpasswall', method: 'disconnect', params: [ 'id' ] });
 const callSetKillswitch = rpc.declare({ object: 'luci.wgpasswall', method: 'set_killswitch', params: [ 'enabled' ] });
 const callSetMode = rpc.declare({ object: 'luci.wgpasswall', method: 'set_mode', params: [ 'mode', 'node', 'id' ] });
+const callSetDevices = rpc.declare({ object: 'luci.wgpasswall', method: 'set_devices', params: [ 'scope', 'devices' ] });
 
 const MODE_INFO = {
 	vpn: { icon: '🔒', title: _('VPN'), desc: _('All devices use the WireGuard VPN.') },
@@ -21,6 +22,14 @@ const MODE_INFO = {
 	passwall: { icon: '🌐', title: _('Passwall only'), desc: _('No VPN; Passwall proxies your devices.') },
 	off: { icon: '⏻', title: _('Off'), desc: _('No VPN and no proxy: your regular internet connection.') }
 };
+
+// Mode descriptions while only chosen devices use the VPN
+const MODE_DESC_DEVICES = {
+	vpn: _('Your chosen devices use the WireGuard VPN.'),
+	vpn_passwall: _('Chosen devices: the VPN hidden inside Passwall. Others: Passwall.')
+};
+
+const MAC_RE = /^[0-9A-Fa-f]{2}([:-][0-9A-Fa-f]{2}){5}$/;
 
 // A handshake older than this means the peer is not answering anymore.
 const HANDSHAKE_TIMEOUT = 180;
@@ -83,6 +92,12 @@ const CSS = `
 .wgc-mode-title { font-weight: 600; margin-top: 4px; }
 .wgc-mode-icon { font-size: 22px; line-height: 1; }
 @media (max-width: 600px) { .wgc-modes { grid-template-columns: 1fr 1fr; } }
+.wgc-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.wgc-chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--wgc-line); border-radius: 16px; padding: 3px 10px; }
+.wgc-chip .wgc-dot { width: 8px; height: 8px; }
+.wgc-devs { max-height: 50vh; overflow-y: auto; margin-top: 8px; }
+.wgc-dev { display: flex; align-items: center; gap: 12px; padding: 8px 4px; border-bottom: 1px solid var(--wgc-line); cursor: pointer; font-weight: normal; }
+.wgc-dev > input[type="checkbox"] { position: relative; top: 0; right: 0; margin: 0; flex: none; }
 .wgc-drop { border: 2px dashed var(--wgc-line); border-radius: 12px; padding: 32px 16px; text-align: center; cursor: pointer;
 	transition: border-color .15s, background .15s; }
 .wgc-drop:hover, .wgc-drop.over { border-color: var(--wgc-ok); background: rgba(26,156,74,.06); }
@@ -243,12 +258,15 @@ return view.extend({
 	handleMode(mode) {
 		const cur = this.data?.mode ?? 'vpn';
 		const node = this.root.querySelector('select[name="wgc-pw-node"]')?.value ?? '';
-		const msg = {
+		let msg = {
 			vpn: _('Switch to VPN mode?\n\nPasswall goes back to exactly the settings it had before you first used a Passwall mode, and your last VPN profile connects.'),
 			vpn_passwall: _('Switch to "VPN through Passwall"?\n\nPasswall is switched on with the selected node and "Client Proxy" off. WireGuard reaches your VPN server through Passwall\'s SOCKS port via a small relay on the router, with the tunnel MTU at 1280. Traffic from your LAN devices goes through the VPN; the router\'s own traffic and DNS are handled by Passwall.\n\nYour current Passwall settings are saved and restored when you switch back to VPN mode.'),
 			off: _('Turn everything off?\n\nThe VPN is disconnected, Passwall\'s main switch is turned off (its other settings stay as they are) and the kill switch is paused, so your devices use your regular internet connection. Pick another mode to turn things back on.'),
 			passwall: _('Switch to "Passwall only"?\n\nThe VPN is disconnected and Passwall proxies your LAN devices with the selected node ("Client Proxy" on, default proxy modes set to Proxy). The kill switch is paused in this mode.\n\nYour current Passwall settings are saved and restored when you switch back to VPN mode.')
 		}[mode];
+
+		if (mode == 'vpn_passwall' && this.data?.scope == 'devices')
+			msg = _('Switch to "VPN through Passwall"?\n\nPasswall is switched on with the selected node. Your chosen devices go through the VPN, and WireGuard reaches your VPN server through Passwall\'s SOCKS port via a small relay on the router, with the tunnel MTU at 1280. All other devices are proxied by Passwall directly ("Client Proxy" on, default proxy modes set to Proxy).\n\nYour current Passwall settings are saved and restored when you switch back to VPN mode.');
 
 		if (mode == cur || !confirm(msg))
 			return;
@@ -271,7 +289,9 @@ return view.extend({
 		const active = (this.data?.profiles ?? []).some((p) => profileState(p).cls == 'ok');
 
 		if (enabled && !active &&
-		    !confirm(_('No VPN is connected right now. Turning on the kill switch will cut internet access for all LAN devices until a VPN connects. Continue?'))) {
+		    !confirm((this.data?.scope == 'devices')
+				? _('No VPN is connected right now. Turning on the kill switch will cut internet access for your chosen devices until a VPN connects. Continue?')
+				: _('No VPN is connected right now. Turning on the kill switch will cut internet access for all LAN devices until a VPN connects. Continue?'))) {
 			ev.target.checked = false;
 			return;
 		}
@@ -525,9 +545,11 @@ return view.extend({
 					E('div', { 'class': 'wgc-hero-title' }, state.cls == 'ok'
 						? _('Connected to %s').format(live.label)
 						: '%s — %s'.format(live.label, state.text)),
-					E('div', { 'class': 'wgc-sub' }, live.full_tunnel
-						? _('All internet traffic from your network is going through the VPN.')
-						: _('Only traffic for %s is going through the VPN.').format(live.allowed_ips.join(', ')))
+					E('div', { 'class': 'wgc-sub' }, (data.scope == 'devices')
+						? N_(data.settings.devices.length, 'Internet traffic from your chosen device is going through the VPN.', 'Internet traffic from your %d chosen devices is going through the VPN.').format(data.settings.devices.length)
+						: live.full_tunnel
+							? _('All internet traffic from your network is going through the VPN.')
+							: _('Only traffic for %s is going through the VPN.').format(live.allowed_ips.join(', ')))
 				]),
 				E('button', { 'class': 'btn cbi-button cbi-button-negative', click: ui.createHandlerFn(this, 'handleDisconnect', live) }, [ _('Disconnect') ])
 			]),
@@ -564,15 +586,21 @@ return view.extend({
 		else if (!data.lan_zone_ok || !data.wan_zone_ok)
 			note = E('div', { 'class': 'wgc-note bad' }, _('The kill switch needs the firewall zones "%s" and "%s", but at least one of them does not exist.').format(s.lan_zone, s.wan_zone));
 		else if (data.killswitch_active && !connected)
-			note = E('div', { 'class': 'wgc-note bad' }, _('No VPN is connected, so LAN devices currently have no internet access.'));
+			note = E('div', { 'class': 'wgc-note bad' }, (data.scope == 'devices')
+				? _('No VPN is connected, so your chosen devices currently have no internet access.')
+				: _('No VPN is connected, so LAN devices currently have no internet access.'));
 		else if (data.killswitch_active)
-			note = E('div', { 'class': 'wgc-note ok' }, _('Protected: if the VPN drops, LAN devices are cut off instead of leaking traffic.'));
+			note = E('div', { 'class': 'wgc-note ok' }, (data.scope == 'devices')
+				? _('Protected: if the VPN drops, your chosen devices are cut off instead of leaking traffic.')
+				: _('Protected: if the VPN drops, LAN devices are cut off instead of leaking traffic.'));
 
 		return E('div', { 'class': 'wgc-card' }, [
 			E('div', { 'class': 'wgc-row' }, [
 				E('div', { 'class': 'wgc-grow' }, [
 					E('p', { 'class': 'wgc-h' }, '🛡 ' + _('Kill switch')),
-					E('div', { 'class': 'wgc-sub' }, _('Block all internet traffic from LAN devices that does not go through the VPN.'))
+					E('div', { 'class': 'wgc-sub' }, (data.scope == 'devices')
+						? _('Block internet traffic from your chosen devices that does not go through the VPN.')
+						: _('Block all internet traffic from LAN devices that does not go through the VPN.'))
 				]),
 				E('label', { 'class': 'wgc-switch', title: _('Kill switch') }, [
 					E('input', {
@@ -623,7 +651,7 @@ return view.extend({
 		}, [
 			E('div', { 'class': 'wgc-mode-icon' }, MODE_INFO[m].icon),
 			E('div', { 'class': 'wgc-mode-title' }, MODE_INFO[m].title),
-			E('div', { 'class': 'wgc-sub' }, MODE_INFO[m].desc)
+			E('div', { 'class': 'wgc-sub' }, ((data.scope == 'devices') ? MODE_DESC_DEVICES[m] : null) ?? MODE_INFO[m].desc)
 		]));
 
 		const nodeSelect = E('select', {
@@ -642,6 +670,136 @@ return view.extend({
 			]) : '',
 			note
 		]);
+	},
+
+	// Who uses the VPN: all devices or only chosen ones (by MAC address).
+	renderDevices(data) {
+		const chosen = data.settings.devices ?? [];
+		const scope = data.scope;
+		const seen = {};
+		let others = '';
+
+		(data.lan_devices ?? []).forEach((d) => seen[d.mac] = d);
+
+		if (scope == 'devices')
+			others = (data.mode == 'vpn_passwall')
+				? _('All other devices go through Passwall, without the VPN.')
+				: (data.mode == 'vpn')
+					? _('All other devices use your regular internet connection.')
+					: _('This applies in the VPN modes.');
+
+		const tile = (s, icon, title, desc) => E('button', {
+			'class': 'wgc-mode' + (s == scope ? ' active' : ''),
+			'aria-pressed': (s == scope) ? 'true' : 'false',
+			click: () => (s == 'devices') ? this.showDevices() : this.handleScopeAll()
+		}, [
+			E('div', { 'class': 'wgc-mode-icon' }, icon),
+			E('div', { 'class': 'wgc-mode-title' }, title),
+			E('div', { 'class': 'wgc-sub' }, desc)
+		]);
+
+		return E('div', { 'class': 'wgc-card' }, [
+			E('p', { 'class': 'wgc-h' }, _('Devices using the VPN')),
+			E('div', { 'class': 'wgc-modes' }, [
+				tile('all', '🏠', _('All devices'), _('Every device on your network.')),
+				tile('devices', '💻', _('Only chosen devices'), _('For example your work laptops. Picked by their hardware (MAC) address.'))
+			]),
+			(scope == 'devices') ? E('div', { 'class': 'wgc-chips' }, [
+				...chosen.map((mac) => E('span', { 'class': 'wgc-chip', title: mac }, [
+					E('span', { 'class': 'wgc-dot' + (seen[mac] ? ' ok' : ''), title: seen[mac] ? _('On the network') : _('Not seen on the network right now') }),
+					seen[mac]?.name ?? mac
+				])),
+				E('button', { 'class': 'btn cbi-button', click: () => this.showDevices() }, [ _('Change…') ])
+			]) : '',
+			others ? E('div', { 'class': 'wgc-sub', style: 'margin-top:10px' }, others) : ''
+		]);
+	},
+
+	handleScopeAll() {
+		if (this.data?.scope != 'devices')
+			return;
+
+		if (!confirm(_('Use the VPN for all devices on your network again?')))
+			return;
+
+		return this.act(_('Saving…'), () => callSetDevices('all', this.data.settings.devices ?? []));
+	},
+
+	// Picker for the devices that use the VPN.
+	showDevices() {
+		const chosen = new Set(this.data?.settings?.devices ?? []);
+		const devs = {};
+
+		(this.data?.lan_devices ?? []).forEach((d) => devs[d.mac] = d);
+		chosen.forEach((mac) => devs[mac] ??= { mac, ip: null, name: null, away: true });
+
+		const list = E('div', { 'class': 'wgc-devs' });
+		const saveBtn = E('button', { 'class': 'btn cbi-button cbi-button-positive important' }, [ _('Save') ]);
+		const update = () => saveBtn.disabled = !chosen.size;
+
+		const renderList = () => {
+			const rows = Object.values(devs).sort((a, b) =>
+				(chosen.has(b.mac) - chosen.has(a.mac)) || (a.name ?? '~' + a.mac).localeCompare(b.name ?? '~' + b.mac));
+
+			dom.content(list, rows.length ? rows.map((d) => {
+				const cb = E('input', { type: 'checkbox', checked: chosen.has(d.mac) ? '' : null });
+
+				cb.addEventListener('change', () => { cb.checked ? chosen.add(d.mac) : chosen.delete(d.mac); update(); });
+
+				return E('label', { 'class': 'wgc-dev' }, [
+					cb,
+					E('div', { 'class': 'wgc-grow' }, [
+						E('div', { style: 'font-weight:600' }, d.name ?? _('Unnamed device')),
+						E('div', { 'class': 'wgc-sub', style: 'margin:0' }, [ d.ip ?? _('not on the network right now'), ' · ', d.mac ])
+					])
+				]);
+			}) : E('div', { 'class': 'wgc-sub' }, _('No devices found on your network. Add one by its MAC address below.')));
+		};
+
+		const macInput = E('input', { type: 'text', 'class': 'cbi-input-text', placeholder: 'AA:BB:CC:DD:EE:FF', style: 'flex:1 1 180px; min-width:0' });
+		const addMac = (ev) => {
+			ev?.preventDefault();
+			const mac = macInput.value.trim().toUpperCase().replace(/-/g, ':');
+
+			if (!MAC_RE.test(mac))
+				return ui.addNotification(null, E('p', {}, _('Enter a MAC address like AA:BB:CC:DD:EE:FF.')), 'warning');
+
+			devs[mac] ??= { mac, ip: null, name: null };
+			chosen.add(mac);
+			macInput.value = '';
+			renderList();
+			update();
+		};
+
+		macInput.addEventListener('keydown', (ev) => { if (ev.key == 'Enter') addMac(ev); });
+
+		saveBtn.addEventListener('click', () => {
+			const devices = [ ...chosen ];
+
+			ui.hideModal();
+			return this.act(_('Saving…'), () => callSetDevices('devices', devices));
+		});
+
+		ui.showModal(_('Devices using the VPN'), [
+			E('div', { 'class': 'wgc wgc-modal' }, [
+				E('div', { 'class': 'wgc-sub' }, (this.data?.mode == 'vpn_passwall')
+					? _('The devices you tick go through the VPN; all others go through Passwall without the VPN.')
+					: _('The devices you tick go through the VPN; all others use your regular internet connection.')),
+				list,
+				E('div', { 'class': 'wgc-row', style: 'margin-top:12px; flex-wrap:wrap; gap:8px' }, [
+					macInput,
+					E('button', { 'class': 'btn cbi-button cbi-button-add', click: addMac }, [ _('Add') ])
+				]),
+				E('div', { 'class': 'wgc-sub', style: 'margin-top:10px; font-size:.9em' }, _('Wired devices always keep their hardware address. Phones and laptops on Wi-Fi use a private address per network that stays the same, unless set to change ("Rotating" on Apple devices, "Change daily" on Windows) or you forget and rejoin the network. A device behind another router shows up with that router\'s address.'))
+			]),
+			E('div', { 'class': 'right', style: 'margin-top:16px; display:flex; gap:8px; justify-content:flex-end; flex-wrap:wrap' }, [
+				E('button', { 'class': 'btn cbi-button', click: ui.hideModal }, [ _('Cancel') ]),
+				saveBtn
+			])
+		], 'cbi-modal');
+
+		renderList();
+		update();
 	},
 
 	// Shown when a transparent proxy app is installed next to this one.
@@ -730,6 +888,7 @@ return view.extend({
 			this.renderHero(data),
 			this.renderKillswitch(data),
 			this.renderProxyInfo(data),
+			profiles.length ? this.renderDevices(data) : '',
 			E('div', { 'class': 'wgc-list-head' }, [
 				E('p', { 'class': 'wgc-h' }, _('VPN profiles')),
 				profiles.length ? E('button', { 'class': 'btn cbi-button cbi-button-add', click: () => this.showEditor({}) }, [ '+ ' + _('Import') ]) : ''

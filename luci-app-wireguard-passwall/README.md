@@ -6,6 +6,7 @@ A simple WireGuard VPN **client** for OpenWrt's LuCI web interface that can also
 - **One-click connect / disconnect**, only one profile is active at a time
 - **Live status**: handshake, uptime, traffic, server and tunnel address
 - **Kill switch** toggle: LAN devices can only reach the internet through the VPN
+- **All devices or only chosen ones** use the VPN, e.g. just your work laptops; in "VPN through Passwall" mode the other devices then go through Passwall
 - Edit, export and delete profiles; works on desktop and phone
 - **Modes** (with Passwall installed): VPN, VPN carried through a Passwall node, Passwall only, and Off, switched with one click (see below)
 
@@ -37,6 +38,20 @@ When on, a firewall rule rejects all traffic forwarded from the `lan` zone to th
 - VPN drops or is disconnected → LAN devices have **no internet** until a VPN connects again. Nothing leaks over your normal connection.
 
 The router itself can still reach the internet (it needs that to contact the VPN server), and access to LuCI/SSH from the LAN is not affected. The zone names can be changed in `/etc/config/wgpasswall` if yours differ from `lan`/`wan`.
+
+### Only some devices through the VPN
+
+Under **Devices using the VPN** pick **Only chosen devices** and tick the devices that should use the VPN (the list shows the devices on your network with their names from DHCP; a device that is not around can be added by its MAC address). Everything else:
+
+| Mode | Chosen devices | All other devices |
+|---|---|---|
+| **VPN** | through the VPN | regular internet connection |
+| **VPN through Passwall** | through the VPN, carried through Passwall | through Passwall (Client Proxy on), without the VPN |
+| **Passwall only** / **Off** | like everyone else | like everyone else |
+
+The kill switch then only holds back the chosen devices.
+
+Devices are recognised by their hardware (MAC) address, so it works for IPv4 and IPv6 and no fixed IP addresses are needed. Wired devices always keep theirs. Phones and laptops on Wi-Fi use a private address per network that stays the same, unless it is set to change ("Rotating" on Apple devices, "Change daily" on Windows) or you forget and rejoin the network; then tick the device again. A device behind another router shows up with that router's address.
 
 ### Good to know
 
@@ -80,9 +95,11 @@ Each profile is a normal netifd WireGuard interface named `wgc_<name>` in `/etc/
 |---|---|
 | `firewall.wgpasswall_zone` | Zone `wgpasswall` with all profiles, masquerading on |
 | `firewall.wgpasswall_fwd` | Forwarding `lan` → `wgpasswall` |
-| `firewall.wgpasswall_killswitch` | Rule `lan` → `wan` REJECT, enabled by the toggle |
+| `firewall.wgpasswall_killswitch` | Rule `lan` → `wan` REJECT, enabled by the toggle (only for the chosen devices if the VPN is limited to them) |
+| `firewall.wgpasswall_devices` | Only chosen devices: sets mark bit `0x1000000` (`device_mark`) on everything they send |
+| `passwall.wgpasswall_vpn_devices` | Only chosen devices, VPN through Passwall: access control rule "No Proxy" for them, ahead of your own rules |
 | `network.wgpasswall_rule_main` / `wgpasswall_rule6_main` | `lookup main suppress_prefixlength 0` keeps LAN and other specific routes |
-| `network.wgpasswall_rule_vpn` / `wgpasswall_rule6_vpn` | Unmarked traffic → VPN table 51820 (limited to LAN traffic in VPN through Passwall mode) |
+| `network.wgpasswall_rule_vpn` / `wgpasswall_rule6_vpn` | Unmarked traffic → VPN table 51820 (limited to LAN traffic in VPN through Passwall mode; only traffic with the device mark if the VPN is limited to chosen devices) |
 | `wgpasswall.<iface>` | Display name of each profile |
 
 Full-tunnel `AllowedIPs` (`0.0.0.0/0`, `::/0`) are stored as two `/1` halves so the tunnel can never replace a default route; exports turn them back into `/0`.

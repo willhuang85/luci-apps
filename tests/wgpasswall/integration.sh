@@ -97,6 +97,11 @@ config nodes 'realitynode'
 	option address 'reality.example.com'
 	option port '443'
 
+config acl_rule 'myacl'
+	option enabled '1'
+	option remarks 'my own rule'
+	list sources '192.168.1.50'
+
 config nodes 'hy2node'
 	option type 'Xray'
 	option protocol 'hysteria'
@@ -219,6 +224,34 @@ uci show network | grep -q "wgpasswall_orig_host='1.2.3.4'" || fail "off mode to
 ubus call luci.wgpasswall set_mode '{"mode":"vpn_passwall"}' >/dev/null || fail "back on from off"
 check_wrapped
 
+echo "== only chosen devices use the VPN"
+ubus call luci.wgpasswall set_devices '{"scope":"devices","devices":[]}' | jq -e '.error' >/dev/null || fail "empty device list accepted"
+ubus call luci.wgpasswall set_devices '{"scope":"devices","devices":["aa:bb:cc:dd:ee:01","AA:BB:CC:DD:EE:02"]}' | jq -e '.result' >/dev/null || fail "set_devices"
+check_devices() {
+	[ "$(uci -q get passwall.@global[0].client_proxy)" = 1 ] || fail "Passwall does not proxy the other devices"
+	[ "$(uci -q get passwall.@global[0].tcp_proxy_mode)" = proxy ] || fail "tcp mode not proxy for the other devices"
+	[ "$(uci -q get passwall.wgpasswall_vpn_devices.mode)" = 0 ] || fail "no 'No Proxy' rule for the VPN devices"
+	[ "$(uci -q get passwall.wgpasswall_vpn_devices.sources)" = "AA:BB:CC:DD:EE:01 AA:BB:CC:DD:EE:02" ] || fail "VPN devices not in the Passwall rule"
+	[ "$(uci show passwall | sed -n 's/^passwall\.\([^.=]*\)=acl_rule$/\1/p' | head -n 1)" = wgpasswall_vpn_devices ] || fail "VPN device rule not ahead of other access rules"
+	[ "$(uci -q get network.wgpasswall_rule_vpn.mark)" = 0x1000000/0x1000000 ] || fail "VPN rule does not match the device mark"
+	uci -q get network.wgpasswall_rule_vpn_lan >/dev/null && fail "LAN-wide VPN rule left behind"
+	[ "$(uci -q get firewall.wgpasswall_devices.target)" = MARK ] || fail "no firewall rule marking the VPN devices"
+	[ "$(uci -q get firewall.wgpasswall_devices.src_mac)" = "AA:BB:CC:DD:EE:01 AA:BB:CC:DD:EE:02" ] || fail "mark rule devices"
+	[ "$(uci -q get firewall.wgpasswall_killswitch.src_mac)" = "AA:BB:CC:DD:EE:01 AA:BB:CC:DD:EE:02" ] || fail "kill switch not limited to the VPN devices"
+	ubus call luci.wgpasswall status | jq -e '.scope == "devices"' >/dev/null || fail "status scope"
+}
+check_devices
+ubus call luci.wgpasswall set_mode '{"mode":"passwall"}' >/dev/null || fail "Passwall only with chosen devices"
+uci -q get passwall.wgpasswall_vpn_devices >/dev/null && fail "VPN devices skip Passwall in Passwall-only mode"
+ubus call luci.wgpasswall set_mode '{"mode":"vpn_passwall"}' >/dev/null || fail "back to VPN through Passwall with chosen devices"
+check_devices
+ubus call luci.wgpasswall set_devices '{"scope":"all","devices":["AA:BB:CC:DD:EE:01"]}' | jq -e '.result' >/dev/null || fail "set_devices all"
+uci -q get passwall.wgpasswall_vpn_devices >/dev/null && fail "VPN device rule left behind"
+uci -q get firewall.wgpasswall_devices >/dev/null && fail "mark rule left behind"
+uci -q get firewall.wgpasswall_killswitch.src_mac >/dev/null && fail "kill switch still limited to devices"
+check_wrapped
+ubus call luci.wgpasswall set_devices '{"scope":"devices","devices":["AA:BB:CC:DD:EE:01"]}' >/dev/null || fail "set_devices again"
+
 echo "== mode: VPN restores Passwall"
 ubus call luci.wgpasswall set_mode '{"mode":"vpn"}' | jq -e '.mode == "vpn"' >/dev/null || fail "set vpn"
 uci show passwall | cmp -s - "$WORK/passwall.orig" || { uci show passwall | diff "$WORK/passwall.orig" -; fail "passwall config not restored"; }
@@ -231,6 +264,9 @@ uci -q get network.wgc_civpn.mtu >/dev/null && fail "MTU not restored"
 uci show network | grep -q "wgpasswall_orig_host" && fail "relay options left behind"
 [ "$(uci -q get network.wgpasswall_rule_vpn.lookup)" = 51820 ] || fail "VPN rule for all traffic not restored"
 uci -q get network.wgpasswall_rule_vpn.in >/dev/null && fail "VPN rule still limited to LAN"
+[ "$(uci -q get network.wgpasswall_rule_vpn.mark)" = 0x1000000/0x1000000 ] || fail "VPN mode does not keep the chosen devices"
+ubus call luci.wgpasswall set_devices '{"scope":"all","devices":[]}' >/dev/null || fail "set_devices all in VPN mode"
+[ "$(uci -q get network.wgpasswall_rule_vpn.mark)" = 0x0/0xff ] || fail "VPN rule for all traffic not restored"
 uci -q get network.wgpasswall_rule_vpn_lan >/dev/null && fail "LAN-only VPN rule left behind"
 [ "$(uci -q get firewall.wgpasswall_killswitch.enabled)" = 1 ] || fail "kill switch not resumed"
 # Passwall commands run in the background, queued behind earlier restarts

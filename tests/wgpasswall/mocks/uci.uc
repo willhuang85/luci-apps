@@ -72,6 +72,15 @@ const methods = {
 				break;
 	},
 
+	reorder: function(pkg, sid, idx) {
+		const s = section(pkg, sid);
+
+		if (s)
+			s['.index'] = idx - 1000000;
+
+		return !!s;
+	},
+
 	save: function() { return true; },
 	commit: function() { return true; }
 };
