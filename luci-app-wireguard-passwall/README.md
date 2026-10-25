@@ -132,7 +132,7 @@ Code layout:
 luci-app-wireguard-passwall/
 ├── Makefile                                       OpenWrt package definition
 ├── htdocs/luci-static/resources/view/wgpasswall/
-│   └── overview.js                                the web UI
+│   └── networks.js                                the web UI
 └── root/
     ├── etc/config/wgpasswall                        settings (kill switch, through Passwall, zone names)
     └── usr/share/

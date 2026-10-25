@@ -31,6 +31,10 @@ const DRIFT_TEXT = {
 	fw_missing: _('The VPN network, its firewall zone or other firewall rules of this page were removed.')
 };
 
+// The status format this page reads (status.api); a different one means
+// the app was updated and the browser still runs a cached copy of the page
+const API_VERSION = 2;
+
 // A handshake older than this means the peer is not answering anymore.
 const HANDSHAKE_TIMEOUT = 180;
 
@@ -610,7 +614,6 @@ return view.extend({
 		const nets = data.networks ?? {};
 		const pw = data.passwall ?? {};
 		const live = data.profiles.find((p) => p.up) ?? data.profiles.find((p) => p.auto);
-		const subnet = (n) => n.address ? n.address.replace(/\.[0-9]+$/, '.0/24') : null;
 
 		const members = (n) => {
 			const chips = [
@@ -629,7 +632,7 @@ return view.extend({
 				E('div', { 'class': 'wgc-net-icon' }, NETWORKS[key].icon),
 				E('div', { 'class': 'wgc-grow' }, [
 					E('div', { 'class': 'wgc-net-title' }, [ NETWORKS[key].title, badge ?? '' ]),
-					E('div', { 'class': 'wgc-sub' }, [ desc, subnet(n) ? ' · ' + subnet(n) : '' ]),
+					E('div', { 'class': 'wgc-sub' }, [ desc, n.subnet ? ' · ' + n.subnet : '' ]),
 					members(n),
 					extra ?? ''
 				])
@@ -895,8 +898,36 @@ return view.extend({
 		return zone;
 	},
 
+	// Shown instead of the page when it does not match the backend.
+	renderOutdated(data) {
+		const newer = (data.api ?? 0) > API_VERSION;
+
+		return E('div', { 'class': 'wgc-card' }, [
+			E('p', { 'class': 'wgc-h' }, '🔄 ' + _('WireGuard + Passwall was updated')),
+			E('div', { 'class': 'wgc-sub' }, newer
+				? _('Your browser still shows the previous version of this page. Reload it to get the new one.')
+				: _('This page is newer than the app on the router. Reload it, or update the app.')),
+			E('div', { 'class': 'wgc-actions', style: 'margin-top:12px' }, [
+				E('button', { 'class': 'btn cbi-button cbi-button-action important', click: () => this.reloadPage() }, [ _('Reload page') ])
+			])
+		]);
+	},
+
+	// Fetches this page's script past the browser's cache, then reloads:
+	// LuCI asks for it under the LuCI version, which an app update does not
+	// change, so a normal reload can keep the old copy. (The file was renamed
+	// from overview.js for the same reason when the modes were replaced.)
+	reloadPage() {
+		const url = '%s/view/wgpasswall/networks.js%s'.format(L.env.base_url, L.env.resource_version ? '?v=' + L.env.resource_version : '');
+
+		return fetch(url, { cache: 'reload' }).catch(() => null).then(() => location.reload());
+	},
+
 	renderContent(data) {
 		const profiles = data.profiles ?? [];
+
+		if (data.api != API_VERSION)
+			return [ this.renderOutdated(data) ];
 
 		return [
 			this.renderHero(data),

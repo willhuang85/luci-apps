@@ -661,7 +661,7 @@ const methods = {
 
 			if (guest) {
 				guest.enabled = length(filter(values(guest.bands), (b) => b)) > 0;
-				guest.address = uci.get('network', GUEST_NET, 'ipaddr');
+				guest.address = split(as_list(uci.get('network', GUEST_NET, 'ipaddr'))[0] ?? '', '/')[0] || null;
 			}
 
 			let extras = [];

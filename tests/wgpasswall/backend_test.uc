@@ -9,7 +9,8 @@ global.__uci_store = {
 	network: {
 		brlan: { '.type': 'device', '.name': 'brlan', '.index': 998, name: 'br-lan', type: 'bridge', ports: [ 'lan1', 'lan2' ] },
 		loopback: { '.type': 'interface', '.name': 'loopback', '.index': 999, proto: 'static', device: 'lo' },
-		lan: { '.type': 'interface', '.name': 'lan', '.index': 1000, proto: 'static', device: 'br-lan', ipaddr: '192.168.1.1', netmask: '255.255.255.0' },
+		// a list with a prefix, as in OpenWrt's default config
+		lan: { '.type': 'interface', '.name': 'lan', '.index': 1000, proto: 'static', device: 'br-lan', ipaddr: [ '192.168.1.1/24' ] },
 		wan: { '.type': 'interface', '.name': 'wan', '.index': 1001, proto: 'dhcp' },
 		// a network on the first subnet the VPN network would pick
 		other: { '.type': 'interface', '.name': 'other', '.index': 1002, proto: 'static', ipaddr: '192.168.20.1/24' }
@@ -126,9 +127,9 @@ r = call('status');
 check('status profiles', length(r.profiles) == 2 && r.profiles[0].up && !r.profiles[1].up && r.profiles[0].label == 'Renamed');
 check('status zones', r.wan_zone_ok);
 check('status networks: LAN', join(',', r.networks.lan.ports) == 'lan1,lan2' && join(',', r.networks.lan.ssids) == 'Home' &&
-	r.networks.lan.address == '192.168.1.1');
+	r.networks.lan.address == '192.168.1.1' && r.networks.lan.subnet == '192.168.1.0/24');
 check('status networks: VPN (enabled Wi-Fi only)', r.networks.vpn.exists && length(r.networks.vpn.ports) == 0 &&
-	join(',', r.networks.vpn.ssids) == 'Home VPN' && r.networks.vpn.address == '192.168.21.1');
+	join(',', r.networks.vpn.ssids) == 'Home VPN' && r.networks.vpn.address == '192.168.21.1' && r.networks.vpn.subnet == '192.168.21.0/24');
 check('status networks: no Passwall network', !r.networks.proxy.exists);
 check('status passwall', !r.passwall.installed && !r.passwall.needed);
 

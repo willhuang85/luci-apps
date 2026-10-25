@@ -54,6 +54,8 @@ import { connect } from 'ubus';
 import { cursor } from 'uci';
 import * as conf from 'wgpasswall.conf';
 
+// raised when status changes in a way older pages cannot show
+const API_VERSION = 2;
 const PREFIX = 'wgc_';
 const ZONE = 'wgpasswall';
 const ZONE_SID = 'wgpasswall_zone';
@@ -1284,14 +1286,29 @@ function local_pubkey(private_key) {
 	return trim(run(`echo ${shell_quote(private_key)} | wg pubkey`) ?? '') || null;
 }
 
-// The networks for the page: subnet, wired ports and Wi-Fi networks on each.
+// A network's IPv4 address and subnet, e.g. { address: '192.168.8.1',
+// subnet: '192.168.8.0/24' }; "ipaddr" may be a list and carry a prefix.
+function net_address(uci, net) {
+	const p = split(as_list(uci.get('network', net, 'ipaddr'))[0] ?? '', '/');
+	const ip = ip2int(p[0]);
+
+	if (ip == null)
+		return { address: null, subnet: null };
+
+	const len = (p[1] != null) ? +p[1] : netmask_len(uci.get('network', net, 'netmask') ?? '255.255.255.0');
+	const n = ip & prefix_mask(len);
+
+	return { address: p[0], subnet: sprintf('%d.%d.%d.%d/%d', (n >> 24) & 255, (n >> 16) & 255, (n >> 8) & 255, n & 255, len) };
+}
+
+// The networks for the page: address, wired ports and Wi-Fi networks on each.
 function networks_status(uci) {
 	const roles = port_roles(uci);
 	const ports_of = (role) => sort(filter(keys(roles), (p) => roles[p] == role));
 	let res = {
 		lan: {
 			exists: uci.get('network', 'lan') == 'interface',
-			address: uci.get('network', 'lan', 'ipaddr'),
+			...net_address(uci, 'lan'),
 			ports: ports_of('lan'),
 			ssids: ssids_on(uci, 'lan')
 		}
@@ -1300,7 +1317,7 @@ function networks_status(uci) {
 	for (let key, n in NETS)
 		res[key] = {
 			exists: net_exists(uci, key),
-			address: uci.get('network', n.net, 'ipaddr'),
+			...net_address(uci, n.net),
 			ports: ports_of(key),
 			ssids: ssids_on(uci, n.net)
 		};
@@ -1367,6 +1384,9 @@ const methods = {
 			}
 
 			return {
+				// version of what status returns; the page checks it to
+				// notice it is an outdated copy from the browser's cache
+				api: API_VERSION,
 				settings: s,
 				via_passwall: relayed,
 				wan_zone_ok: zone_exists(uci, s.wan_zone),
