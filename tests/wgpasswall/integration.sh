@@ -33,7 +33,7 @@ install -D -m 0644 "$R/usr/share/rpcd/ucode/luci.wgpasswall" /usr/share/rpcd/uco
 install -D -m 0644 "$R/usr/share/ucode/wgpasswall/conf.uc" /usr/share/ucode/wgpasswall/conf.uc
 install -D -m 0644 "$R/etc/config/wgpasswall" /etc/config/wgpasswall
 printf "config interface 'loopback'\n\toption device 'lo'\n\toption proto 'static'\n\toption ipaddr '127.0.0.1'\n\toption netmask '255.0.0.0'\n\nconfig interface 'lan'\n\toption proto 'static'\n\toption device 'br-lan'\n\nconfig interface 'wan'\n\toption proto 'dhcp'\n" > /etc/config/network
-printf "config zone\n\toption name 'lan'\n\nconfig zone\n\toption name 'wan'\n" > /etc/config/firewall
+printf "config zone\n\toption name 'lan'\n\nconfig zone\n\toption name 'wan'\n\nconfig zone\n\toption name 'guestwifi'\n\tlist network 'guestwifi'\n" > /etc/config/firewall
 mkdir -p /var/run
 
 ubusd >"$WORK/ubusd.log" 2>&1 &
@@ -201,16 +201,23 @@ sleep 1; grep -qx restart /tmp/wgpasswall-init.log || fail "relay service not re
 echo "== mode: Passwall only"
 ubus call luci.wgpasswall set_mode '{"mode":"passwall"}' | jq -e '.mode == "passwall"' >/dev/null || fail "set passwall"
 [ "$(uci -q get passwall.@global[0].enabled)" = 1 ] || fail "passwall not enabled"
-[ "$(uci -q get passwall.@global[0].client_proxy)" = 0 ] || fail "Client Proxy on (would proxy a guest network too)"
-check_lan_acl() {
-	[ "$(uci -q get passwall.wgpasswall_lan_lan.interface)" = lan ] || fail "no Passwall rule for the LAN network"
-	[ "$(uci -q get passwall.wgpasswall_lan_lan.mode)" = 1 ] || fail "LAN rule is not Proxy"
-	[ "$(uci -q get passwall.wgpasswall_lan_lan.use_global_config)" = 1 ] || fail "LAN rule does not use the global node"
-	[ "$(uci -q get passwall.@global[0].acl_enable)" = 1 ] || fail "access control off, the LAN rule would be ignored"
-	# after the user's own rules, where Client Proxy would apply
-	[ "$(uci show passwall | sed -n 's/^passwall\.\([^.=]*\)=acl_rule$/\1/p' | tail -n 1)" = wgpasswall_lan_lan ] || fail "LAN rule not after the other rules"
+[ "$(uci -q get passwall.@global[0].client_proxy)" = 1 ] || fail "Client Proxy not on"
+# the order Passwall applies its access control rules in: it lists them
+# with `ls` (nftables.sh / iptables.sh: load_acl), i.e. sorted by name
+acl_order() {
+	uci show passwall | sed -n 's/^passwall\.\([^.=]*\)=acl_rule$/\1/p' | grep -v default | LC_ALL=C sort
 }
-check_lan_acl
+check_direct_acl() {
+	# Client Proxy carries the LAN; the guest network is a "No Proxy" exception
+	[ "$(uci -q get passwall.@global[0].client_proxy)" = 1 ] || fail "Client Proxy not on"
+	[ "$(uci -q get passwall.0wgpasswall_direct_guestwifi.interface)" = guestwifi ] || fail "no Passwall exception for the guest network"
+	[ "$(uci -q get passwall.0wgpasswall_direct_guestwifi.mode)" = 0 ] || fail "guest network exception is not No Proxy"
+	[ "$(uci -q get passwall.@global[0].acl_enable)" = 1 ] || fail "access control off, the exceptions would be ignored"
+	[ -z "$(acl_order | grep -E 'lan_lan')" ] || fail "rules proxying the LAN left behind"
+	# the app's exceptions come before the user's own rules
+	[ "$(acl_order | tail -n 1)" = myacl ] || fail "the app's rules not applied before the user's: $(acl_order | tr '\n' ' ')"
+}
+check_direct_acl
 [ "$(uci -q get passwall.@global[0].tcp_proxy_mode)" = proxy ] || fail "tcp mode not proxy"
 [ "$(uci -q get passwall.@global[0].udp_proxy_mode)" = proxy ] || fail "udp mode not proxy"
 [ "$(uci -q get passwall.@global[0].localhost_proxy)" = 1 ] || fail "router's own traffic not through Passwall in Passwall-only mode"
@@ -230,7 +237,7 @@ ubus call luci.wgpasswall status | jq -e '.mode == "passwall" and .killswitch_pa
 echo "== mode: Off"
 ubus call luci.wgpasswall set_mode '{"mode":"off"}' | jq -e '.mode == "off"' >/dev/null || fail "set off"
 [ "$(uci -q get passwall.@global[0].enabled)" = 0 ] || fail "passwall not switched off"
-[ "$(uci -q get passwall.@global[0].client_proxy)" = 0 ] || fail "off mode changed Client Proxy"
+[ "$(uci -q get passwall.@global[0].client_proxy)" = 1 ] || fail "off mode changed Client Proxy"
 [ "$(uci -q get passwall.@global[0].tcp_proxy_mode)" = proxy ] || fail "off mode changed the proxy mode"
 [ "$(uci -q get network.wgc_civpn.auto)" = 0 ] || fail "profile not disconnected in off mode"
 [ "$(uci -q get firewall.wgpasswall_killswitch.enabled)" = 0 ] || fail "kill switch not paused in off mode"
@@ -258,22 +265,29 @@ echo "== only chosen devices use the VPN"
 # a copy of Passwall's settings saved by an older version, before the app
 # managed the access control switch
 uci delete wgpasswall.passwall.pw_acl_enable 2>/dev/null; uci commit wgpasswall
+# rules under the names used before r59 (Passwall applied them in the wrong
+# order): an upgrade must replace them
+uci set passwall.wgpasswall_vpn_devices=acl_rule; uci set passwall.wgpasswall_vpn_devices.mode=0
+uci set passwall.wgpasswall_lan_lan=acl_rule; uci set passwall.wgpasswall_lan_lan.interface=lan
+uci set passwall.zzz_wgpasswall_lan_lan=acl_rule; uci set passwall.zzz_wgpasswall_lan_lan.interface=lan; uci commit passwall
 ubus call luci.wgpasswall set_devices '{"scope":"devices","devices":[]}' | jq -e '.error' >/dev/null || fail "empty device list accepted"
 ubus call luci.wgpasswall set_devices '{"scope":"devices","devices":["aa:bb:cc:dd:ee:01","AA:BB:CC:DD:EE:02"]}' | jq -e '.result' >/dev/null || fail "set_devices"
 check_devices() {
-	[ "$(uci -q get passwall.@global[0].client_proxy)" = 0 ] || fail "Client Proxy on (would proxy a guest network too)"
-	check_lan_acl
+	check_direct_acl
 	[ "$(uci -q get passwall.@global[0].tcp_proxy_mode)" = proxy ] || fail "tcp mode not proxy for the other devices"
-	[ "$(uci -q get passwall.wgpasswall_vpn_devices.mode)" = 0 ] || fail "no 'No Proxy' rule for the VPN devices"
+	[ "$(uci -q get passwall.0wgpasswall_vpn_devices.mode)" = 0 ] || fail "no 'No Proxy' rule for the VPN devices"
 	[ "$(uci -q get passwall.@global[0].acl_enable)" = 1 ] || fail "Passwall's access control not switched on, so it ignores the rule"
-	[ "$(uci -q get passwall.wgpasswall_vpn_devices.tcp_no_redir_ports)" = 1:65535 ] || fail "older Passwall would proxy the VPN devices' TCP"
-	[ "$(uci -q get passwall.wgpasswall_vpn_devices.udp_no_redir_ports)" = 1:65535 ] || fail "older Passwall would proxy the VPN devices' UDP"
-	[ "$(uci -q show passwall.wgpasswall_vpn_devices.sources)" = "passwall.wgpasswall_vpn_devices.sources='AA:BB:CC:DD:EE:01 AA:BB:CC:DD:EE:02'" ] || \
-		fail "VPN devices not in the Passwall rule as one value: $(uci -q show passwall.wgpasswall_vpn_devices.sources)"
+	[ "$(uci -q get passwall.0wgpasswall_vpn_devices.tcp_no_redir_ports)" = 1:65535 ] || fail "older Passwall would proxy the VPN devices' TCP"
+	[ "$(uci -q get passwall.0wgpasswall_vpn_devices.udp_no_redir_ports)" = 1:65535 ] || fail "older Passwall would proxy the VPN devices' UDP"
+	[ "$(uci -q show passwall.0wgpasswall_vpn_devices.sources)" = "passwall.0wgpasswall_vpn_devices.sources='AA:BB:CC:DD:EE:01 AA:BB:CC:DD:EE:02'" ] || \
+		fail "VPN devices not in the Passwall rule as one value: $(uci -q show passwall.0wgpasswall_vpn_devices.sources)"
 	# the way Passwall reads its rules (app.sh: acl_app / nftables.sh: load_acl)
-	( eval "$(uci -q show passwall.wgpasswall_vpn_devices | cut -d'.' -sf 3-)" 2>&1 && [ "$sources" = "AA:BB:CC:DD:EE:01 AA:BB:CC:DD:EE:02" ] ) >/dev/null || \
+	( eval "$(uci -q show passwall.0wgpasswall_vpn_devices | cut -d'.' -sf 3-)" 2>&1 && [ "$sources" = "AA:BB:CC:DD:EE:01 AA:BB:CC:DD:EE:02" ] ) >/dev/null || \
 		fail "Passwall cannot read the rule's sources"
-	[ "$(uci show passwall | sed -n 's/^passwall\.\([^.=]*\)=acl_rule$/\1/p' | head -n 1)" = wgpasswall_vpn_devices ] || fail "VPN device rule not ahead of other access rules"
+	# ahead of the user's rules (the app's own rules are all No Proxy, so
+	# their order among each other does not matter)
+	[ "$(acl_order | grep -n -x -e 0wgpasswall_vpn_devices -e myacl | head -n 1 | cut -d: -f2)" = 0wgpasswall_vpn_devices ] || \
+		fail "VPN device rule not ahead of the user's rules: $(acl_order | tr '\n' ' ')"
 	[ "$(uci -q get network.wgpasswall_rule_vpn.mark)" = 0x1000000/0x1000000 ] || fail "VPN rule does not match the device mark"
 	uci -q get network.wgpasswall_rule_vpn_lan >/dev/null && fail "LAN-wide VPN rule left behind"
 	[ "$(uci -q get firewall.wgpasswall_devices.target)" = MARK ] || fail "no firewall rule marking the VPN devices"
@@ -292,9 +306,12 @@ check_devices() {
 	[ "$(uci -q get firewall.wgpasswall_no_ipv6.src_mac)" = "AA:BB:CC:DD:EE:01 AA:BB:CC:DD:EE:02" ] || fail "IPv6 block not limited to the VPN devices"
 }
 check_devices
+uci -q get passwall.wgpasswall_vpn_devices >/dev/null && fail "old-named VPN device rule left behind"
+uci -q get passwall.wgpasswall_lan_lan >/dev/null && fail "old-named LAN rule left behind"
+uci -q get passwall.zzz_wgpasswall_lan_lan >/dev/null && fail "LAN proxy rule of r58 left behind"
 ubus call luci.wgpasswall set_mode '{"mode":"passwall"}' >/dev/null || fail "Passwall only with chosen devices"
-uci -q get passwall.wgpasswall_vpn_devices >/dev/null && fail "VPN devices skip Passwall in Passwall-only mode"
-check_lan_acl
+uci -q get passwall.0wgpasswall_vpn_devices >/dev/null && fail "VPN devices skip Passwall in Passwall-only mode"
+check_direct_acl
 # the device mark would break Passwall's own (exact) mark for its proxy
 [ "$(uci -q get firewall.wgpasswall_devices.enabled)" = 0 ] || fail "VPN device mark active in Passwall-only mode"
 ubus call luci.wgpasswall set_mode '{"mode":"vpn_passwall"}' >/dev/null || fail "back to VPN through Passwall with chosen devices"
@@ -302,9 +319,9 @@ check_devices
 
 echo "== reapply after changes on Passwall's own page"
 ubus call luci.wgpasswall status | jq -e '.drift == []' >/dev/null || fail "drift reported right after applying"
-uci set passwall.@global[0].client_proxy=1
+uci set passwall.@global[0].client_proxy=0
 uci set passwall.@global[0].acl_enable=0
-uci delete passwall.wgpasswall_vpn_devices
+uci delete passwall.0wgpasswall_vpn_devices
 uci delete firewall.wgpasswall_devices
 uci commit passwall; uci commit firewall
 ubus call luci.wgpasswall status | jq -e '(.drift | index("pw_settings")) and (.drift | index("pw_acl")) and (.drift | index("fw_missing"))' >/dev/null || \
@@ -317,8 +334,8 @@ ubus call luci.wgpasswall status | jq -e '.drift == []' >/dev/null || fail "drif
 wait_queue
 grep -q firewall-reload /tmp/order.log && grep -q restart-end /tmp/order.log || fail "reapply did not reload the firewall and restart Passwall"
 ubus call luci.wgpasswall set_devices '{"scope":"all","devices":["AA:BB:CC:DD:EE:01"]}' | jq -e '.result' >/dev/null || fail "set_devices all"
-uci -q get passwall.wgpasswall_vpn_devices >/dev/null && fail "VPN device rule left behind"
-uci -q get passwall.wgpasswall_lan_lan >/dev/null && fail "LAN rule left behind with all devices on the VPN"
+uci -q get passwall.0wgpasswall_vpn_devices >/dev/null && fail "VPN device rule left behind"
+uci -q get passwall.0wgpasswall_direct_guestwifi >/dev/null && fail "guest exception left behind with all devices on the VPN (Client Proxy off)"
 uci -q get passwall.@global[0].acl_enable >/dev/null && fail "access control switch left on"
 uci -q get firewall.wgpasswall_devices >/dev/null && fail "mark rule left behind"
 uci -q get firewall.wgpasswall_killswitch.src_mac >/dev/null && fail "kill switch still limited to devices"

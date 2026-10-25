@@ -74,7 +74,7 @@ define Package/luci-app-wireguard-passwall/prerm
 	uci -q commit wgpasswall
 	# the Passwall rule that keeps it away from the VPN devices (gone after
 	# the switch to VPN mode, unless that failed)
-	for s in wgpasswall_vpn_devices $$(uci -q show passwall | sed -n "s/^passwall\.\(wgpasswall_lan_[A-Za-z0-9_]*\)=acl_rule$$/\1/p"); do
+	for s in $$(uci -q show passwall | sed -n -E "s/^passwall\.((0wgpasswall_|zzz_wgpasswall_lan_|wgpasswall_lan_|wgpasswall_vpn_devices)[A-Za-z0-9_]*)=acl_rule$$/\1/p"); do
 		uci -q delete passwall.$$s
 	done
 	uci -q commit passwall
