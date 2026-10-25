@@ -690,6 +690,15 @@ return view.extend({
 
 		(data.lan_devices ?? []).forEach((d) => seen[d.mac] = d);
 
+		let dns = '';
+
+		if (scope == 'devices' && (data.mode == 'vpn' || data.mode == 'vpn_passwall'))
+			dns = data.devices_dns
+				? _('Their DNS goes to the VPN\'s DNS server (%s) through the tunnel.').format([ data.devices_dns.v4, data.devices_dns.v6 ].filter((a) => a).join(', '))
+				: data.profiles.some((p) => p.auto)
+					? _('The VPN profile has no DNS server, so their DNS goes to the router\'s DNS servers outside the VPN.')
+					: '';
+
 		if (scope == 'devices')
 			others = (data.mode == 'vpn_passwall')
 				? _('All other devices go through Passwall, without the VPN.')
@@ -720,6 +729,7 @@ return view.extend({
 				])),
 				E('button', { 'class': 'btn cbi-button', click: () => this.showDevices() }, [ _('Change…') ])
 			]) : '',
+			dns ? E('div', { 'class': 'wgc-sub', style: 'margin-top:10px' }, dns) : '',
 			others ? E('div', { 'class': 'wgc-sub', style: 'margin-top:10px' }, others) : ''
 		]);
 	},

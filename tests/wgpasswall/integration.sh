@@ -57,7 +57,7 @@ ubus list luci.wgpasswall >/dev/null 2>&1 || fail "rpcd did not register luci.wg
 
 PRIV='yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk='
 PUB='xTIBA5rboUvnH4htodjb6e697QjLERt1NAB4mZqp8Dg='
-CONF=$(printf '[Interface]\nPrivateKey = %s\nAddress = 10.2.0.2/32\n\n[Peer]\nPublicKey = %s\nAllowedIPs = 0.0.0.0/0\nEndpoint = 1.2.3.4:51820\n' "$PRIV" "$PUB")
+CONF=$(printf '[Interface]\nPrivateKey = %s\nAddress = 10.2.0.2/32\nDNS = 10.2.0.1\n\n[Peer]\nPublicKey = %s\nAllowedIPs = 0.0.0.0/0\nEndpoint = 1.2.3.4:51820\n' "$PRIV" "$PUB")
 
 echo "== status"
 ubus call luci.wgpasswall status >/dev/null || fail "status"
@@ -254,6 +254,14 @@ check_devices() {
 	[ "$(uci -q get firewall.wgpasswall_devices.src_mac)" = "AA:BB:CC:DD:EE:01 AA:BB:CC:DD:EE:02" ] || fail "mark rule devices"
 	[ "$(uci -q get firewall.wgpasswall_killswitch.src_mac)" = "AA:BB:CC:DD:EE:01 AA:BB:CC:DD:EE:02" ] || fail "kill switch not limited to the VPN devices"
 	ubus call luci.wgpasswall status | jq -e '.scope == "devices"' >/dev/null || fail "status scope"
+	# their DNS: the VPN's server through the tunnel, not the router's resolver
+	uci -q get network.wgc_civpn.dns >/dev/null && fail "VPN DNS still an upstream of the router's resolver"
+	[ "$(uci -q get wgpasswall.wgc_civpn.dns)" = 10.2.0.1 ] || fail "VPN DNS not kept for the devices"
+	[ "$(uci -q get firewall.wgpasswall_devices_dns.path)" = /etc/wgpasswall/devices-dns.nft ] || fail "DNS rules not included in the firewall"
+	grep -q "ether saddr { aa:bb:cc:dd:ee:01, aa:bb:cc:dd:ee:02 } .* dnat ip to 10.2.0.1:53" /etc/wgpasswall/devices-dns.nft || \
+		{ cat /etc/wgpasswall/devices-dns.nft; fail "VPN devices' DNS not sent to the VPN's DNS server"; }
+	nft -c -f /etc/wgpasswall/devices-dns.nft || fail "DNS rules do not load"
+	ubus call luci.wgpasswall status | jq -e '.devices_dns.v4 == "10.2.0.1"' >/dev/null || fail "status devices_dns"
 }
 check_devices
 ubus call luci.wgpasswall set_mode '{"mode":"passwall"}' >/dev/null || fail "Passwall only with chosen devices"
@@ -282,6 +290,8 @@ uci -q get passwall.wgpasswall_vpn_devices >/dev/null && fail "VPN device rule l
 uci -q get passwall.@global[0].acl_enable >/dev/null && fail "access control switch left on"
 uci -q get firewall.wgpasswall_devices >/dev/null && fail "mark rule left behind"
 uci -q get firewall.wgpasswall_killswitch.src_mac >/dev/null && fail "kill switch still limited to devices"
+[ "$(uci -q get network.wgc_civpn.dns)" = 10.2.0.1 ] || fail "VPN DNS not back on the interface for all devices"
+grep -q dnat /etc/wgpasswall/devices-dns.nft && fail "DNS redirect left for all devices"
 check_wrapped
 ubus call luci.wgpasswall set_devices '{"scope":"devices","devices":["AA:BB:CC:DD:EE:01"]}' >/dev/null || fail "set_devices again"
 

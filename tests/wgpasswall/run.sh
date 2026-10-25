@@ -19,4 +19,4 @@ MOCKS="$PWD/tests/wgpasswall/mocks/*.uc"
 echo "== conf parser"
 "$UCODE" ${UCODE_DIR:+-L "$UCODE_DIR/*.so"} -L "$SRC" tests/wgpasswall/conf_test.uc
 echo "== rpcd backend"
-"$UCODE" ${UCODE_DIR:+-L "$UCODE_DIR/*.so"} -L "$MOCKS" -L "$SRC" tests/wgpasswall/backend_test.uc
+WGPASSWALL_DNS_NFT="$(mktemp -d)/devices-dns.nft" "$UCODE" ${UCODE_DIR:+-L "$UCODE_DIR/*.so"} -L "$MOCKS" -L "$SRC" tests/wgpasswall/backend_test.uc

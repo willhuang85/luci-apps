@@ -34,7 +34,7 @@
 
 'use strict';
 
-import { access, popen, readfile } from 'fs';
+import { access, mkdir, popen, readfile, writefile } from 'fs';
 import { connect } from 'ubus';
 import { cursor } from 'uci';
 import * as conf from 'wgpasswall.conf';
@@ -46,6 +46,11 @@ const FWD_SID = 'wgpasswall_fwd';
 const KS_SID = 'wgpasswall_killswitch';
 const MARK_SID = 'wgpasswall_devices';
 const ACL_SID = 'wgpasswall_vpn_devices';
+// DNS of the chosen devices: an nftables table of its own, loaded by fw4
+// through an include, ahead of Passwall's DNS redirect
+const DNS_SID = 'wgpasswall_devices_dns';
+const DNS_NFT = getenv('WGPASSWALL_DNS_NFT') ?? '/etc/wgpasswall/devices-dns.nft';
+const DNS_TABLE = 'wgpasswall_dns';
 const RULE_SIDS = {
 	rule: [ 'wgpasswall_rule_main', 'wgpasswall_rule_vpn' ],
 	rule6: [ 'wgpasswall_rule6_main', 'wgpasswall_rule6_vpn' ]
@@ -240,7 +245,8 @@ function load_profile(uci, id) {
 		iface: {
 			private_key: uci.get('network', id, 'private_key'),
 			addresses: as_list(uci.get('network', id, 'addresses')),
-			dns: as_list(uci.get('network', id, 'dns')),
+			// kept aside while only chosen devices use the VPN (see sync_dns)
+			dns: as_list(uci.get('network', id, 'dns') ?? uci.get('wgpasswall', id, 'dns')),
 			dns_search: as_list(uci.get('network', id, 'dns_search')),
 			mtu: uci.get('network', id, 'mtu') ? +uci.get('network', id, 'mtu') : null,
 			listen_port: uci.get('network', id, 'listen_port') ? +uci.get('network', id, 'listen_port') : null
@@ -314,6 +320,88 @@ function set_routing_opts(uci, id) {
 	uci.set('network', id, 'fwmark', sprintf('0x%x', s.wg_fwmark));
 }
 
+// While only chosen devices use the VPN, the router's own traffic does not
+// go through it, so the VPN's DNS servers (unreachable from the router)
+// must not become upstream servers of the router's resolver: they are kept
+// in wgpasswall.<profile>.dns instead and only the chosen devices use them
+// (devices_dns). With all devices they go back to the interface.
+function sync_dns(uci, ids) {
+	const aside = devices_only(uci);
+
+	for (let id in ids) {
+		const on_iface = as_list(uci.get('network', id, 'dns'));
+		const kept = as_list(uci.get('wgpasswall', id, 'dns'));
+
+		if (aside && length(on_iface)) {
+			if (uci.get('wgpasswall', id) == null)
+				uci.set('wgpasswall', id, 'profile');
+
+			uci.set('wgpasswall', id, 'dns', on_iface);
+			uci.delete('network', id, 'dns');
+		}
+		else if (!aside && length(kept)) {
+			if (!length(on_iface))
+				uci.set('network', id, 'dns', kept);
+
+			uci.delete('wgpasswall', id, 'dns');
+		}
+	}
+}
+
+// The DNS servers the chosen devices use while a VPN profile is connected:
+// { v4, v6 } from the connected profile's DNS, or null.
+function devices_dns(uci) {
+	const mode = get_mode(uci);
+
+	if (!devices_only(uci) || (mode != 'vpn' && mode != 'vpn_passwall'))
+		return null;
+
+	for (let id in profile_ids(uci)) {
+		if (uci.get('network', id, 'auto') == '0')
+			continue;
+
+		const dns = load_profile(uci, id).iface.dns;
+		const v4 = filter(dns, (a) => match(a, /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) != null)[0];
+		const v6 = filter(dns, (a) => match(a, /^[0-9A-Fa-f:.]+$/) != null && index(a, ':') >= 0)[0];
+
+		return (v4 || v6) ? { v4, v6 } : null;
+	}
+
+	return null;
+}
+
+// nftables rules sending the chosen devices' DNS to the VPN's DNS servers.
+// Their traffic is marked for the VPN already, so the queries go through
+// the tunnel. Runs before Passwall's DNS redirect (dstnat - 1) and fw4's own
+// (dstnat). IPv6 queries to the router are refused when the VPN has no IPv6
+// DNS server, so the devices fall back to IPv4 instead of using the router.
+// Without servers the file only removes the table.
+function devices_dns_nft(uci) {
+	const dns = devices_dns(uci);
+	let out = `table inet ${DNS_TABLE}\ndelete table inet ${DNS_TABLE}\n`;
+
+	if (!dns)
+		return out;
+
+	const macs = join(', ', map(settings(uci).devices, (m) => lc(m)));
+	const match_dns = `ether saddr { ${macs} } meta l4proto { tcp, udp }`;
+
+	out += `\ntable inet ${DNS_TABLE} {\n\tchain dstnat {\n\t\ttype nat hook prerouting priority dstnat - 10; policy accept;\n`;
+
+	if (dns.v4)
+		out += `\t\t${match_dns} meta nfproto ipv4 th dport 53 counter dnat ip to ${dns.v4}:53 comment "WireGuard + Passwall: VPN DNS for the devices that use the VPN"\n`;
+
+	if (dns.v6)
+		out += `\t\t${match_dns} meta nfproto ipv6 th dport 53 counter dnat ip6 to [${dns.v6}]:53 comment "WireGuard + Passwall: VPN DNS for the devices that use the VPN"\n`;
+
+	out += '\t}\n';
+
+	if (!dns.v6)
+		out += `\n\tchain input {\n\t\ttype filter hook input priority filter - 5; policy accept;\n\t\t${match_dns} meta nfproto ipv6 ct original proto-dst 53 counter reject comment "WireGuard + Passwall: no IPv6 DNS from the router for the devices that use the VPN"\n\t}\n`;
+
+	return out + '}\n';
+}
+
 // Creates or removes the policy routing rules shared by all profiles and
 // makes sure every profile routes into the VPN table.
 //
@@ -364,7 +452,9 @@ function sync_routing(uci) {
 	for (let id in ids)
 		set_routing_opts(uci, id);
 
+	sync_dns(uci, ids);
 	uci.save('network');
+	uci.save('wgpasswall');
 }
 
 // Creates or refreshes the firewall zone, forwarding and kill switch rule.
@@ -419,6 +509,19 @@ function sync_firewall(uci) {
 		uci.delete('firewall', KS_SID, 'src_mac');
 		uci.delete('firewall', MARK_SID);
 	}
+
+	// the file must exist whenever the include does, or fw4 fails to load
+	const nft = devices_dns_nft(uci);
+
+	if (readfile(DNS_NFT) != nft) {
+		mkdir(replace(DNS_NFT, /\/[^\/]*$/, ''));
+		writefile(DNS_NFT, nft);
+	}
+
+	uci.set('firewall', DNS_SID, 'include');
+	uci.set('firewall', DNS_SID, 'type', 'nftables');
+	uci.set('firewall', DNS_SID, 'path', DNS_NFT);
+	uci.set('firewall', DNS_SID, 'position', 'ruleset-append');
 
 	uci.save('firewall');
 }
@@ -901,20 +1004,29 @@ function drift(uci) {
 	if (devices)
 		push(want, 'WireGuard + Passwall: devices that use the VPN');
 
+	const dns_rules = devices_dns(uci) != null;
+
 	if ((devices && uci.get('firewall', MARK_SID) == null) ||
+	    uci.get('firewall', DNS_SID) == null || readfile(DNS_NFT) != devices_dns_nft(uci) ||
 	    (length(profile_ids(uci)) && uci.get('firewall', ZONE_SID) == null))
 		push(issues, 'fw_missing');
 	// skipped while queued reloads are still running (they hold the lock)
-	else if (length(want) && system(`flock -n ${FW_LOCK} true >/dev/null 2>&1`) == 0) {
-		const live = run('nft list table inet fw4');
+	else if (system(`flock -n ${FW_LOCK} true >/dev/null 2>&1`) == 0) {
+		const live = length(want) ? run('nft list table inet fw4') : null;
+		let ok = true;
 
 		// no fw4 table (another firewall, or not started): nothing to compare
 		if (length(live))
 			for (let c in want)
-				if (index(live, `!fw4: ${c}"`) < 0) {
-					push(issues, 'fw_rules');
-					break;
-				}
+				if (index(live, `!fw4: ${c}"`) < 0)
+					ok = false;
+
+		if (length(live) || !length(want))
+			if ((index(run(`nft list table inet ${DNS_TABLE}`) ?? '', 'dnat') >= 0) != dns_rules)
+				ok = false;
+
+		if (!ok)
+			push(issues, 'fw_rules');
 	}
 
 	return issues;
@@ -1004,6 +1116,7 @@ const methods = {
 				killswitch_active: s.killswitch && uci.get('firewall', KS_SID, 'enabled') == '1',
 				proxy_apps: detect_proxy_apps(uci),
 				drift: drift(uci),
+				devices_dns: devices_dns(uci),
 				mode: get_mode(uci),
 				last_profile: uci.get('wgpasswall', 'settings', 'last_profile'),
 				killswitch_paused: s.killswitch && killswitch_paused(uci),
@@ -1195,7 +1308,8 @@ const methods = {
 			uci.set('wgpasswall', 'settings', 'last_profile', id);
 			uci.save('wgpasswall');
 			sync_routing(uci);
-			apply(uci, [ 'network', 'wgpasswall' ]);
+			sync_firewall(uci);	// the chosen devices' DNS follows the connected profile
+			apply(uci, [ 'network', 'wgpasswall', 'firewall' ]);
 			iface_up(id);
 
 			return { result: true };
@@ -1213,7 +1327,8 @@ const methods = {
 
 			uci.set('network', id, 'auto', '0');
 			uci.save('network');
-			apply(uci, [ 'network' ]);
+			sync_firewall(uci);
+			apply(uci, [ 'network', 'firewall' ]);
 			iface_down(id);
 
 			return { result: true };

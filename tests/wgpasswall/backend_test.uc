@@ -129,6 +129,22 @@ check('devices: mark rule', st.firewall.wgpasswall_devices?.target == 'MARK' && 
 	st.firewall.wgpasswall_devices?.src == 'lan' && st.firewall.wgpasswall_devices?.dest == '*' && length(st.firewall.wgpasswall_devices?.src_mac) == 2 && st.firewall.wgpasswall_devices?.family == 'any');
 check('devices: kill switch per device', join(',', st.firewall.wgpasswall_killswitch.src_mac ?? []) == 'AA:BB:CC:DD:EE:FF,11:22:33:44:55:66');
 check('devices: status', call('status').scope == 'devices');
+
+// DNS of the chosen devices: the VPN's DNS server, not the router's resolver
+import { readfile } from 'fs';
+const dns_nft = () => readfile(getenv('WGPASSWALL_DNS_NFT')) ?? '';
+call('connect', { id: 'wgc_myhomevpn' });
+check('dns: kept off the router resolver', st.network.wgc_myhomevpn.dns == null && join(',', st.wgpasswall.wgc_myhomevpn.dns) == '10.2.0.1');
+check('dns: still in the profile', index(call('get', { id: 'wgc_myhomevpn' }).conf, 'DNS = 10.2.0.1') >= 0);
+check('dns: status', call('status').devices_dns?.v4 == '10.2.0.1');
+check('dns: include', st.firewall.wgpasswall_devices_dns?.['.type'] == 'include' && st.firewall.wgpasswall_devices_dns?.type == 'nftables' &&
+	st.firewall.wgpasswall_devices_dns?.path == getenv('WGPASSWALL_DNS_NFT'));
+check('dns: redirect to VPN DNS', index(dns_nft(), 'ether saddr { aa:bb:cc:dd:ee:ff, 11:22:33:44:55:66 } meta l4proto { tcp, udp } meta nfproto ipv4 th dport 53 counter dnat ip to 10.2.0.1:53') >= 0);
+check('dns: before Passwall', index(dns_nft(), 'priority dstnat - 10;') >= 0);
+check('dns: router IPv6 DNS refused', index(dns_nft(), 'meta nfproto ipv6 ct original proto-dst 53 counter reject') >= 0);
+call('disconnect', { id: 'wgc_myhomevpn' });
+check('dns: no redirect while disconnected', index(dns_nft(), 'dnat') < 0 && index(dns_nft(), 'delete table inet wgpasswall_dns') >= 0);
+call('connect', { id: 'wgc_myhomevpn' });
 st.wgpasswall.settings.device_mark = '0x4000000';
 call('set_devices', { scope: 'devices', devices: st.wgpasswall.settings.vpn_device });
 check('devices: custom mark', st.network.wgpasswall_rule_vpn.mark == '0x4000000/0x4000000' && st.firewall.wgpasswall_devices.set_mark == '0x4000000/0x4000000');
@@ -136,6 +152,8 @@ delete st.wgpasswall.settings.device_mark;
 r = call('set_devices', { scope: 'all', devices: [ '11:22:33:44:55:66' ] });
 check('all: rule for all traffic', st.network.wgpasswall_rule_vpn.mark == '0x0/0xff');
 check('all: mark rule removed', st.firewall.wgpasswall_devices == null && st.firewall.wgpasswall_killswitch.src_mac == null);
+check('all: dns back on the interface', join(',', st.network.wgc_myhomevpn.dns) == '10.2.0.1' && st.wgpasswall.wgc_myhomevpn.dns == null);
+check('all: no dns redirect', index(dns_nft(), 'dnat') < 0);
 check('all: chosen devices kept', join(',', st.wgpasswall.settings.vpn_device) == '11:22:33:44:55:66' && call('status').scope == 'all');
 call('set_killswitch', { enabled: false });
 

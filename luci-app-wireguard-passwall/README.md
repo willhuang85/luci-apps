@@ -51,6 +51,8 @@ Under **Devices using the VPN** pick **Only chosen devices** and tick the device
 
 The kill switch then only holds back the chosen devices.
 
+**DNS**: while a profile is connected, the chosen devices' DNS queries (to the router or to any other server on port 53) go to the VPN's DNS server from the `.conf` (`DNS =`) through the tunnel, so they resolve where they browse from. Their IPv6 queries to the router are refused when the VPN has no IPv6 DNS server, so they fall back to IPv4. The VPN's DNS server is kept off the router's own resolver meanwhile (the router's own traffic does not use the VPN, so it could not reach it). All other devices keep using the router's DNS. Encrypted DNS done by a browser or the OS itself (DoH) is not touched; it goes through the VPN like the rest of their traffic. Without a `DNS =` line the chosen devices keep using the router's DNS, outside the VPN.
+
 In **VPN through Passwall** mode this switches on Passwall's access control (its rules only work with that switch on) and adds a "No Proxy" rule for the chosen devices ahead of your own rules. If you have access control rules of your own that are enabled, they apply too while this mode is on. Leaving the mode puts the switch back as it was.
 
 Devices are recognised by their hardware (MAC) address, so it works for IPv4 and IPv6 and no fixed IP addresses are needed. Wired devices always keep theirs. Phones and laptops on Wi-Fi use a private address per network that stays the same, unless it is set to change ("Rotating" on Apple devices, "Change daily" on Windows) or you forget and rejoin the network; then tick the device again. A device behind another router shows up with that router's address.
@@ -100,6 +102,7 @@ Each profile is a normal netifd WireGuard interface named `wgc_<name>` in `/etc/
 | `firewall.wgpasswall_fwd` | Forwarding `lan` → `wgpasswall` |
 | `firewall.wgpasswall_killswitch` | Rule `lan` → `wan` REJECT, enabled by the toggle (only for the chosen devices if the VPN is limited to them) |
 | `firewall.wgpasswall_devices` | Only chosen devices: sets mark bit `0x1000000` (`device_mark`) on everything they send |
+| `firewall.wgpasswall_devices_dns` | Only chosen devices: includes `/etc/wgpasswall/devices-dns.nft`, table `inet wgpasswall_dns` sending their DNS to the VPN's DNS server (before Passwall's DNS redirect) |
 | `passwall.wgpasswall_vpn_devices` | Only chosen devices, VPN through Passwall: access control rule "No Proxy" for them, ahead of your own rules |
 | `network.wgpasswall_rule_main` / `wgpasswall_rule6_main` | `lookup main suppress_prefixlength 0` keeps LAN and other specific routes |
 | `network.wgpasswall_rule_vpn` / `wgpasswall_rule6_vpn` | Unmarked traffic → VPN table 51820 (limited to LAN traffic in VPN through Passwall mode; only traffic with the device mark if the VPN is limited to chosen devices) |
