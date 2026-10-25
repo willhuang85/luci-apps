@@ -19,6 +19,7 @@ PIDS=""
 cleanup() {
 	status=$?
 	[ -n "$PIDS" ] && kill $PIDS 2>/dev/null
+	pkill -f passwall-stub-daemon 2>/dev/null
 	sleep 1
 	rm -f /var/run/ubus/ubus.sock
 	exit $status
@@ -117,6 +118,7 @@ printf '223.5.5.5\n1.2.3.4\n' > /etc/passwall/rules/direct_ip
 # which cuts off the router's own connections. The stubs log when restarts
 # begin and end and when the firewall reloads, so the test can check that
 # the app never lets those overlap.
+ln -sf "$(command -v sleep)" /tmp/passwall-stub-daemon
 cat > /etc/init.d/passwall <<'PW'
 #!/bin/sh
 echo "$1" >> /tmp/passwall-init.log
@@ -124,6 +126,9 @@ echo "$1" >> /tmp/passwall-init.log
 if [ "$1" = restart ]; then
 	echo "restart-begin" >> /tmp/order.log
 	sleep 1
+	# like Passwall's xray, dnsmasq, ...: daemons that keep running and
+	# inherit the open files of whoever restarted Passwall
+	/tmp/passwall-stub-daemon 3600 &
 	echo "restart-end" >> /tmp/order.log
 fi
 exit 0

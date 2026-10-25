@@ -307,14 +307,26 @@ function shell_quote(s) {
 // lock, one at a time: a firewall reload in the middle of a Passwall restart
 // re-adds Passwall's rules after Passwall removed them, and they then stay
 // behind while Passwall is off, cutting off the router's own connections.
-const FW_LOCK = '/var/lock/luci-apps-firewall.lock';
+//
+// The lock is held on file descriptor 9 of a subshell and the commands run
+// with it closed: daemons a command starts (Passwall's xray, dnsmasq, ...)
+// would otherwise inherit it and hold the lock for as long as they run,
+// blocking every later reload. The "; true" keeps the shell from running the
+// last command in place of the subshell, which would close the lock early. The file name changed with that fix, as
+// daemons started by older versions may still hold the old one.
+const FW_LOCK = '/var/lock/luci-apps.lock';
+
+// The commands as one script; failures end up in the system log.
+function locked_script(cmds) {
+	return join('; ', map(cmds, (c) => `${c} || logger -t luci-apps ${shell_quote(`failed: ${c}`)}`));
+}
 
 // Runs `cmds` in the background under the lock, after `delay` seconds.
 function run_locked(cmds, delay) {
 	if (!length(cmds))
 		return;
 
-	system(`(${delay ? `sleep ${delay}; ` : ''}mkdir -p /var/lock; flock ${FW_LOCK} sh -c ${shell_quote(join('; ', cmds))}) >/dev/null 2>&1 &`);
+	system(`(${delay ? `sleep ${delay}; ` : ''}mkdir -p /var/lock; exec 9>${FW_LOCK}; flock 9; sh -c ${shell_quote(locked_script(cmds))} 9>&-; true) >/dev/null 2>&1 &`);
 }
 
 // Commits and applies the changes shortly after the reply was sent (a
