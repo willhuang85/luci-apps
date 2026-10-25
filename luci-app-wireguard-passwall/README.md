@@ -61,6 +61,16 @@ WireGuard itself knows nothing about DNS: the `DNS =` line of a `.conf` is used 
 
 So while a profile is connected, the DNS queries of the VPN network go to the VPN's DNS server from the `.conf` through the tunnel, whether they ask the router or any other server on port 53. Their IPv6 queries to the router are refused when the VPN has no IPv6 DNS server, so they fall back to IPv4. The VPN's DNS server is not used by the router's own resolver, which keeps using the internet connection's DNS (it has to look up the VPN server before the tunnel is up). The other networks keep using the router's DNS.
 
+Where each network's DNS goes:
+
+| Network | DNS |
+|---|---|
+| Home network, guest network | the router's resolver (dnsmasq), which asks the internet connection's DNS server directly; Passwall and the VPN don't change it |
+| VPN network, profile connected | every query on port 53 → the VPN's DNS server (`DNS =` of the `.conf`), through the tunnel (and through Passwall when the VPN is carried through it) |
+| VPN network, no profile connected | the router's resolver, as on the home network; **with the kill switch on, refused** (devices have no internet then anyway, and the names they look up would otherwise reach your ISP's DNS) |
+| Passwall network | every query on port 53 → Passwall's own DNS (its dnsmasq instance with ChinaDNS-NG: the "direct" server for direct domains, the "remote" server through the node for the others), whether or not a VPN is connected |
+| The router itself | through Passwall's DNS while *Localhost Proxy* is on, otherwise the internet connection's DNS server |
+
 - Devices on the VPN network cannot look up the router's local names (`something.lan`); mDNS names (`something.local`) still work.
 - Encrypted DNS done by a browser or the OS itself (DoH) is not touched; it goes through the VPN like the rest of their traffic.
 - Without a `DNS =` line nothing is redirected and the devices use the router's DNS, outside the VPN.

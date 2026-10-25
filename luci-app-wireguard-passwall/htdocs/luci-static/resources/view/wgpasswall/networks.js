@@ -725,7 +725,7 @@ return view.extend({
 			E('div', { 'class': 'wgc-opt' }, [
 				E('div', { 'class': 'wgc-grow' }, [
 					E('div', { 'class': 'wgc-net-title' }, '🛡 ' + _('Kill switch')),
-					E('div', { 'class': 'wgc-sub' }, _('While the VPN is not connected, devices on the VPN network get no internet instead of using your regular connection.')),
+					E('div', { 'class': 'wgc-sub' }, _('While the VPN is not connected, devices on the VPN network get no internet (and no DNS) instead of using your regular connection.')),
 					ksNote
 				]),
 				toggle(s.killswitch, _('Kill switch'), 'handleKillswitch')

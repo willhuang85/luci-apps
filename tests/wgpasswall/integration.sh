@@ -143,6 +143,10 @@ echo "== kill switch"
 ubus call luci.wgpasswall set_options '{"killswitch":true}' >/dev/null || fail "set_options"
 [ "$(uci -q get firewall.wgpasswall_killswitch.enabled)" = 1 ] || fail "kill switch not enabled"
 [ "$(uci -q get firewall.wgpasswall_killswitch.src)" = wgvpn ] || fail "kill switch not for the VPN network"
+# no VPN connected: the router must not look up names for the VPN network either
+grep -q 'iifname "br-wgvpn" .* th dport 53 counter reject' /etc/wgpasswall/devices-dns.nft || \
+	{ cat /etc/wgpasswall/devices-dns.nft; fail "VPN network's DNS not refused while the kill switch holds it offline"; }
+nft -c -f /etc/wgpasswall/devices-dns.nft || fail "DNS rules do not load"
 
 echo "== Passwall"
 # a minimal Passwall install: config, rule lists and an init script stub

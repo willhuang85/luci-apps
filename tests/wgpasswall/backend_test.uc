@@ -168,6 +168,13 @@ call('disconnect', { id: 'wgc_myhomevpn' });
 check('disconnect', st.network.wgc_myhomevpn.auto == '0');
 check('ipv6: not blocked while disconnected', st.firewall.wgpasswall_no_ipv6.enabled == '0');
 check('dns: no redirect while disconnected', index(dns_nft(), 'dnat') < 0 && index(dns_nft(), 'delete table inet wgpasswall_dns') >= 0);
+check('dns: router answers while disconnected without kill switch', index(dns_nft(), 'reject') < 0);
+call('set_options', { killswitch: true });
+check('dns: refused while the kill switch holds the network offline', index(dns_nft(), 'iifname "br-wgvpn" meta l4proto { tcp, udp } th dport 53 counter reject') >= 0 &&
+	index(dns_nft(), 'dnat') < 0);
+call('connect', { id: 'wgc_myhomevpn' });
+check('dns: VPN DNS again once connected', index(dns_nft(), 'dnat ip to 10.2.0.1:53') >= 0 && index(dns_nft(), 'holds it offline') < 0);
+call('set_options', { killswitch: false });
 call('connect', { id: 'wgc_myhomevpn' });
 call('save', { id: 'wgc_myhomevpn', label: 'Renamed', conf: replace(text, 'AllowedIPs = 0.0.0.0/0', 'AllowedIPs = 0.0.0.0/0, ::/0') });
 check('ipv6: not blocked with ::/0', st.firewall.wgpasswall_no_ipv6.enabled == '0' && !call('status').ipv6_blocked);

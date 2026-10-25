@@ -577,15 +577,24 @@ function vpn_dns(uci) {
 // too. Runs before Passwall's DNS redirect (dstnat - 1) and fw4's own
 // (dstnat). IPv6 queries to the router are refused when the VPN has no IPv6
 // DNS server, so the devices fall back to IPv4 instead of using the router.
-// Without servers the file only removes the table.
+// While the kill switch holds the VPN network offline (no profile set to
+// connected), the router refuses its DNS queries too: it would otherwise
+// look the names up through the internet connection's DNS.
+// Without any of these the file only removes the table.
 function vpn_dns_nft(uci) {
 	const dns = vpn_dns(uci);
 	let out = `table inet ${DNS_TABLE}\ndelete table inet ${DNS_TABLE}\n`;
 
-	if (!dns || !net_exists(uci, 'vpn'))
+	if (!net_exists(uci, 'vpn'))
 		return out;
 
 	const match_dns = `iifname "${NETS.vpn.bridge}" meta l4proto { tcp, udp }`;
+
+	if (!connected_profile(uci) && settings(uci).killswitch)
+		return out + `\ntable inet ${DNS_TABLE} {\n\tchain input {\n\t\ttype filter hook input priority filter - 5; policy accept;\n\t\t${match_dns} th dport 53 counter reject comment "WireGuard + Passwall: no DNS for the VPN network while the kill switch holds it offline"\n\t}\n}\n`;
+
+	if (!dns)
+		return out;
 
 	out += `\ntable inet ${DNS_TABLE} {\n\tchain dstnat {\n\t\ttype nat hook prerouting priority dstnat - 10; policy accept;\n`;
 
@@ -1251,7 +1260,8 @@ function drift(uci) {
 	if (uci.get('firewall', NO_V6_SID, 'enabled') == '1')
 		push(want, 'WireGuard + Passwall: no IPv6 outside the VPN');
 
-	const dns_rules = index(vpn_dns_nft(uci), 'dnat') >= 0;
+	// every rule of the DNS table counts its packets
+	const dns_rules = index(vpn_dns_nft(uci), 'counter') >= 0;
 
 	if (!net_exists(uci, 'vpn') || uci.get('firewall', NETS.vpn.zone_sid) == null ||
 	    uci.get('firewall', DNS_SID) == null || readfile(DNS_NFT) != vpn_dns_nft(uci) ||
@@ -1269,7 +1279,7 @@ function drift(uci) {
 					ok = false;
 
 		if (length(live) || !length(want))
-			if ((index(run(`nft list table inet ${DNS_TABLE}`) ?? '', 'dnat') >= 0) != dns_rules)
+			if ((index(run(`nft list table inet ${DNS_TABLE}`) ?? '', 'counter') >= 0) != dns_rules)
 				ok = false;
 
 		if (!ok)
