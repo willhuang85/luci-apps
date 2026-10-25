@@ -617,8 +617,8 @@ function vpn_dns_nft(uci) {
 // traffic coming in from the VPN network, and the router's own traffic
 // (coming from "loopback") unless the tunnel goes through Passwall: the
 // proxy carrying the tunnel runs on the router, so routing the router's own
-// traffic into the tunnel would make the proxy wait for itself; Passwall's
-// Localhost Proxy carries it then (pw_sync).
+// traffic into the tunnel would make the proxy wait for itself; it goes out
+// directly then. It never goes through Passwall (see pw_wanted_options).
 function sync_routing(uci) {
 	const s = settings(uci);
 	const ids = profile_ids(uci);
@@ -1071,11 +1071,14 @@ function pw_sync_acl(uci) {
 
 // The values of PW_MANAGED while Passwall is needed (UNSET: not set, null:
 // left alone). Client Proxy is off: the networks Passwall carries have their
-// own rules, so a guest network, the LAN and the VPN network stay out. The
-// router's own traffic goes through Passwall unless a directly connected
-// tunnel carries it.
+// own rules, so a guest network, the LAN and the VPN network stay out.
+// Localhost Proxy is off: with it, the node's own connection to its server
+// can be caught by the rules for the router's traffic and loop back into
+// Passwall (seen with an Xray hysteria node: nothing got through, for the
+// Passwall network either). The router's own traffic goes through a
+// directly connected tunnel, or out directly; Passwall's own DNS lookups
+// through its node do not need Localhost Proxy, nor does the relay.
 function pw_wanted_options(uci) {
-	const tunnel = connected_profile(uci) != null && !via_passwall(uci);
 	const own_acl = uci.get('wgpasswall', 'passwall', 'pw_acl_enable');
 
 	return {
@@ -1085,7 +1088,7 @@ function pw_wanted_options(uci) {
 		udp_proxy_mode: 'proxy',
 		// without networks to carry, the user's own setting (UNSET: none)
 		acl_enable: length(pw_networks(uci)) ? '1' : own_acl,
-		localhost_proxy: tunnel ? '0' : '1'
+		localhost_proxy: '0'
 	};
 }
 

@@ -281,7 +281,8 @@ check_pw_network() {
 	cmp -s /etc/passwall/rules/direct_ip "$WORK/direct_ip.orig" || fail "direct list modified"
 }
 check_pw_network
-[ "$(uci -q get passwall.@global[0].localhost_proxy)" = 1 ] || fail "router's own traffic not through Passwall while disconnected"
+# never through Passwall: Localhost Proxy can loop the node's own connection
+[ "$(uci -q get passwall.@global[0].localhost_proxy)" = 0 ] || fail "router's own traffic through Passwall (Localhost Proxy)"
 wait_queue
 grep -q restart-end /tmp/order.log || fail "Passwall not restarted"
 grep -qx enable /tmp/passwall-init.log || fail "Passwall service not enabled"
@@ -348,7 +349,7 @@ check_wrapped() {
 	ubus call luci.wgpasswall get '{"id":"wgc_civpn"}' | jq -e '.conf | contains("MTU") | not' >/dev/null || fail "editor shows lowered MTU"
 	[ "$(uci -q get network.wgpasswall_rule_vpn_wgvpn.in)" = wgvpn ] || fail "VPN network not routed into the tunnel"
 	uci -q get network.wgpasswall_rule_vpn_loopback >/dev/null && fail "router traffic routed into the wrapped tunnel"
-	[ "$(uci -q get passwall.@global[0].localhost_proxy)" = 1 ] || fail "router's own traffic (and the relay) not through Passwall"
+	[ "$(uci -q get passwall.@global[0].localhost_proxy)" = 0 ] || fail "router's own traffic through Passwall (Localhost Proxy)"
 	[ "$(uci -q get passwall.@global[0].enabled)" = 1 ] || fail "passwall not enabled"
 	[ "$(uci -q get passwall.@global[0].client_proxy)" = 0 ] || fail "Client Proxy on"
 	[ "$(uci -q get firewall.wgpasswall_killswitch.enabled)" = 1 ] || fail "kill switch not active"
@@ -407,7 +408,8 @@ ubus call luci.wgpasswall connect '{"id":"wgc_civpn"}' >/dev/null
 ubus call luci.wgpasswall set_options '{"via_passwall":false}' >/dev/null
 ubus call luci.wgpasswall set_ports '{"ports":{"lan2":"lan"}}' >/dev/null
 wait_queue
-[ "$(grep -c restart-begin /tmp/order.log)" -ge 3 ] || { cat /tmp/order.log; fail "Passwall not restarted for each change"; }
+# needed, then no longer needed (connecting changes nothing of Passwall's)
+[ "$(grep -c restart-begin /tmp/order.log)" -ge 2 ] || { cat /tmp/order.log; fail "Passwall not restarted for each change"; }
 awk '/restart-begin/ { if (busy) { print "restarts overlap at line " NR; bad = 1 } busy = 1 }
      /restart-end/ { busy = 0 }
      /firewall-/ { if (busy) { print "firewall reload during a Passwall restart at line " NR; bad = 1 } }

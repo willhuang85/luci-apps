@@ -325,7 +325,7 @@ return view.extend({
 	handleViaPasswall(ev) {
 		const on = ev.target.checked;
 		const msg = on
-			? _('Carry the VPN through Passwall?\n\nWireGuard then reaches your VPN server through the node selected in Passwall (via a small relay on the router, with the tunnel MTU at 1280), which hides from your internet provider that you use a VPN. Passwall runs while the VPN is connected, and the router\'s own traffic goes through Passwall instead of the VPN.')
+			? _('Carry the VPN through Passwall?\n\nWireGuard then reaches your VPN server through the node selected in Passwall (via a small relay on the router, with the tunnel MTU at 1280), which hides from your internet provider that you use a VPN. Passwall runs while the VPN is connected, and the router\'s own traffic goes out directly instead of through the VPN.')
 			: _('Connect the VPN directly again?\n\nWireGuard then reaches your VPN server directly, and the router\'s own traffic goes through the VPN while it is connected.');
 
 		if (!confirm(msg)) {
