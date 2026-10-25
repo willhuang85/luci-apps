@@ -46,6 +46,8 @@ const FWD_SID = 'wgpasswall_fwd';
 const KS_SID = 'wgpasswall_killswitch';
 const MARK_SID = 'wgpasswall_devices';
 const ACL_SID = 'wgpasswall_vpn_devices';
+// access control rules for the networks Passwall proxies (pw_sync_acl)
+const LAN_ACL_PREFIX = 'wgpasswall_lan_';
 // DNS of the chosen devices: an nftables table of its own, loaded by fw4
 // through an include, ahead of Passwall's DNS redirect
 const DNS_SID = 'wgpasswall_devices_dns';
@@ -891,38 +893,87 @@ function pw_restore_baseline(uci, g, fw) {
 		uci.set('passwall', fw, 'udp_proxy_drop_ports', drop);
 }
 
-// Passwall must not proxy the devices that use the VPN while it proxies the
-// others in "VPN through Passwall" mode: an access control rule ("No Proxy")
-// for their MAC addresses, ahead of any other rule. It is removed in all
-// other cases.
+// The networks Passwall proxies, as access control rules (Client Proxy is
+// off): the LAN zone's networks, so other zones such as a guest network go
+// out directly. In Passwall only mode, and in "VPN through Passwall" mode
+// with only chosen devices on the VPN (the others go through Passwall);
+// with all devices on the VPN, LAN devices are routed into the VPN instead.
+function pw_proxied_networks(uci) {
+	const mode = get_mode(uci);
+
+	return (mode == 'passwall' || (mode == 'vpn_passwall' && devices_only(uci)))
+		? lan_networks(uci, settings(uci).lan_zone) : [];
+}
+
+function pw_lan_acl_sid(net) {
+	return LAN_ACL_PREFIX + replace(net, /[^A-Za-z0-9_]/g, '_');
+}
+
+/*
+ * The app's access control rules in Passwall, for the current mode:
+ *  - ACL_SID ("No Proxy") for the devices that use the VPN in "VPN through
+ *    Passwall" mode, ahead of every other rule
+ *  - a rule per proxied network (pw_proxied_networks) with the global node,
+ *    after every other rule, where Client Proxy would apply
+ * Rules not needed are removed; the user's own rules are left alone.
+ */
 function pw_sync_acl(uci) {
 	const devices = settings(uci).devices;
+	const vpn_devices = get_mode(uci) == 'vpn_passwall' && devices_only(uci);
+	const nets = pw_proxied_networks(uci);
+	let wanted = {}, ours = [], count = 0;
 
-	if (get_mode(uci) != 'vpn_passwall' || !devices_only(uci)) {
-		if (uci.get('passwall', ACL_SID) != null)
-			uci.delete('passwall', ACL_SID);
+	if (vpn_devices)
+		wanted[ACL_SID] = true;
 
-		return;
+	for (let net in nets)
+		wanted[pw_lan_acl_sid(net)] = true;
+
+	uci.foreach('passwall', null, (s) => {
+		count++;
+
+		if (s['.name'] == ACL_SID || index(s['.name'], LAN_ACL_PREFIX) == 0)
+			push(ours, s['.name']);
+	});
+
+	for (let sid in ours)
+		if (!wanted[sid])
+			uci.delete('passwall', sid);
+
+	if (vpn_devices) {
+		uci.set('passwall', ACL_SID, 'acl_rule');
+		uci.set('passwall', ACL_SID, 'enabled', '1');
+		uci.set('passwall', ACL_SID, 'remarks', 'WireGuard + Passwall: devices that use the VPN');
+		// one space separated option, as Passwall's page stores it: Passwall
+		// reads its rules with eval and a uci list breaks that
+		uci.set('passwall', ACL_SID, 'sources', join(' ', devices));
+		uci.set('passwall', ACL_SID, 'mode', '0');
+		// what "No Proxy" means; Passwall before 26.8.10 has no "mode" option
+		// and only understands this
+		uci.set('passwall', ACL_SID, 'tcp_no_redir_ports', '1:65535');
+		uci.set('passwall', ACL_SID, 'udp_no_redir_ports', '1:65535');
+		uci.reorder('passwall', ACL_SID, 0);
 	}
 
-	uci.set('passwall', ACL_SID, 'acl_rule');
-	uci.set('passwall', ACL_SID, 'enabled', '1');
-	uci.set('passwall', ACL_SID, 'remarks', 'WireGuard + Passwall: devices that use the VPN');
-	// one space separated option, as Passwall's page stores it: Passwall
-	// reads its rules with eval and a uci list breaks that
-	uci.set('passwall', ACL_SID, 'sources', join(' ', devices));
-	uci.set('passwall', ACL_SID, 'mode', '0');
-	// what "No Proxy" means; Passwall before 26.8.10 has no "mode" option
-	// and only understands this
-	uci.set('passwall', ACL_SID, 'tcp_no_redir_ports', '1:65535');
-	uci.set('passwall', ACL_SID, 'udp_no_redir_ports', '1:65535');
-	uci.reorder('passwall', ACL_SID, 0);
+	for (let net in nets) {
+		const sid = pw_lan_acl_sid(net);
+
+		uci.set('passwall', sid, 'acl_rule');
+		uci.set('passwall', sid, 'enabled', '1');
+		uci.set('passwall', sid, 'remarks', `WireGuard + Passwall: devices on ${net}`);
+		uci.set('passwall', sid, 'interface', net);
+		// the global node and settings, run by the global instance; "mode"
+		// 1 is Proxy (26.8.10+; older versions proxy by default)
+		uci.set('passwall', sid, 'use_global_config', '1');
+		uci.set('passwall', sid, 'mode', '1');
+		uci.reorder('passwall', sid, count + 1);
+	}
 
 	// access control rules only work with Passwall's access control switched
 	// on (its original value is restored with the other PW_MANAGED options)
 	const g = first_section(uci, 'passwall', 'global');
 
-	if (g)
+	if (g && length(keys(wanted)))
 		uci.set('passwall', g, 'acl_enable', '1');
 }
 
@@ -972,15 +1023,14 @@ function pw_apply_mode(uci, mode, node) {
 		// Passwall too; it stays outside the WireGuard tunnel in these modes
 		uci.set('passwall', g, 'localhost_proxy', '1');
 
-		if (mode == 'vpn_passwall' && !devices_only(uci)) {
-			// LAN traffic goes into WireGuard, not straight to the proxy;
-			// WireGuard reaches the proxy through its SOCKS port (relay)
-			uci.set('passwall', g, 'client_proxy', '0');
-		}
-		else {
-			// all devices, or in "VPN through Passwall" mode all but the
-			// chosen ones (see pw_sync_acl)
-			uci.set('passwall', g, 'client_proxy', '1');		// proxy the LAN devices
+		// Client Proxy would proxy every network, a guest network too:
+		// the LAN devices Passwall proxies get access control rules instead
+		// (pw_sync_acl), with these default proxy modes. With all devices
+		// on the VPN, LAN traffic goes into WireGuard, which reaches the
+		// proxy through its SOCKS port (relay).
+		uci.set('passwall', g, 'client_proxy', '0');
+
+		if (mode == 'passwall' || devices_only(uci)) {
 			uci.set('passwall', g, 'tcp_proxy_mode', 'proxy');
 			uci.set('passwall', g, 'udp_proxy_mode', 'proxy');
 		}
@@ -1066,24 +1116,43 @@ function drift(uci) {
 		if (mode == 'off')
 			ok = get('enabled') != '1';
 		else {
-			ok = get('enabled') == '1' && (!node || get('node') == node) && get('localhost_proxy') == '1';
+			ok = get('enabled') == '1' && (!node || get('node') == node) && get('localhost_proxy') == '1' &&
+				get('client_proxy') == '0';
 
-			if (mode == 'vpn_passwall' && !devices)
-				ok = ok && get('client_proxy') == '0';
-			else
-				ok = ok && get('client_proxy') == '1' && get('tcp_proxy_mode') == 'proxy' && get('udp_proxy_mode') == 'proxy';
+			if (mode == 'passwall' || devices)
+				ok = ok && get('tcp_proxy_mode') == 'proxy' && get('udp_proxy_mode') == 'proxy';
 		}
 
 		if (!ok)
 			push(issues, 'pw_settings');
 
+		// the app's access control rules (pw_sync_acl)
 		const acl = uci.get_all('passwall', ACL_SID);
 		const want_acl = mode == 'vpn_passwall' && devices;
+		const nets = (mode == 'off') ? null : pw_proxied_networks(uci);
+		let acl_ok = want_acl
+			? (acl && acl['.type'] == 'acl_rule' && acl.enabled == '1' && acl.mode == '0' &&
+			   join(' ', sort(map(split(join(' ', as_list(acl.sources)), /\s+/), (v) => uc(v)))) == join(' ', sort([ ...settings(uci).devices ])))
+			: (acl == null || mode == 'off');
 
-		if (want_acl
-			? (!acl || acl['.type'] != 'acl_rule' || acl.enabled != '1' || acl.mode != '0' || get('acl_enable') != '1' ||
-			   join(' ', sort(map(split(join(' ', as_list(acl.sources)), /\s+/), (v) => uc(v)))) != join(' ', sort([ ...settings(uci).devices ])))
-			: (acl != null && mode != 'off'))
+		if (nets) {
+			for (let net in nets) {
+				const r = uci.get_all('passwall', pw_lan_acl_sid(net));
+
+				if (!r || r['.type'] != 'acl_rule' || r.enabled != '1' || r.interface != net || r.use_global_config != '1' || r.mode != '1')
+					acl_ok = false;
+			}
+
+			uci.foreach('passwall', 'acl_rule', (r) => {
+				if (index(r['.name'], LAN_ACL_PREFIX) == 0 && !(substr(r['.name'], length(LAN_ACL_PREFIX)) in map(nets, (n) => replace(n, /[^A-Za-z0-9_]/g, '_'))))
+					acl_ok = false;
+			});
+
+			if ((want_acl || length(nets)) && get('acl_enable') != '1')
+				acl_ok = false;
+		}
+
+		if (!acl_ok)
 			push(issues, 'pw_acl');
 	}
 

@@ -76,7 +76,7 @@ const methods = {
 		const s = section(pkg, sid);
 
 		if (s)
-			s['.index'] = idx - 1000000;
+			s['.index'] = (idx == 0) ? -1000000 : 1000000 + idx;
 
 		return !!s;
 	},

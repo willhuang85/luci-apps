@@ -74,10 +74,10 @@ define Package/luci-app-wireguard-passwall/prerm
 	uci -q commit wgpasswall
 	# the Passwall rule that keeps it away from the VPN devices (gone after
 	# the switch to VPN mode, unless that failed)
-	if uci -q get passwall.wgpasswall_vpn_devices >/dev/null; then
-		uci -q delete passwall.wgpasswall_vpn_devices
-		uci -q commit passwall
-	fi
+	for s in wgpasswall_vpn_devices $$(uci -q show passwall | sed -n "s/^passwall\.\(wgpasswall_lan_[A-Za-z0-9_]*\)=acl_rule$$/\1/p"); do
+		uci -q delete passwall.$$s
+	done
+	uci -q commit passwall
 	# the VPN devices' DNS rules: an nftables table of their own
 	nft delete table inet wgpasswall_dns 2>/dev/null
 	rm -f /etc/wgpasswall/devices-dns.nft
