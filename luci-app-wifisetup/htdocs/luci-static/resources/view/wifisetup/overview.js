@@ -721,7 +721,9 @@ return view.extend({
 	renderMain() {
 		return E('div', { 'class': 'tw-card' }, [
 			E('p', { 'class': 'tw-h' }, '📶 ' + _('Wi-Fi network')),
-			E('div', { 'class': 'tw-sub' }, _('Name and password of your Wi-Fi, used on all bands.')),
+			E('div', { 'class': 'tw-sub' }, this.cfg.networks?.wgpasswall
+				? _('Name and password of your Wi-Fi, used on all bands. It is always on your home network (regular internet connection); for a Wi-Fi through the VPN or Passwall, add one under "More Wi-Fi networks".')
+				: _('Name and password of your Wi-Fi, used on all bands.')),
 			this.renderNetworkForm('main')
 		]);
 	},
