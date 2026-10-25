@@ -6,7 +6,8 @@
 global.__uci_store = {
 	network: {
 		lan: { '.type': 'interface', '.name': 'lan', '.index': 1000, proto: 'static', device: 'br-lan' },
-		wan: { '.type': 'interface', '.name': 'wan', '.index': 1001, proto: 'dhcp' }
+		wan: { '.type': 'interface', '.name': 'wan', '.index': 1001, proto: 'dhcp' },
+		loopback: { '.type': 'interface', '.name': 'loopback', '.index': 999, proto: 'static', device: 'lo' }
 	},
 	firewall: {
 		z1: { '.type': 'zone', '.name': 'z1', '.index': 1002, name: 'lan' },
@@ -56,9 +57,12 @@ check('ip4table', st.network.wgc_myhomevpn?.ip4table == '51820' && st.network.wg
 check('wg fwmark', st.network.wgc_myhomevpn?.fwmark == '0xca6c');
 check('rule main', st.network.wgpasswall_rule_main?.['.type'] == 'rule' && st.network.wgpasswall_rule_main?.lookup == 'main' &&
 	st.network.wgpasswall_rule_main?.suppress_prefixlength == '0' && st.network.wgpasswall_rule_main?.priority == '30100');
-check('rule vpn', st.network.wgpasswall_rule_vpn?.mark == '0x0/0xff' && st.network.wgpasswall_rule_vpn?.lookup == '51820' &&
-	st.network.wgpasswall_rule_vpn?.priority == '30110');
-check('rule6', st.network.wgpasswall_rule6_vpn?.['.type'] == 'rule6' && st.network.wgpasswall_rule6_main?.lookup == 'main');
+check('rule vpn: LAN', st.network.wgpasswall_rule_vpn_lan?.mark == '0x0/0xff' && st.network.wgpasswall_rule_vpn_lan?.lookup == '51820' &&
+	st.network.wgpasswall_rule_vpn_lan?.priority == '30110' && st.network.wgpasswall_rule_vpn_lan?.in == 'lan');
+check('rule vpn: router itself', st.network.wgpasswall_rule_vpn_loopback?.mark == '0x0/0xff' && st.network.wgpasswall_rule_vpn_loopback?.in == 'loopback');
+check('rule vpn: not all traffic (guest network stays outside)', st.network.wgpasswall_rule_vpn == null);
+check('rule6', st.network.wgpasswall_rule6_vpn_lan?.['.type'] == 'rule6' && st.network.wgpasswall_rule6_vpn_loopback?.in == 'loopback' &&
+	st.network.wgpasswall_rule6_main?.lookup == 'main');
 check('rules after passwall', +st.network.wgpasswall_rule_main.priority > 999);
 check('label stored', st.wgpasswall.wgc_myhomevpn?.label == 'My Home VPN!');
 
@@ -94,8 +98,8 @@ check('passwall detected', call('status').proxy_apps[0] == 'Passwall');
 st.wgpasswall.settings.route_table = '254';
 st.wgpasswall.settings.bypass_mask = '0xff00';
 call('connect', { id: 'wgc_myhomevpn' });
-check('reserved table rejected', st.network.wgpasswall_rule_vpn.lookup == '51820');
-check('custom mask', st.network.wgpasswall_rule_vpn.mark == '0x0/0xff00');
+check('reserved table rejected', st.network.wgpasswall_rule_vpn_lan.lookup == '51820');
+check('custom mask', st.network.wgpasswall_rule_vpn_lan.mark == '0x0/0xff00' && st.network.wgpasswall_rule_vpn_loopback.mark == '0x0/0xff00');
 delete st.wgpasswall.settings.route_table;
 delete st.wgpasswall.settings.bypass_mask;
 
@@ -111,7 +115,7 @@ check('disconnect', st.network.wgc_myhomevpn.auto == '0');
 r = call('remove', { id: 'wgc_myhomevpn2' });
 check('removed', st.network.wgc_myhomevpn2 == null && st.wgpasswall.wgc_myhomevpn2 == null);
 check('zone updated', join(',', st.firewall.wgpasswall_zone.network) == 'wgc_myhomevpn');
-check('rules kept', st.network.wgpasswall_rule_vpn != null);
+check('rules kept', st.network.wgpasswall_rule_vpn_lan != null);
 check('remove bad id', call('remove', { id: 'lan' }).error != null);
 check('connect bad id', call('connect', { id: 'wan' }).error != null);
 check('save bad label', call('save', { label: '', conf: text }).error != null);
@@ -124,7 +128,8 @@ call('set_killswitch', { enabled: true });
 r = call('set_devices', { scope: 'devices', devices: [ 'aa:bb:cc:dd:ee:ff', 'AA:BB:CC:DD:EE:FF', '11:22:33:44:55:66' ] });
 check('devices: saved', r.result && join(',', st.wgpasswall.settings.vpn_device) == 'AA:BB:CC:DD:EE:FF,11:22:33:44:55:66');
 check('devices: rule by mark', st.network.wgpasswall_rule_vpn?.mark == '0x1000000/0x1000000' && st.network.wgpasswall_rule_vpn?.in == null &&
-	st.network.wgpasswall_rule6_vpn?.mark == '0x1000000/0x1000000');
+	st.network.wgpasswall_rule6_vpn?.mark == '0x1000000/0x1000000' && st.network.wgpasswall_rule_vpn_lan == null);
+check('devices: router itself still in the VPN', st.network.wgpasswall_rule_vpn_loopback?.in == 'loopback' && st.network.wgpasswall_rule_vpn_loopback?.mark == '0x0/0xff');
 check('devices: mark rule', st.firewall.wgpasswall_devices?.target == 'MARK' && st.firewall.wgpasswall_devices?.set_mark == '0x1000000/0x1000000' &&
 	st.firewall.wgpasswall_devices?.src == 'lan' && st.firewall.wgpasswall_devices?.dest == '*' && length(st.firewall.wgpasswall_devices?.src_mac) == 2 && st.firewall.wgpasswall_devices?.family == 'any');
 check('devices: kill switch per device', join(',', st.firewall.wgpasswall_killswitch.src_mac ?? []) == 'AA:BB:CC:DD:EE:FF,11:22:33:44:55:66');
@@ -154,7 +159,8 @@ call('set_devices', { scope: 'devices', devices: st.wgpasswall.settings.vpn_devi
 check('devices: custom mark', st.network.wgpasswall_rule_vpn.mark == '0x4000000/0x4000000' && st.firewall.wgpasswall_devices.set_mark == '0x4000000/0x4000000');
 delete st.wgpasswall.settings.device_mark;
 r = call('set_devices', { scope: 'all', devices: [ '11:22:33:44:55:66' ] });
-check('all: rule for all traffic', st.network.wgpasswall_rule_vpn.mark == '0x0/0xff');
+check('all: rules for the LAN and the router', st.network.wgpasswall_rule_vpn_lan.mark == '0x0/0xff' && st.network.wgpasswall_rule_vpn_loopback != null &&
+	st.network.wgpasswall_rule_vpn == null);
 check('all: mark rule removed', st.firewall.wgpasswall_devices == null && st.firewall.wgpasswall_killswitch.src_mac == null);
 check('all: dns still kept off the router resolver', st.network.wgc_myhomevpn.dns == null && join(',', st.wgpasswall.wgc_myhomevpn.dns) == '10.2.0.1');
 check('all: whole LAN gets the VPN DNS', index(dns_nft(), 'iifname { "br-lan" } meta l4proto { tcp, udp } meta nfproto ipv4 th dport 53 counter dnat ip to 10.2.0.1:53') >= 0);
@@ -173,8 +179,14 @@ call('set_mode', { mode: 'vpn', id: 'wgc_myhomevpn' });
 check('all: chosen devices kept', join(',', st.wgpasswall.settings.vpn_device) == '11:22:33:44:55:66' && call('status').scope == 'all');
 call('set_killswitch', { enabled: false });
 
+delete st.network.loopback;
+call('connect', { id: 'wgc_myhomevpn' });
+check('no loopback interface: one rule for all traffic', st.network.wgpasswall_rule_vpn?.mark == '0x0/0xff' && st.network.wgpasswall_rule_vpn?.in == null &&
+	st.network.wgpasswall_rule_vpn_lan == null);
+
 call('remove', { id: 'wgc_myhomevpn' });
-check('rules removed with last profile', st.network.wgpasswall_rule_main == null && st.network.wgpasswall_rule6_vpn == null);
+check('rules removed with last profile', st.network.wgpasswall_rule_main == null && st.network.wgpasswall_rule6_vpn_lan == null &&
+	st.network.wgpasswall_rule_vpn_loopback == null);
 
 delete st.firewall.z2;
 check('ks needs zones', call('set_killswitch', { enabled: true }).error != null && st.wgpasswall.settings.killswitch == '0');

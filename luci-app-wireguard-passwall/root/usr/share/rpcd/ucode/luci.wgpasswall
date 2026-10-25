@@ -448,17 +448,25 @@ function vpn_dns_nft(uci) {
 // Creates or removes the policy routing rules shared by all profiles and
 // makes sure every profile routes into the VPN table.
 //
-// Normally all unmarked traffic, the router's own included, uses the VPN.
-// While the tunnel is wrapped by Passwall only traffic coming in from the
-// LAN does: the proxy that carries the tunnel resolves its server name and
-// runs its DNS on the router, so routing the router's own traffic into the
-// tunnel would make the proxy wait for itself.
+// What goes into the VPN table:
+//  - the devices that use the VPN: everything coming in from the LAN zone's
+//    networks, or only the chosen devices (their traffic carries the
+//    device_mark bit, see MARK_SID). Other zones, such as a guest network,
+//    stay outside.
+//  - the router's own traffic (coming from "loopback"), except while the
+//    tunnel is wrapped by Passwall: the proxy that carries the tunnel
+//    resolves its server name and runs its DNS on the router, so routing the
+//    router's own traffic into the tunnel would make the proxy wait for
+//    itself. Passwall's Localhost Proxy carries it instead (pw_apply_mode).
+// Unmarked means no bit of bypass_mask set: proxy cores and WireGuard itself
+// mark their own packets and stay outside.
 function sync_routing(uci) {
 	const s = settings(uci);
 	const ids = profile_ids(uci);
 	const lan_only = pw_installed(uci) && pw_enabled(uci);
 	const by_mark = devices_only(uci);
-	let stale = [];
+	const unmarked = sprintf('0x0/0x%x', s.bypass_mask);
+	let stale = [], rules = [];
 
 	for (let t in keys(RULE_SIDS))
 		uci.foreach('network', t, (r) => {
@@ -469,6 +477,19 @@ function sync_routing(uci) {
 	for (let sid in stale)
 		uci.delete('network', sid);
 
+	if (by_mark)
+		push(rules, { mark: sprintf('0x%x/0x%x', s.device_mark, s.device_mark) });
+	else
+		for (let net in lan_networks(uci, s.lan_zone))
+			push(rules, { mark: unmarked, net });
+
+	if (!lan_only) {
+		if (uci.get('network', 'loopback') == 'interface')
+			push(rules, { mark: unmarked, net: 'loopback' });
+		else if (!by_mark)
+			rules = [ { mark: unmarked } ];		// no loopback interface: all traffic
+	}
+
 	if (length(ids)) {
 		for (let t, sids in RULE_SIDS) {
 			uci.set('network', sids[0], t);
@@ -476,18 +497,16 @@ function sync_routing(uci) {
 			uci.set('network', sids[0], 'suppress_prefixlength', '0');
 			uci.set('network', sids[0], 'priority', `${s.rule_priority}`);
 
-			for (let net in ((lan_only && !by_mark) ? lan_networks(uci, s.lan_zone) : [ null ])) {
-				const sid = net ? `${sids[1]}_${replace(net, /[^A-Za-z0-9_]/g, '_')}` : sids[1];
+			for (let r in rules) {
+				const sid = r.net ? `${sids[1]}_${replace(r.net, /[^A-Za-z0-9_]/g, '_')}` : sids[1];
 
 				uci.set('network', sid, t);
-				uci.set('network', sid, 'mark', by_mark
-					? sprintf('0x%x/0x%x', s.device_mark, s.device_mark)	// marked by MARK_SID
-					: sprintf('0x0/0x%x', s.bypass_mask));
+				uci.set('network', sid, 'mark', r.mark);
 				uci.set('network', sid, 'lookup', `${s.route_table}`);
 				uci.set('network', sid, 'priority', `${s.rule_priority + 10}`);
 
-				if (net)
-					uci.set('network', sid, 'in', net);
+				if (r.net)
+					uci.set('network', sid, 'in', r.net);
 			}
 		}
 	}
@@ -676,7 +695,7 @@ const PW_MTU = 1280;
 const UNSET = '__unset__';
 // Passwall options the modes change; their original values are saved once
 // when leaving VPN mode and restored when coming back to it
-const PW_MANAGED = [ 'enabled', 'node', 'client_proxy', 'tcp_proxy_mode', 'udp_proxy_mode', 'acl_enable' ];
+const PW_MANAGED = [ 'enabled', 'node', 'client_proxy', 'tcp_proxy_mode', 'udp_proxy_mode', 'acl_enable', 'localhost_proxy' ];
 
 function first_section(uci, config, stype) {
 	let sid = null;
@@ -938,6 +957,9 @@ function pw_apply_mode(uci, mode, node) {
 
 		uci.set('passwall', g, 'enabled', '1');
 		uci.set('passwall', g, 'node', node);
+		// the router's own traffic (package updates, ...) goes through
+		// Passwall too; it stays outside the WireGuard tunnel in these modes
+		uci.set('passwall', g, 'localhost_proxy', '1');
 
 		if (mode == 'vpn_passwall' && !devices_only(uci)) {
 			// LAN traffic goes into WireGuard, not straight to the proxy;
@@ -1033,7 +1055,7 @@ function drift(uci) {
 		if (mode == 'off')
 			ok = get('enabled') != '1';
 		else {
-			ok = get('enabled') == '1' && (!node || get('node') == node);
+			ok = get('enabled') == '1' && (!node || get('node') == node) && get('localhost_proxy') == '1';
 
 			if (mode == 'vpn_passwall' && !devices)
 				ok = ok && get('client_proxy') == '0';

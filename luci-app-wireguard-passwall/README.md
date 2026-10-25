@@ -71,7 +71,8 @@ So while a profile is connected (VPN and VPN through Passwall modes), the DNS qu
 
 - **IPv6**: while a profile that sends all IPv4 through the VPN (`0.0.0.0/0`) but has no `::/0` is connected, IPv6 internet traffic of the devices that use the VPN is refused (firewall rule `wgpasswall_no_ipv6`), so it cannot go around the VPN; apps use IPv4 instead. IPv6 inside your network keeps working.
 - **What does not use the VPN** for devices that do: addresses reachable without the internet (your LAN, and the network on the router's WAN side, e.g. the home router it is plugged into) and Tailscale addresses (`100.x`). If the VPN interface is down, traffic uses the normal connection unless the kill switch is on.
-- **Guest network** (e.g. from Wi-Fi Setup): it is a firewall zone of its own. In **VPN through Passwall** mode its devices do not use the VPN (handy for reaching local sites directly), in **VPN** mode they do; the kill switch does not cover them.
+- **Guest network** (e.g. from Wi-Fi Setup): it is a firewall zone of its own and never uses the VPN, in any mode (handy for reaching local sites directly); the kill switch does not cover it. "All devices" means the devices in the `lan` zone.
+- **The router's own traffic** (package updates, NTP, ...): through the VPN in **VPN** mode (with all or only chosen devices), through Passwall in the Passwall modes (the app turns on Passwall's *Localhost Proxy* there), direct when **Off**.
 - `PreUp`/`PostUp`/`Table` lines from wg-quick have no meaning on OpenWrt and are ignored (you'll see a note when importing).
 
 ## Using it together with Passwall / Xray
@@ -85,11 +86,11 @@ With Passwall (not Passwall 2) installed, the app shows a **Mode** picker and a 
 | Mode | WireGuard | Passwall |
 |---|---|---|
 | **VPN** | connected | exactly as you had it before you first picked a Passwall mode |
-| **VPN through Passwall** | connected, carried through Passwall | on with the chosen node, Client Proxy off |
-| **Passwall only** | disconnected | on with the chosen node, Client Proxy on, TCP/UDP default proxy mode Proxy |
+| **VPN through Passwall** | connected, carried through Passwall | on with the chosen node, Client Proxy off, Localhost Proxy on |
+| **Passwall only** | disconnected | on with the chosen node, Client Proxy on, Localhost Proxy on, TCP/UDP default proxy mode Proxy |
 | **Off** | disconnected | main switch off, everything else left as it is |
 
-How **VPN through Passwall** works: each tunnel's endpoint is pointed at a small relay on the router (`127.0.0.1:51821`, `51822`, …), which forwards WireGuard's packets through Passwall's node SOCKS port (`node_socks_port`, default 1070) to the real VPN server, so your ISP only sees the proxy connection. The real server stays in the profile (the editor and status show it) and comes back when you leave the mode. Only traffic from LAN devices goes into the tunnel; the router's own traffic, including Passwall's DNS and the proxy's lookup of its server name, stays outside it, otherwise the proxy carrying the tunnel would wait for the tunnel to resolve its own server. The tunnel MTU is lowered to 1280 for the proxy overhead. The node must support UDP.
+How **VPN through Passwall** works: each tunnel's endpoint is pointed at a small relay on the router (`127.0.0.1:51821`, `51822`, …), which forwards WireGuard's packets through Passwall's node SOCKS port (`node_socks_port`, default 1070) to the real VPN server, so your ISP only sees the proxy connection. The real server stays in the profile (the editor and status show it) and comes back when you leave the mode. Only traffic from LAN devices goes into the tunnel; the router's own traffic, including Passwall's DNS and the proxy's lookup of its server name, stays outside it, otherwise the proxy carrying the tunnel would wait for the tunnel to resolve its own server. It goes through Passwall instead (Localhost Proxy). The tunnel MTU is lowered to 1280 for the proxy overhead. The node must support UDP.
 
 Details:
 
@@ -99,7 +100,7 @@ Details:
 - Uninstalling the app switches back to **VPN** mode first, so Passwall is restored.
 - **Reapply settings** (bottom of the page) applies the current mode again: Passwall's settings for it, the device rule, routing and firewall rules, then reloads the firewall and restarts Passwall. Use it after changing things on Passwall's own page. The page also warns ("Settings out of step") when Passwall's settings no longer match the mode or the app's firewall rules are saved but not active. In **VPN** mode Passwall is yours and left alone.
 
-### Why not Passwall's "Localhost Proxy"?
+### Why not let Passwall's "Localhost Proxy" carry WireGuard?
 
 Letting Passwall intercept WireGuard's packets transparently (Localhost Proxy plus the server in the proxy list) looks like it should work, and the proxy log even shows the packets arriving, but it falls apart within seconds: the replies the proxy injects back to WireGuard create a new connection-tracking entry that looks like it was opened by the server, after which Passwall treats WireGuard's packets as replies and lets them out directly. The relay avoids interception altogether.
 
@@ -117,7 +118,9 @@ Each profile is a normal netifd WireGuard interface named `wgc_<name>` in `/etc/
 | `firewall.wgpasswall_devices_dns` | Includes `/etc/wgpasswall/devices-dns.nft`, table `inet wgpasswall_dns` sending the DNS of the devices that use the VPN to the VPN's DNS server (before Passwall's DNS redirect) |
 | `passwall.wgpasswall_vpn_devices` | Only chosen devices, VPN through Passwall: access control rule "No Proxy" for them, ahead of your own rules |
 | `network.wgpasswall_rule_main` / `wgpasswall_rule6_main` | `lookup main suppress_prefixlength 0` keeps LAN and other specific routes |
-| `network.wgpasswall_rule_vpn` / `wgpasswall_rule6_vpn` | Unmarked traffic → VPN table 51820 (limited to LAN traffic in VPN through Passwall mode; only traffic with the device mark if the VPN is limited to chosen devices) |
+| `network.wgpasswall_rule_vpn_<lan network>` / `wgpasswall_rule6_vpn_<lan network>` | Unmarked traffic from the `lan` zone's networks → VPN table 51820 |
+| `network.wgpasswall_rule_vpn_loopback` / `wgpasswall_rule6_vpn_loopback` | The router's own unmarked traffic → VPN table (not in VPN through Passwall mode) |
+| `network.wgpasswall_rule_vpn` / `wgpasswall_rule6_vpn` | Only chosen devices: traffic with the device mark → VPN table (replaces the `lan` rules) |
 | `wgpasswall.<iface>` | Display name of each profile |
 
 Full-tunnel `AllowedIPs` (`0.0.0.0/0`, `::/0`) are stored as two `/1` halves so the tunnel can never replace a default route; exports turn them back into `/0`.

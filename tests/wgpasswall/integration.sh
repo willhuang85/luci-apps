@@ -32,7 +32,7 @@ echo "== installing package files"
 install -D -m 0644 "$R/usr/share/rpcd/ucode/luci.wgpasswall" /usr/share/rpcd/ucode/luci.wgpasswall
 install -D -m 0644 "$R/usr/share/ucode/wgpasswall/conf.uc" /usr/share/ucode/wgpasswall/conf.uc
 install -D -m 0644 "$R/etc/config/wgpasswall" /etc/config/wgpasswall
-printf "config interface 'lan'\n\toption proto 'static'\n\toption device 'br-lan'\n\nconfig interface 'wan'\n\toption proto 'dhcp'\n" > /etc/config/network
+printf "config interface 'loopback'\n\toption device 'lo'\n\toption proto 'static'\n\toption ipaddr '127.0.0.1'\n\toption netmask '255.0.0.0'\n\nconfig interface 'lan'\n\toption proto 'static'\n\toption device 'br-lan'\n\nconfig interface 'wan'\n\toption proto 'dhcp'\n" > /etc/config/network
 printf "config zone\n\toption name 'lan'\n\nconfig zone\n\toption name 'wan'\n" > /etc/config/firewall
 mkdir -p /var/run
 
@@ -68,7 +68,8 @@ ubus call luci.wgpasswall parse "$(jq -n --arg c "$CONF" '{conf: $c}')" | jq -e 
 echo "== save"
 ubus call luci.wgpasswall save "$(jq -n --arg c "$CONF" '{label: "CI VPN", conf: $c}')" | jq -e '.id == "wgc_civpn"' >/dev/null || fail "save"
 [ "$(uci -q get network.wgc_civpn.proto)" = wireguard ] || fail "interface not written"
-[ "$(uci -q get network.wgpasswall_rule_vpn.lookup)" = 51820 ] || fail "routing rule not written"
+[ "$(uci -q get network.wgpasswall_rule_vpn_lan.lookup)" = 51820 ] || fail "routing rule for the LAN not written"
+[ "$(uci -q get network.wgpasswall_rule_vpn_loopback.in)" = loopback ] || fail "routing rule for the router's own traffic not written"
 [ "$(uci -q get firewall.wgpasswall_zone.name)" = wgpasswall ] || fail "firewall zone not written"
 
 echo "== get"
@@ -162,7 +163,7 @@ check_wrapped() {
 	[ "$(uci -q get passwall.@global[0].enabled)" = 1 ] || fail "passwall not enabled"
 	[ "$(uci -q get passwall.@global[0].node)" = hy2node ] || fail "node not set"
 	[ "$(uci -q get passwall.@global[0].client_proxy)" = 0 ] || fail "client proxy not off"
-	[ "$(uci -q get passwall.@global[0].localhost_proxy)" = 0 ] || fail "localhost proxy changed"
+	[ "$(uci -q get passwall.@global[0].localhost_proxy)" = 1 ] || fail "router's own traffic not through Passwall (Localhost Proxy)"
 	[ "$(uci -q get passwall.@global_forwarding[0].udp_proxy_drop_ports)" = 443,51820 ] || fail "drop ports changed"
 	cmp -s /etc/passwall/rules/proxy_ip "$WORK/proxy_ip.orig" || fail "proxy list modified"
 	cmp -s /etc/passwall/rules/direct_ip "$WORK/direct_ip.orig" || fail "direct list modified"
@@ -174,7 +175,8 @@ check_wrapped() {
 	[ "$(uci -q get network.wgc_civpn.mtu)" = 1280 ] || fail "MTU not lowered"
 	[ "$(uci -q get network.wgc_civpn.auto)" = 1 ] || fail "profile not connected"
 	[ "$(uci -q get network.wgpasswall_rule_vpn_lan.in)" = lan ] || fail "VPN rule not limited to LAN traffic"
-	uci -q get network.wgpasswall_rule_vpn >/dev/null && fail "router traffic still routed into the wrapped tunnel"
+	uci -q get network.wgpasswall_rule_vpn >/dev/null && fail "all traffic routed into the wrapped tunnel"
+	uci -q get network.wgpasswall_rule_vpn_loopback >/dev/null && fail "router traffic routed into the wrapped tunnel"
 	[ "$(uci -q get network.wgpasswall_rule6_vpn_lan.in)" = lan ] || fail "IPv6 VPN rule not limited to LAN traffic"
 	[ "$(uci -q get firewall.wgpasswall_killswitch.enabled)" = 1 ] || fail "kill switch not active"
 	ubus call luci.wgpasswall get '{"id":"wgc_civpn"}' | jq -e '.conf | contains("MTU") | not' >/dev/null || fail "editor shows lowered MTU"
@@ -193,7 +195,7 @@ ubus call luci.wgpasswall set_mode '{"mode":"passwall"}' | jq -e '.mode == "pass
 [ "$(uci -q get passwall.@global[0].client_proxy)" = 1 ] || fail "client proxy not on"
 [ "$(uci -q get passwall.@global[0].tcp_proxy_mode)" = proxy ] || fail "tcp mode not proxy"
 [ "$(uci -q get passwall.@global[0].udp_proxy_mode)" = proxy ] || fail "udp mode not proxy"
-[ "$(uci -q get passwall.@global[0].localhost_proxy)" = 0 ] || fail "localhost proxy not back to original"
+[ "$(uci -q get passwall.@global[0].localhost_proxy)" = 1 ] || fail "router's own traffic not through Passwall in Passwall-only mode"
 [ "$(uci -q get passwall.@global_forwarding[0].udp_proxy_drop_ports)" = 443,51820 ] || fail "drop ports not back to original"
 cmp -s /etc/passwall/rules/proxy_ip "$WORK/proxy_ip.orig" || fail "proxy list still has VPN servers"
 cmp -s /etc/passwall/rules/direct_ip "$WORK/direct_ip.orig" || fail "direct list still modified"
@@ -203,7 +205,7 @@ uci show network | grep -q "wgpasswall_orig_host" && fail "relay endpoint left i
 uci -q get network.wgc_civpn.mtu >/dev/null && fail "MTU not restored"
 [ "$(uci -q get firewall.wgpasswall_killswitch.enabled)" = 0 ] || fail "kill switch not paused"
 [ "$(uci -q get firewall.wgpasswall_no_ipv6.enabled)" = 0 ] || fail "IPv6 blocked in Passwall-only mode"
-[ "$(uci -q get network.wgpasswall_rule_vpn.lookup)" = 51820 ] || fail "normal VPN rule missing"
+[ "$(uci -q get network.wgpasswall_rule_vpn_lan.lookup)" = 51820 ] || fail "normal VPN rule missing"
 ubus call luci.wgpasswall connect '{"id":"wgc_civpn"}' | jq -e '.error' >/dev/null || fail "connect allowed in Passwall-only mode"
 ubus call luci.wgpasswall status | jq -e '.mode == "passwall" and .killswitch_paused' >/dev/null || fail "status passwall mode"
 
@@ -214,7 +216,7 @@ ubus call luci.wgpasswall set_mode '{"mode":"off"}' | jq -e '.mode == "off"' >/d
 [ "$(uci -q get passwall.@global[0].tcp_proxy_mode)" = proxy ] || fail "off mode changed the proxy mode"
 [ "$(uci -q get network.wgc_civpn.auto)" = 0 ] || fail "profile not disconnected in off mode"
 [ "$(uci -q get firewall.wgpasswall_killswitch.enabled)" = 0 ] || fail "kill switch not paused in off mode"
-[ "$(uci -q get network.wgpasswall_rule_vpn.lookup)" = 51820 ] || fail "normal VPN rule missing in off mode"
+[ "$(uci -q get network.wgpasswall_rule_vpn_lan.lookup)" = 51820 ] || fail "normal VPN rule missing in off mode"
 ubus call luci.wgpasswall connect '{"id":"wgc_civpn"}' | jq -e '.error' >/dev/null || fail "connect allowed in off mode"
 ubus call luci.wgpasswall status | jq -e '.mode == "off" and .killswitch_paused' >/dev/null || fail "status off mode"
 [ "$(uci -q get passwall.@global[0].node)" = hy2node ] || fail "picked node not kept selected in off mode"
@@ -312,12 +314,12 @@ uci -q get network.wgc_civpn.mtu >/dev/null && fail "MTU not restored"
 [ "$(uci -q get network.@wireguard_wgc_civpn[0].endpoint_host)" = 1.2.3.4 ] || fail "endpoint not restored in VPN mode"
 [ "$(uci -q get network.@wireguard_wgc_civpn[0].endpoint_port)" = 51820 ] || fail "endpoint port not restored"
 uci show network | grep -q "wgpasswall_orig_host" && fail "relay options left behind"
-[ "$(uci -q get network.wgpasswall_rule_vpn.lookup)" = 51820 ] || fail "VPN rule for all traffic not restored"
-uci -q get network.wgpasswall_rule_vpn.in >/dev/null && fail "VPN rule still limited to LAN"
 [ "$(uci -q get network.wgpasswall_rule_vpn.mark)" = 0x1000000/0x1000000 ] || fail "VPN mode does not keep the chosen devices"
+[ "$(uci -q get network.wgpasswall_rule_vpn_loopback.in)" = loopback ] || fail "router's own traffic not in the VPN with chosen devices"
 ubus call luci.wgpasswall set_devices '{"scope":"all","devices":[]}' >/dev/null || fail "set_devices all in VPN mode"
-[ "$(uci -q get network.wgpasswall_rule_vpn.mark)" = 0x0/0xff ] || fail "VPN rule for all traffic not restored"
-uci -q get network.wgpasswall_rule_vpn_lan >/dev/null && fail "LAN-only VPN rule left behind"
+[ "$(uci -q get network.wgpasswall_rule_vpn_lan.mark)" = 0x0/0xff ] || fail "VPN rule for the LAN not restored"
+[ "$(uci -q get network.wgpasswall_rule_vpn_loopback.in)" = loopback ] || fail "VPN rule for the router's own traffic not restored"
+uci -q get network.wgpasswall_rule_vpn >/dev/null && fail "device rule left behind"
 [ "$(uci -q get firewall.wgpasswall_killswitch.enabled)" = 1 ] || fail "kill switch not resumed"
 # Passwall commands run in the background, queued behind earlier restarts
 for i in $(seq 1 30); do grep -qx disable /tmp/passwall-init.log && break; sleep 0.5; done
