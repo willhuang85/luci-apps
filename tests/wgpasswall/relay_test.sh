@@ -52,7 +52,7 @@ echo 1 > "$T/generation"
 start_stub
 WGPASSWALL_RELAY_CONFIG="$T/relay.json" WGPASSWALL_RELAY_STATUS="$T/status.json" \
 	WGPASSWALL_RELAY_WG_DUMP="$T/wg.dump" WGPASSWALL_RELAY_CHECK_MS=500 WGPASSWALL_RELAY_GRACE=2 \
-	WGPASSWALL_RELAY_HANDSHAKE_MAX=5 WGPASSWALL_RELAY_RECENT_TX=5 \
+	WGPASSWALL_RELAY_HANDSHAKE_MAX=5 WGPASSWALL_RELAY_RECENT_TX=2 WGPASSWALL_RELAY_SENDING_MIN=4 \
 	ucode "$SRC/luci-app-wireguard-passwall/root/usr/libexec/wgpasswall-relay" > "$T/relay.log" 2>&1 &
 RELAY=$!
 sleep 1
@@ -73,9 +73,18 @@ sleep 4
 kill -0 $RELAY || fail "relay died"
 
 echo "== healthy tunnel is left alone"
-handshake "$(date +%s)"
-for i in 1 2 3 4; do ping_relay $L1 busy >/dev/null; sleep 1; done
+for i in 1 2 3 4; do handshake "$(date +%s)"; ping_relay $L1 busy >/dev/null; sleep 1; done
 ! grep -q '"resets": [1-9]' "$T/status.json" || fail "relay reconnected a working tunnel"
+
+echo "== traffic resumes after an idle spell: WireGuard gets time to handshake"
+sleep 3				# idle: nothing sent
+handshake $(( $(date +%s) - 100 ))	# so the last handshake is old by now
+sleep 1
+for i in 1 2; do [ "$(ping_relay $L1 resume)" = "pong:resume" ] || fail "working tunnel lost after idle"; sleep 0.5; done
+for i in 1 2 3 4 5 6; do		# WireGuard handshakes again and keeps it fresh
+	handshake "$(date +%s)"; ping_relay $L1 busy >/dev/null; sleep 1
+done
+! grep -q '"resets": [1-9]' "$T/status.json" || fail "relay reconnected right after an idle spell"
 
 echo "== proxy's upstream dies but the association stays open"
 echo 2 > "$T/generation"

@@ -24,11 +24,14 @@
 // Watchdog: the association to the local SOCKS port can stay open while the
 // proxy's own connection to its server is dead (seen with Xray: it keeps the
 // UDP session of a sender, kept busy by WireGuard's keepalives, on the dead
-// upstream). So when WireGuard keeps sending through a relay but has not
-// completed a handshake for HANDSHAKE_MAX seconds, the relay drops the
-// association and opens a new one from a new local port, so the proxy builds
-// a fresh session. WireGuard renews its handshake every 2 minutes while
-// traffic flows; an idle tunnel sends nothing and is left alone. For tests,
+// upstream). So when WireGuard has been sending through a relay for
+// SENDING_MIN seconds but has not completed a handshake for HANDSHAKE_MAX
+// seconds, the relay drops the association and opens a new one from a new
+// local port, so the proxy builds a fresh session. WireGuard renews its
+// handshake every 2 minutes while traffic flows (keepalives included) and
+// retries every 5 seconds when it gets no answer; SENDING_MIN gives it time
+// for that after an idle spell, when the last handshake is old anyway. An
+// idle tunnel sends nothing and is left alone. For tests,
 // WGPASSWALL_RELAY_WG_DUMP can name a file to read instead of `wg show all
 // dump`, and the WGPASSWALL_RELAY_* timings below can be shortened.
 
@@ -45,6 +48,7 @@ const CHECK_MS = +(getenv('WGPASSWALL_RELAY_CHECK_MS') ?? 10000);
 const GRACE = +(getenv('WGPASSWALL_RELAY_GRACE') ?? 30);		// s after (re)connecting
 const HANDSHAKE_MAX = +(getenv('WGPASSWALL_RELAY_HANDSHAKE_MAX') ?? 180);
 const RECENT_TX = +(getenv('WGPASSWALL_RELAY_RECENT_TX') ?? 15);	// s
+const SENDING_MIN = +(getenv('WGPASSWALL_RELAY_SENDING_MIN') ?? 20);	// s
 
 function load_config() {
 	if (getenv('WGPASSWALL_RELAY_CONFIG'))
@@ -283,8 +287,14 @@ for (let c in cfg.relays) {
 		r.client = { address: from.address, port: from.port };
 
 		if (r.up && r.out.send(r.header + d, 0, r.relay) != null) {
+			const now = time();
+
+			// start of the current stretch of sending
+			if (!r.last_tx || now - r.last_tx > RECENT_TX)
+				r.sending_since = now;
+
 			r.tx += length(d);
-			r.last_tx = time();
+			r.last_tx = now;
 		}
 	}, uloop.ULOOP_READ);
 
@@ -322,7 +332,8 @@ function watchdog() {
 	let hs = null;
 
 	for (let r in relays) {
-		if (!r.up || now - r.since < GRACE || !r.last_tx || now - r.last_tx > RECENT_TX)
+		if (!r.up || now - r.since < GRACE || !r.last_tx || now - r.last_tx > RECENT_TX ||
+		    now - r.sending_since < SENDING_MIN)
 			continue;
 
 		hs ??= handshakes();
