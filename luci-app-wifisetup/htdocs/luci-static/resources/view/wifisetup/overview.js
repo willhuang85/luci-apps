@@ -47,7 +47,7 @@ const DAYS = [
 const APPLY_WAIT = 6000;
 
 const CSS = `
-.tw .tw-check > input[type="checkbox"] { position: static; top: auto; right: auto; margin: 0; flex: none; }
+.tw .tw-check > input[type="checkbox"] { position: relative; top: 0; right: 0; margin: 0; flex: none; }
 /* Argon: the theme's own card surface, corners and shadow (light and dark) */
 .tw.argon .tw-card { background: var(--surface-color, transparent); border-color: transparent; border-radius: var(--radius-card, 12px);
 	box-shadow: var(--section-shadow, none); }

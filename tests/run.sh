@@ -34,6 +34,15 @@ if grep -nE "system\(.*/etc/init\.d/(firewall|passwall) (reload|restart|start|st
 fi
 echo ok
 
+echo "== checkboxes keep the theme's own drawing"
+# Bootstrap draws checkboxes with pseudo elements positioned against the
+# input; position: static moves them away and the checkbox disappears
+if grep -nE 'checkbox"\][^}]*position: *static' luci-app-*/htdocs/luci-static/resources/view/*/*.js; then
+	echo "FAIL: do not make checkboxes position: static"
+	exit 1
+fi
+echo ok
+
 echo "== schedule"
 "$UCODE" ${UCODE_DIR:+-L "$UCODE_DIR/*.so"} -L "$SRC" tests/schedule_test.uc
 echo "== rpcd backend"
