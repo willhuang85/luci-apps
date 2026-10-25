@@ -27,7 +27,9 @@
 // the router's own traffic unless the tunnel goes through Passwall, is sent
 // to the VPN table when it carries no mark bit of bypass_mask (proxy cores
 // such as Xray mark their own sockets with 255, WireGuard its packets with
-// fwmark 0xca6c, so those leave via the WAN).
+// fwmark 0xcaff, so those leave via the WAN). WireGuard's mark ends in 0xff
+// as Passwall leaves such packets alone: with Passwall's Localhost Proxy on,
+// it would otherwise take WireGuard's own packets to the VPN server.
 //
 // "via_passwall" points each tunnel's endpoint at a local relay
 // (/usr/libexec/wgpasswall-relay) that forwards WireGuard's packets through
@@ -154,7 +156,7 @@ function settings(uci) {
 		route_table: table,
 		rule_priority: opt_uint(uci, 'rule_priority', 30100, 1000, 32000),
 		bypass_mask: opt_uint(uci, 'bypass_mask', 0xff, 1, 0xffffffff),
-		wg_fwmark: opt_uint(uci, 'wg_fwmark', 0xca6c, 1, 0xffffffff)
+		wg_fwmark: opt_uint(uci, 'wg_fwmark', 0xcaff, 1, 0xffffffff)
 	};
 }
 
@@ -833,7 +835,7 @@ const RELAY_STATUS = '/var/run/wgpasswall/relay-status.json';
 const PW_MTU = 1280;
 const UNSET = '__unset__';
 // Passwall options the app controls while Passwall is needed
-const PW_MANAGED = [ 'enabled', 'client_proxy', 'tcp_proxy_mode', 'udp_proxy_mode', 'acl_enable', 'localhost_proxy' ];
+const PW_MANAGED = [ 'enabled', 'client_proxy', 'tcp_proxy_mode', 'udp_proxy_mode', 'acl_enable' ];
 
 function first_section(uci, config, stype) {
 	let sid = null;
@@ -1031,6 +1033,18 @@ function pw_needed(uci) {
 		(net_in_use(uci, 'proxy') || (via_passwall(uci) && connected_profile(uci) != null));
 }
 
+// Where the router's own traffic goes: 'passwall' (Passwall on with its
+// Localhost Proxy, its default), 'vpn' (a directly connected tunnel) or
+// 'direct'.
+function router_route(uci) {
+	const g = pw_installed(uci) ? first_section(uci, 'passwall', 'global') : null;
+
+	if (g && uci.get('passwall', g, 'enabled') == '1' && uci.get('passwall', g, 'localhost_proxy') != '0')
+		return 'passwall';
+
+	return (connected_profile(uci) && !via_passwall(uci)) ? 'vpn' : 'direct';
+}
+
 // The networks Passwall carries: the Passwall network, while in use.
 function pw_networks(uci) {
 	return (pw_installed(uci) && net_in_use(uci, 'proxy')) ? [ NETS.proxy.net ] : [];
@@ -1085,10 +1099,10 @@ function pw_sync_acl(uci) {
 // The values of PW_MANAGED while Passwall is needed (UNSET: not set, null:
 // left alone). Client Proxy is off: the networks Passwall carries have their
 // own rules, so a guest network, the LAN and the VPN network stay out.
-// Localhost Proxy is off: the router's own traffic goes through a directly
-// connected tunnel, or out directly like the home network's, so package
-// updates and NTP do not depend on the node. Passwall's own DNS lookups
-// through its node do not need Localhost Proxy, nor does the relay.
+// Localhost Proxy (the router's own traffic through Passwall) is left to
+// the user, like the node: off, the router's own traffic goes through a
+// directly connected tunnel, or out directly. Passwall's own DNS lookups
+// through its node do not need it, nor does the relay.
 function pw_wanted_options(uci) {
 	const own_acl = uci.get('wgpasswall', 'passwall', 'pw_acl_enable');
 
@@ -1098,8 +1112,7 @@ function pw_wanted_options(uci) {
 		tcp_proxy_mode: 'proxy',
 		udp_proxy_mode: 'proxy',
 		// without networks to carry, the user's own setting (UNSET: none)
-		acl_enable: length(pw_networks(uci)) ? '1' : own_acl,
-		localhost_proxy: '0'
+		acl_enable: length(pw_networks(uci)) ? '1' : own_acl
 	};
 }
 
@@ -1178,6 +1191,12 @@ function pw_sync(uci) {
  */
 function migrate(uci) {
 	const mode = uci.get('wgpasswall', 'settings', 'mode');
+
+	// the earlier default mark, which Passwall's Localhost Proxy does not skip
+	if (uci.get('wgpasswall', 'settings', 'wg_fwmark') == '0xca6c') {
+		uci.set('wgpasswall', 'settings', 'wg_fwmark', '0xcaff');
+		uci.save('wgpasswall');
+	}
 
 	if (mode == null && uci.get('wgpasswall', 'settings', 'scope') == null)
 		return;
@@ -1420,6 +1439,7 @@ const methods = {
 				vpn_dns: vpn_dns(uci),
 				ipv6_blocked: ipv6_outside_vpn(uci),
 				networks: networks_status(uci),
+				router: router_route(uci),
 				passwall: {
 					installed: pw_installed(uci),
 					needed: pw_needed(uci),

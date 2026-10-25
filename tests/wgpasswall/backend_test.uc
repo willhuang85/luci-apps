@@ -28,7 +28,7 @@ global.__uci_store = {
 	wgpasswall: {
 		// settings of an earlier version: the modes and chosen devices
 		settings: { '.type': 'settings', '.name': 'settings', '.index': 1008, killswitch: '0', mode: 'vpn_passwall',
-			scope: 'devices', vpn_device: [ 'AA:BB:CC:DD:EE:FF' ], pw_node: 'n1' }
+			scope: 'devices', vpn_device: [ 'AA:BB:CC:DD:EE:FF' ], pw_node: 'n1', wg_fwmark: '0xca6c' }
 	}
 };
 
@@ -98,7 +98,8 @@ check('no Passwall: no Passwall network', st.network.wgproxy == null && st.netwo
 check('zone created', st.firewall.wgpasswall_zone?.name == 'wgpasswall' && st.firewall.wgpasswall_zone?.network?.[0] == 'wgc_myhomevpn');
 check('ks disabled', st.firewall.wgpasswall_killswitch?.enabled == '0');
 check('ip4table', st.network.wgc_myhomevpn?.ip4table == '51820' && st.network.wgc_myhomevpn?.ip6table == '51820');
-check('wg fwmark', st.network.wgc_myhomevpn?.fwmark == '0xca6c');
+check('wg fwmark: ends in 0xff (skipped by Passwall), old default migrated', st.network.wgc_myhomevpn?.fwmark == '0xcaff' &&
+	st.wgpasswall.settings.wg_fwmark == '0xcaff');
 check('rule main', st.network.wgpasswall_rule_main?.['.type'] == 'rule' && st.network.wgpasswall_rule_main?.lookup == 'main' &&
 	st.network.wgpasswall_rule_main?.suppress_prefixlength == '0' && st.network.wgpasswall_rule_main?.priority == '30100');
 check('rule vpn: the VPN network', st.network.wgpasswall_rule_vpn_wgvpn?.mark == '0x0/0xff' && st.network.wgpasswall_rule_vpn_wgvpn?.lookup == '51820' &&
@@ -132,6 +133,7 @@ check('status networks: VPN (enabled Wi-Fi only)', r.networks.vpn.exists && leng
 	join(',', r.networks.vpn.ssids) == 'Home VPN' && r.networks.vpn.address == '192.168.21.1' && r.networks.vpn.subnet == '192.168.21.0/24');
 check('status networks: no Passwall network', !r.networks.proxy.exists);
 check('status passwall', !r.passwall.installed && !r.passwall.needed);
+check('status router: through the connected VPN', r.router == 'vpn');
 
 // wired ports
 check('ports: unknown port', call('set_ports', { ports: { lan9: 'vpn' } }).error != null);

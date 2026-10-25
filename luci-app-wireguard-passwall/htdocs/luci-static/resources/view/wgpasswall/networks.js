@@ -25,7 +25,7 @@ const NETWORKS = {
 
 // What the backend found out of step with the settings (status.drift)
 const DRIFT_TEXT = {
-	pw_settings: _('Passwall\'s settings were changed outside this page (main switch, Client Proxy, Localhost Proxy, access control or proxy modes).'),
+	pw_settings: _('Passwall\'s settings were changed outside this page (main switch, Client Proxy, access control or proxy modes).'),
 	pw_acl: _('Passwall\'s access control rule for the Passwall network is missing or out of date.'),
 	fw_rules: _('Firewall rules of this page are saved but not active.'),
 	fw_missing: _('The VPN network, its firewall zone or other firewall rules of this page were removed.')
@@ -574,8 +574,10 @@ return view.extend({
 			sub = _('Devices on the VPN network send traffic for %s through the VPN.').format(live.allowed_ips.join(', '));
 		else if (data.via_passwall)
 			sub = _('Devices on the VPN network go through the VPN, carried through Passwall.');
-		else
+		else if (data.router == 'vpn')
 			sub = _('Devices on the VPN network, and the router itself, go through the VPN.');
+		else
+			sub = _('Devices on the VPN network go through the VPN.');
 
 		return E('div', { 'class': 'wgc-card' }, [
 			E('div', { 'class': 'wgc-hero' }, [
@@ -669,6 +671,30 @@ return view.extend({
 
 			rows.push(row('proxy', b, pw.node ? _('Through Passwall, with its node %s.').format(pw.node.label) : _('Through Passwall.'), note));
 		}
+
+		// the router's own traffic: no ports or Wi-Fi, decided by Passwall's
+		// Localhost Proxy and the VPN
+		const router = {
+			passwall: _('Through Passwall (its "Localhost Proxy" is on).'),
+			vpn: _('Through the VPN.'),
+			direct: _('Your regular internet connection.')
+		}[data.router] ?? '';
+
+		rows.push(E('div', { 'class': 'wgc-net' }, [
+			E('div', { 'class': 'wgc-net-icon' }, '📟'),
+			E('div', { 'class': 'wgc-grow' }, [
+				E('div', { 'class': 'wgc-net-title' }, _('This router')),
+				E('div', { 'class': 'wgc-sub' }, [ _('Its own traffic, e.g. package updates:'), ' ', router ]),
+				pw.installed ? E('div', { 'class': 'wgc-sub', style: 'font-size:.9em' }, (data.router == 'passwall') ? [
+					_('To keep it out of Passwall, turn off "Localhost Proxy" in '),
+					E('a', { href: L.url('admin/services/passwall') }, _('Passwall')), '.'
+				] : [
+					_('To send it through Passwall (e.g. for package updates where the package servers are blocked), turn on "Localhost Proxy" in '),
+					E('a', { href: L.url('admin/services/passwall') }, _('Passwall')),
+					_('; it applies while Passwall runs.')
+				]) : ''
+			])
+		]));
 
 		return E('div', { 'class': 'wgc-card' }, [
 			E('div', { 'class': 'wgc-row', style: 'flex-wrap:wrap' }, [

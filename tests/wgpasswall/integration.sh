@@ -281,8 +281,9 @@ check_pw_network() {
 	cmp -s /etc/passwall/rules/direct_ip "$WORK/direct_ip.orig" || fail "direct list modified"
 }
 check_pw_network
-# never through Passwall: Localhost Proxy can loop the node's own connection
-[ "$(uci -q get passwall.@global[0].localhost_proxy)" = 0 ] || fail "router's own traffic through Passwall (Localhost Proxy)"
+# Localhost Proxy is the user's choice
+[ "$(uci -q get passwall.@global[0].localhost_proxy)" = 0 ] || fail "Localhost Proxy changed"
+ubus call luci.wgpasswall status | jq -e '.router == "direct"' >/dev/null || fail "status router: direct"
 wait_queue
 grep -q restart-end /tmp/order.log || fail "Passwall not restarted"
 grep -qx enable /tmp/passwall-init.log || fail "Passwall service not enabled"
@@ -321,7 +322,7 @@ check_direct_vpn() {
 	uci show network | grep -q "wgpasswall_orig_host" && fail "relay options left behind"
 	uci -q get network.wgc_civpn.mtu >/dev/null && fail "MTU not restored"
 	# the tunnel carries the router's own traffic, Passwall only the Passwall network
-	[ "$(uci -q get passwall.@global[0].localhost_proxy)" = 0 ] || fail "router's own traffic through Passwall while the tunnel carries it"
+	[ "$(uci -q get passwall.@global[0].localhost_proxy)" = 0 ] || fail "Localhost Proxy changed"
 	check_pw_network
 	# DNS of the VPN network: the VPN's server through the tunnel
 	uci -q get network.wgc_civpn.dns >/dev/null && fail "VPN DNS an upstream of the router's resolver"
@@ -336,6 +337,15 @@ check_direct_vpn() {
 	[ "$(uci -q get firewall.wgpasswall_killswitch.enabled)" = 1 ] || fail "kill switch not active"
 }
 check_direct_vpn
+ubus call luci.wgpasswall status | jq -e '.router == "vpn"' >/dev/null || fail "status router: VPN"
+[ "$(uci -q get network.wgc_civpn.fwmark)" = 0xcaff ] || fail "WireGuard's mark does not end in 0xff (Passwall would take its packets)"
+echo "-- the router through Passwall: Localhost Proxy on, set in Passwall"
+uci set passwall.@global[0].localhost_proxy=1; uci commit passwall
+ubus call luci.wgpasswall reapply >/dev/null || fail "reapply with Localhost Proxy on"
+[ "$(uci -q get passwall.@global[0].localhost_proxy)" = 1 ] || fail "Localhost Proxy not left to the user"
+ubus call luci.wgpasswall status | jq -e '.router == "passwall" and .drift == []' >/dev/null || fail "status router: Passwall"
+uci set passwall.@global[0].localhost_proxy=0; uci commit passwall
+ubus call luci.wgpasswall reapply >/dev/null
 
 echo "== VPN through Passwall"
 ubus call luci.wgpasswall set_options '{"via_passwall":true}' >/dev/null || fail "via_passwall on"
@@ -349,7 +359,7 @@ check_wrapped() {
 	ubus call luci.wgpasswall get '{"id":"wgc_civpn"}' | jq -e '.conf | contains("MTU") | not' >/dev/null || fail "editor shows lowered MTU"
 	[ "$(uci -q get network.wgpasswall_rule_vpn_wgvpn.in)" = wgvpn ] || fail "VPN network not routed into the tunnel"
 	uci -q get network.wgpasswall_rule_vpn_loopback >/dev/null && fail "router traffic routed into the wrapped tunnel"
-	[ "$(uci -q get passwall.@global[0].localhost_proxy)" = 0 ] || fail "router's own traffic through Passwall (Localhost Proxy)"
+	[ "$(uci -q get passwall.@global[0].localhost_proxy)" = 0 ] || fail "Localhost Proxy changed"
 	[ "$(uci -q get passwall.@global[0].enabled)" = 1 ] || fail "passwall not enabled"
 	[ "$(uci -q get passwall.@global[0].client_proxy)" = 0 ] || fail "Client Proxy on"
 	[ "$(uci -q get firewall.wgpasswall_killswitch.enabled)" = 1 ] || fail "kill switch not active"

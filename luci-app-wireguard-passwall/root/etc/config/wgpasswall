@@ -15,5 +15,6 @@ config settings 'settings'
 	# packets with any of these mark bits set skip the VPN (proxy cores
 	# such as Xray/sing-box in Passwall mark their sockets with 255)
 	option bypass_mask '0xff'
-	# fwmark of WireGuard's own encrypted packets
-	option wg_fwmark '0xca6c'
+	# fwmark of WireGuard's own encrypted packets; ends in 0xff so that
+	# Passwall (Localhost Proxy) leaves them alone
+	option wg_fwmark '0xcaff'

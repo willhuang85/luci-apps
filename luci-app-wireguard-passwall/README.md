@@ -69,7 +69,7 @@ Where each network's DNS goes:
 | VPN network, profile connected | every query on port 53 → the VPN's DNS server (`DNS =` of the `.conf`), through the tunnel (and through Passwall when the VPN is carried through it) |
 | VPN network, no profile connected | the router's resolver, as on the home network; **with the kill switch on, refused** (devices have no internet then anyway, and the names they look up would otherwise reach your ISP's DNS) |
 | Passwall network | every query on port 53 → Passwall's own DNS (its dnsmasq instance with ChinaDNS-NG: the "direct" server for direct domains, the "remote" server through the node for the others), whether or not a VPN is connected |
-| The router itself | the internet connection's DNS server (Passwall's own lookups of its "remote" server go through its node) |
+| The router itself | through Passwall's DNS while its Localhost Proxy is on, otherwise the internet connection's DNS server |
 
 - Devices on the VPN network cannot look up the router's local names (`something.lan`); mDNS names (`something.local`) still work.
 - Encrypted DNS done by a browser or the OS itself (DoH) is not touched; it goes through the VPN like the rest of their traffic.
@@ -79,7 +79,7 @@ Where each network's DNS goes:
 
 - **IPv6**: the VPN and Passwall networks get IPv4 addresses only. While a profile that sends all IPv4 through the VPN (`0.0.0.0/0`) but has no `::/0` is connected, IPv6 internet traffic from the VPN network is also refused (firewall rule `wgpasswall_no_ipv6`), in case you add IPv6 to it yourself.
 - **What does not use the VPN** for devices on the VPN network: addresses reachable without the internet (your other networks, and the network on the router's WAN side, e.g. the home router it is plugged into) and Tailscale addresses (`100.x`).
-- **The router's own traffic** (package updates, NTP, ...): through the VPN while a profile is connected directly, otherwise out directly. It never goes through Passwall: the app keeps Passwall's *Localhost Proxy* off, so the router behaves like the home network and package updates or NTP don't depend on the node.
+- **The router's own traffic** (package updates, NTP, ...): through Passwall while Passwall runs with its *Localhost Proxy* on (your choice in Passwall, e.g. for package updates where the package servers are blocked); otherwise through the VPN while a profile is connected directly, otherwise out directly. The page shows which under *Networks → This router*. WireGuard marks its own packets `0xcaff`, ending in `ff` like Xray's, so Passwall's Localhost Proxy leaves them alone and the tunnel keeps working.
 - **PersistentKeepalive**: on a router behind NAT, and with the VPN carried through Passwall, an idle tunnel can go quiet until NAT or the proxy forgets it. When a `.conf` has none, the import / edit dialog offers to add `PersistentKeepalive = 15` (inside the ~30 s shortest UDP timeouts even if one keepalive is lost); it costs well under 1 MB a day.
 - `PreUp`/`PostUp`/`Table` lines from wg-quick have no meaning on OpenWrt and are ignored (you'll see a note when importing).
 - **Upgrading from a version with modes** ("VPN", "VPN through Passwall", "Passwall only", "Off", "only chosen devices"): those are gone. "VPN through Passwall" becomes **Carry the VPN through Passwall**; everything else comes from the networks now, so after upgrading put the ports and Wi-Fi networks that should use the VPN (or Passwall) on its network. Until then your devices stay on the home network and use your regular connection, and the kill switch only covers the (empty) VPN network.
@@ -100,9 +100,8 @@ While Passwall is needed the app sets:
 | Client Proxy | off | only the networks that should go through Passwall do; the home network, the VPN network and a guest network stay out |
 | Access control | on, with a "Proxy" rule for the Passwall network (`0wgpasswall_net_wgproxy`, by interface) | carries the Passwall network with the global node and proxy modes |
 | TCP / UDP default proxy mode | Proxy | |
-| Localhost Proxy | off | the router's own traffic stays out of Passwall, see above |
 
-Passwall restarts only when one of these actually changes, and a few quick changes lead to a single restart (a restart still waiting behind a newer one is skipped). The first time Passwall is needed, its original values (and whether its service starts at boot) are saved; once nothing needs it anymore, they are restored exactly, and the app's access control rule is removed. Your own access control rules stay as they are; they apply to their own devices or networks.
+Passwall restarts only when one of these actually changes, and a few quick changes lead to a single restart (a restart still waiting behind a newer one is skipped). The first time Passwall is needed, its original values (and whether its service starts at boot) are saved; once nothing needs it anymore, they are restored exactly, and the app's access control rule is removed. Your own access control rules stay as they are; they apply to their own devices or networks. *Localhost Proxy* (the router's own traffic through Passwall) and the node are yours to set in Passwall.
 
 How **Carry the VPN through Passwall** works: each tunnel's endpoint is pointed at a small relay on the router (`127.0.0.1:51821`, `51822`, …), which forwards WireGuard's packets through Passwall's node SOCKS port (`node_socks_port`, default 1070) to the real VPN server, so your ISP only sees the proxy connection. The real server stays in the profile (the editor and status show it) and comes back when you switch it off. Only traffic from the VPN network goes into the tunnel; the router's own traffic, including Passwall's DNS and the proxy's lookup of its server name, stays outside it, otherwise the proxy carrying the tunnel would wait for the tunnel to resolve its own server. It goes out directly instead. The tunnel MTU is lowered to 1280 for the proxy overhead. The node must support UDP. If the proxy's own connection to its server dies while its local SOCKS port stays up (Xray can keep a busy UDP session on a dead upstream), the relay notices that WireGuard keeps sending but gets no handshake for 3 minutes, and reconnects through a fresh proxy session; it logs this (`logread | grep wgpasswall-relay`).
 
@@ -114,7 +113,7 @@ Letting Passwall intercept WireGuard's packets transparently (Localhost Proxy pl
 
 ## How it works
 
-Each profile is a normal netifd WireGuard interface named `wgc_<name>` in `/etc/config/network` (peers in `wireguard_wgc_<name>` sections) with `ip4table`/`ip6table 51820` and `fwmark 0xca6c`, so you can also see it under *Network → Interfaces*. The app creates:
+Each profile is a normal netifd WireGuard interface named `wgc_<name>` in `/etc/config/network` (peers in `wireguard_wgc_<name>` sections) with `ip4table`/`ip6table 51820` and `fwmark 0xcaff`, so you can also see it under *Network → Interfaces*. The app creates:
 
 | UCI section | Purpose |
 |---|---|
