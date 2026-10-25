@@ -755,8 +755,14 @@ function run_locked(cmds) {
 	system(`(mkdir -p /var/lock; exec 9>${FW_LOCK}; flock 9; sh -c ${shell_quote(locked_script(cmds))} 9>&-; true) >/dev/null 2>&1 &`);
 }
 
+// Passwall commands queued last: a queued job whose Passwall commands are
+// no longer the latest skips them, as the later job restarts Passwall with
+// everything committed by then (each restart takes half a minute, so a few
+// quick changes would otherwise restart it again and again).
+const PW_NEXT = getenv('WGPASSWALL_PW_NEXT') ?? '/var/run/luci-apps-passwall.next';
+
 // Commits, reloads the network and then, under the lock, the firewall, DHCP
-// and any Passwall commands in `after`.
+// and any Passwall commands in `after` (unless later ones were queued).
 function apply(uci, packages, after) {
 	let cmds = [];
 
@@ -772,6 +778,13 @@ function apply(uci, packages, after) {
 
 	if ('dhcp' in packages)
 		push(cmds, '/etc/init.d/dnsmasq reload');
+
+	if (length(after)) {
+		const token = trim(readfile('/proc/sys/kernel/random/uuid') ?? '') || `${time()}`;
+
+		writefile(PW_NEXT, token);
+		push(cmds, `[ "$(cat ${PW_NEXT} 2>/dev/null)" = ${shell_quote(token)} ] || exit 0`);
+	}
 
 	run_locked([ ...cmds, ...(after ?? []) ]);
 }
@@ -1800,7 +1813,9 @@ const methods = {
 			// nothing needs Passwall now: its own settings come back
 			const pw = pw_sync(uci);
 
-			apply(uci, [ 'wgpasswall', 'network', 'wireless', 'dhcp', 'firewall', 'passwall' ], [ ...pw, ...after ]);
+			apply(uci, [ 'wgpasswall', 'network', 'wireless', 'dhcp', 'firewall', 'passwall' ], pw);
+			// a job of its own: queued Passwall commands may be skipped
+			run_locked(after);
 			relay_restart();
 
 			return { result: true };

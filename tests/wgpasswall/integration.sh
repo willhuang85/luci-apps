@@ -408,8 +408,25 @@ ubus call luci.wgpasswall connect '{"id":"wgc_civpn"}' >/dev/null
 ubus call luci.wgpasswall set_options '{"via_passwall":false}' >/dev/null
 ubus call luci.wgpasswall set_ports '{"ports":{"lan2":"lan"}}' >/dev/null
 wait_queue
-# needed, then no longer needed (connecting changes nothing of Passwall's)
-[ "$(grep -c restart-begin /tmp/order.log)" -ge 2 ] || { cat /tmp/order.log; fail "Passwall not restarted for each change"; }
+# restarts queued behind a later one are skipped, the last one runs
+[ "$(grep -c restart-begin /tmp/order.log)" -ge 1 ] || { cat /tmp/order.log; fail "Passwall not restarted"; }
+[ "$(tail -n 1 /tmp/passwall-init.log)" = restart ] || fail "the last Passwall restart did not run"
+pw_same || { uci show passwall | sort | diff "$WORK/passwall.orig" -; fail "passwall config not restored after quick changes"; }
+
+echo "== superseded Passwall restarts are skipped"
+wait_queue
+: > /tmp/order.log
+# hold the lock, queue three changes behind it, then let them run
+( exec 9>/var/lock/luci-apps.lock; flock 9; sleep 3 ) &
+sleep 0.5
+ubus call luci.wgpasswall set_ports '{"ports":{"lan2":"proxy"}}' >/dev/null
+ubus call luci.wgpasswall set_ports '{"ports":{"lan2":"lan"}}' >/dev/null
+ubus call luci.wgpasswall set_ports '{"ports":{"lan2":"proxy"}}' >/dev/null
+wait_queue
+[ "$(grep -c restart-begin /tmp/order.log)" = 1 ] || { cat /tmp/order.log; fail "superseded Passwall restarts not skipped"; }
+check_pw_network
+ubus call luci.wgpasswall set_ports '{"ports":{"lan2":"lan"}}' >/dev/null
+wait_queue
 awk '/restart-begin/ { if (busy) { print "restarts overlap at line " NR; bad = 1 } busy = 1 }
      /restart-end/ { busy = 0 }
      /firewall-/ { if (busy) { print "firewall reload during a Passwall restart at line " NR; bad = 1 } }
