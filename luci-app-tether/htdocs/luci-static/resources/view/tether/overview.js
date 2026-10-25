@@ -35,6 +35,9 @@ const SECURITY = [
 const CHECK_INTERVAL = 30;
 
 const CSS = `
+/* Argon: the theme's own card surface, corners and shadow (light and dark) */
+.tt.argon .tt-card { background: var(--surface-color, transparent); border-color: transparent; border-radius: var(--radius-card, 12px);
+	box-shadow: var(--section-shadow, none); }
 .tt { --tt-ok: #1a9c4a; --tt-warn: #d68b00; --tt-bad: #d23f31; --tt-muted: rgba(127,127,127,.85);
 	--tt-line: rgba(127,127,127,.25); --tt-tint: rgba(127,127,127,.07); max-width: 960px; }
 .tt * { box-sizing: border-box; }
@@ -59,7 +62,7 @@ const CSS = `
 .tt-note.ok { border-left-color: var(--tt-ok); background: rgba(26,156,74,.1); }
 .tt-note.info { border-left-color: var(--tt-muted); background: transparent; }
 .tt-methods { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin-top: 12px; }
-.tt-method { display: flex; flex-direction: column; text-align: left; border: 2px solid var(--tt-line); border-radius: 10px;
+.tt-method { height: auto; line-height: inherit; display: flex; flex-direction: column; text-align: left; border: 2px solid var(--tt-line); border-radius: 10px;
 	padding: 12px; background: transparent; color: inherit; cursor: pointer; font: inherit; }
 .tt-method:hover { border-color: var(--tt-muted); }
 .tt-method.active { border-color: var(--tt-ok); background: rgba(26,156,74,.08); }
@@ -82,11 +85,11 @@ const CSS = `
 .tt-hint { font-size: .85em; color: var(--tt-muted); margin-top: 4px; }
 .tt-hint.bad { color: var(--tt-bad); }
 .tt-scan { margin-top: 12px; max-height: 260px; overflow-y: auto; }
-.tt-scan button { display: flex; width: 100%; gap: 12px; align-items: center; text-align: left; background: transparent; color: inherit;
+.tt-scan button { height: auto; line-height: inherit; display: flex; width: 100%; gap: 12px; align-items: center; text-align: left; background: transparent; color: inherit;
 	border: 1px solid var(--tt-line); border-radius: 8px; padding: 8px 12px; margin: 0 0 6px; cursor: pointer; font: inherit; }
 .tt-scan button:hover { border-color: var(--tt-ok); }
 .tt-tips { margin: 8px 0 0 18px; padding: 0; }
-.tt-tips li { margin: 4px 0; }
+.tt-tips li { margin: 4px 0; list-style-type: disc; }
 @media (max-width: 600px) {
 	.tt-card { padding: 14px; }
 	.tt-form { grid-template-columns: 1fr; gap: 6px; }
@@ -626,7 +629,7 @@ return view.extend({
 
 	render(st) {
 		this.st = st;
-		this.root = E('div', { 'class': 'tt' }, this.renderContent());
+		this.root = E('div', { 'class': 'tt' + (/\/argon$/.test(L.env.media ?? '') ? ' argon' : '') }, this.renderContent());
 
 		poll.add(() => this.refresh(), 5);
 		this.checkMain(true);

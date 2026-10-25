@@ -47,6 +47,10 @@ const DAYS = [
 const APPLY_WAIT = 6000;
 
 const CSS = `
+.tw .tw-check > input[type="checkbox"] { position: static; top: auto; right: auto; margin: 0; flex: none; }
+/* Argon: the theme's own card surface, corners and shadow (light and dark) */
+.tw.argon .tw-card { background: var(--surface-color, transparent); border-color: transparent; border-radius: var(--radius-card, 12px);
+	box-shadow: var(--section-shadow, none); }
 .tw { --tw-ok: #1a9c4a; --tw-warn: #d68b00; --tw-bad: #d23f31; --tw-muted: rgba(127,127,127,.85);
 	--tw-line: rgba(127,127,127,.25); --tw-tint: rgba(127,127,127,.07); max-width: 960px; }
 .tw * { box-sizing: border-box; }
@@ -92,7 +96,7 @@ const CSS = `
 .tw-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; margin-top: 16px; }
 .tw-actions .btn, .tw-actions .cbi-button { margin: 0; }
 .tw-band { display: flex; align-items: center; gap: 16px; padding: 12px 0; border-top: 1px solid var(--tw-line); }
-.tw-link { background: none; border: 0; padding: 0; margin-top: 4px; color: inherit; text-decoration: underline; cursor: pointer; font: inherit; font-size: .9em; }
+.tw-link { height: auto; line-height: inherit; background: none; border: 0; padding: 0; margin-top: 4px; color: inherit; text-decoration: underline; cursor: pointer; font: inherit; font-size: .9em; }
 .tw-band:first-of-type { border-top: 0; }
 .tw-band-name { font-weight: 600; font-size: 1.05em; }
 .tw-dot { width: 12px; height: 12px; border-radius: 50%; background: var(--tw-muted); flex: none; }
@@ -110,7 +114,7 @@ const CSS = `
 .tw-bars > span.on { background: var(--tw-ok); }
 .tw-bars.weak > span.on { background: var(--tw-warn); }
 .tw-days { display: flex; gap: 6px; flex-wrap: wrap; }
-.tw-day { border: 2px solid var(--tw-line); border-radius: 18px; padding: 4px 10px; background: transparent; color: inherit;
+.tw-day { height: auto; line-height: inherit; border: 2px solid var(--tw-line); border-radius: 18px; padding: 4px 10px; background: transparent; color: inherit;
 	cursor: pointer; font: inherit; min-width: 48px; }
 .tw-day[aria-pressed=true] { border-color: var(--tw-ok); background: rgba(26,156,74,.12); font-weight: 600; }
 .tw-times { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
@@ -1109,7 +1113,7 @@ return view.extend({
 	render([ cfg, status ]) {
 		this.cfg = cfg;
 		this.status = status;
-		this.root = E('div', { 'class': 'tw' }, this.renderContent());
+		this.root = E('div', { 'class': 'tw' + (/\/argon$/.test(L.env.media ?? '') ? ' argon' : '') }, this.renderContent());
 
 		poll.add(() => this.refreshStatus(), 5);
 

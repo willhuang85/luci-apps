@@ -12,7 +12,7 @@ Simple, consumer-router style apps for OpenWrt's LuCI web interface. Built and t
 |---|---|---|
 | <img src="docs/screenshots/wifisetup/overview.png" alt="Wi-Fi Setup page" width="280"> | <img src="docs/screenshots/tether/main-down.png" alt="Phone Tethering page" width="280"> | <img src="docs/screenshots/wgpasswall/overview.png" alt="WireGuard + Passwall page" width="280"> |
 
-<sub>Screenshots show sample data; colours and fonts follow your LuCI theme.</sub>
+<sub>Screenshots show sample data; colours and fonts follow your LuCI theme. Tested with the default Bootstrap theme and [Argon](https://github.com/jerrykuku/luci-theme-argon), light and dark.</sub>
 
 ## Install on your router
 

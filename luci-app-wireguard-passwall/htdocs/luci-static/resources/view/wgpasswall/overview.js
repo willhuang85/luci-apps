@@ -26,6 +26,9 @@ const MODE_INFO = {
 const HANDSHAKE_TIMEOUT = 180;
 
 const CSS = `
+/* Argon: the theme's own card surface, corners and shadow (light and dark) */
+.wgc.argon .wgc-card { background: var(--surface-color, transparent); border-color: transparent; border-radius: var(--radius-card, 12px);
+	box-shadow: var(--section-shadow, none); }
 .wgc { --wgc-ok: #1a9c4a; --wgc-warn: #d68b00; --wgc-bad: #d23f31; --wgc-muted: rgba(127,127,127,.85);
 	--wgc-line: rgba(127,127,127,.25); --wgc-tint: rgba(127,127,127,.07); max-width: 960px; }
 .wgc * { box-sizing: border-box; }
@@ -61,6 +64,8 @@ const CSS = `
 .wgc-list-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 24px 0 12px; flex-wrap: wrap; }
 .wgc-profile { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
 .wgc-profile.active { border-color: var(--wgc-ok); box-shadow: inset 4px 0 0 var(--wgc-ok); }
+.wgc-list > li { list-style-type: disc; }
+.wgc.argon .wgc-profile.active { border-color: var(--wgc-ok); box-shadow: inset 4px 0 0 var(--wgc-ok), var(--section-shadow, none); }
 .wgc-dot { width: 12px; height: 12px; border-radius: 50%; background: var(--wgc-muted); flex: none; }
 .wgc-dot.ok { background: var(--wgc-ok); } .wgc-dot.warn { background: var(--wgc-warn); } .wgc-dot.bad { background: var(--wgc-bad); }
 .wgc-name { font-weight: 600; font-size: 1.05em; overflow-wrap: anywhere; }
@@ -69,7 +74,7 @@ const CSS = `
 .wgc-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .wgc-actions .btn, .wgc-actions .cbi-button { margin: 0; }
 .wgc-modes { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin-top: 12px; }
-.wgc-mode { display: flex; flex-direction: column; justify-content: flex-start; text-align: left; border: 2px solid var(--wgc-line);
+.wgc-mode { height: auto; line-height: inherit; display: flex; flex-direction: column; justify-content: flex-start; text-align: left; border: 2px solid var(--wgc-line);
 	border-radius: 10px; padding: 12px; background: transparent; color: inherit; cursor: pointer; font: inherit; }
 .wgc-actions .btn:disabled { opacity: .45; cursor: not-allowed; }
 .wgc-mode:hover { border-color: var(--wgc-muted); }
@@ -373,7 +378,7 @@ return view.extend({
 								? _('All internet traffic goes through the VPN')
 								: _('Only %s through the VPN').format(res.allowed_ips.join(', ') || _('nothing')))
 						]),
-						res.warnings?.length ? E('ul', {}, res.warnings.map((w) => E('li', {}, w))) : ''
+						res.warnings?.length ? E('ul', { 'class': 'wgc-list' }, res.warnings.map((w) => E('li', {}, w))) : ''
 					]));
 				}
 
@@ -402,7 +407,7 @@ return view.extend({
 					if (!failed && res?.warnings?.length)
 						ui.addNotification(null, E('div', {}, [
 							E('p', {}, _('Profile saved with notes:')),
-							E('ul', {}, res.warnings.map((w) => E('li', {}, w)))
+							E('ul', { 'class': 'wgc-list' }, res.warnings.map((w) => E('li', {}, w)))
 						]), 'warning');
 
 					return res;
@@ -652,7 +657,7 @@ return view.extend({
 		return E('div', { 'class': 'wgc-card' }, [
 			E('p', { 'class': 'wgc-h' }, '🔀 ' + _('Works with %s').format(apps.join(', '))),
 			E('div', { 'class': 'wgc-sub' }, _('The VPN uses its own routing table, so the proxy keeps working side by side:')),
-			E('ul', { style: 'margin:8px 0 0 18px; padding:0' }, [
+			E('ul', { 'class': 'wgc-list', style: 'margin:8px 0 0 18px; padding:0' }, [
 				E('li', {}, _('Connections made by the proxy core (Xray / sing-box) bypass the VPN, so they never loop into the tunnel.')),
 				E('li', {}, _('Install Passwall to also get the "VPN through Passwall" and "Passwall only" modes.'))
 			])
@@ -736,7 +741,7 @@ return view.extend({
 
 	render(data) {
 		this.data = data;
-		this.root = E('div', { 'class': 'wgc' }, this.renderContent(data));
+		this.root = E('div', { 'class': 'wgc' + (/\/argon$/.test(L.env.media ?? '') ? ' argon' : '') }, this.renderContent(data));
 
 		poll.add(() => this.refresh(), 5);
 
