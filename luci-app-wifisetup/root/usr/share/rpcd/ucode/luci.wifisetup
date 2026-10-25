@@ -3,8 +3,9 @@
 // rpcd backend for luci-app-wifisetup.
 //
 // Presents the router's Wi-Fi the way consumer routers do: one "main"
-// network and one optional "guest" network, each broadcast on every band
-// (radio), plus per-band channel / width / power settings.
+// network, one optional "guest" network and optional extra networks, each
+// broadcast on every band (radio) chosen, plus per-band channel / width /
+// power settings.
 //
 //  - main network: the first access point on the LAN network of each radio
 //    (e.g. OpenWrt's "default_radio0"); radios without one get a
@@ -12,6 +13,9 @@
 //  - guest network: "wifisetup_guest_<radio>" access points on the isolated
 //    "guestwifi" network, which gets its own bridge, subnet, DHCP pool and
 //    firewall zone (internet only, no access to the LAN or the router)
+//  - extra networks: "wifisetup_x<n>_<radio>" access points, each on the
+//    LAN or on a network of WireGuard + Passwall (its VPN network, whose
+//    devices go out through the VPN, or its Passwall network)
 //  - blocked devices: a MAC deny list on all of these access points
 //  - schedule: cron entries written by /usr/libexec/wifisetup-schedule
 //
@@ -33,6 +37,12 @@ const GUEST_DEV_SID = 'wifisetup_guest_dev';
 const GUEST_ZONE_SID = 'wifisetup_guest_zone';
 const GUEST_FWD_SID = 'wifisetup_guest_fwd';
 const GUEST_RULE_SIDS = { dhcp: 'wifisetup_guest_dhcp', dns: 'wifisetup_guest_dns' };
+const EXTRA_RE = /^wifisetup_x([0-9]+)_(.+)$/;
+const MAX_EXTRAS = 8;
+
+// The networks an extra network can be on: role -> network (the LAN's comes
+// from the settings); "vpn" and "proxy" exist with WireGuard + Passwall
+const ROLE_NETS = { vpn: 'wgvpn', proxy: 'wgproxy' };
 
 // uci encryption value -> needs a password, accepts a 64 digit hex key
 const ENCRYPTIONS = {
@@ -114,10 +124,11 @@ function is_radio(uci, id) {
 	return type(id) == 'string' && length(id) > 0 && uci.get('wireless', id) == 'wifi-device';
 }
 
-// Finds the main and guest access point of every radio.
+// Finds the main and guest access point of every radio, and the access
+// points of the extra networks: extras[<n>][<radio>].
 function layout(uci) {
 	const lan = settings(uci).lan_network;
-	let main = {}, guest = {};
+	let main = {}, guest = {}, extras = {};
 
 	uci.foreach('wireless', 'wifi-iface', (s) => {
 		const dev = s.device;
@@ -126,8 +137,13 @@ function layout(uci) {
 			return;
 
 		const nets = as_list(s.network);
+		const x = match(s['.name'], EXTRA_RE);
 
-		if (index(s['.name'], GUEST_PREFIX) == 0 || (GUEST_NET in nets)) {
+		if (x) {
+			extras[x[1]] ??= {};
+			extras[x[1]][dev] ??= s;
+		}
+		else if (index(s['.name'], GUEST_PREFIX) == 0 || (GUEST_NET in nets)) {
 			guest[dev] ??= s;
 		}
 		else if ((lan in nets) && !main[dev]) {
@@ -135,7 +151,40 @@ function layout(uci) {
 		}
 	});
 
-	return { main, guest };
+	return { main, guest, extras };
+}
+
+// The network an extra network is on: 'lan', 'vpn', 'proxy' or 'other'.
+function extra_role(uci, ifaces) {
+	const nets = as_list(values(ifaces)[0]?.network);
+
+	if (settings(uci).lan_network in nets)
+		return 'lan';
+
+	for (let role, net in ROLE_NETS)
+		if (net in nets)
+			return role;
+
+	return 'other';
+}
+
+function role_network(uci, role) {
+	if (role == 'lan')
+		return settings(uci).lan_network;
+
+	const net = ROLE_NETS[role];
+
+	return (net && uci.get('network', net) == 'interface') ? net : null;
+}
+
+// Every managed access point: main, guest and extra networks.
+function managed_ifaces(l) {
+	let list = [ ...values(l.main), ...values(l.guest) ];
+
+	for (let id, x in l.extras)
+		push(list, ...values(x));
+
+	return list;
 }
 
 // true if every byte of s is within lo..hi
@@ -341,7 +390,7 @@ function sync_macfilter(uci) {
 	const macs = map(blocked_list(uci), (b) => b.mac);
 	const l = layout(uci);
 
-	for (let s in [ ...values(l.main), ...values(l.guest) ]) {
+	for (let s in managed_ifaces(l)) {
 		const sid = s['.name'];
 
 		if (s.macfilter == 'allow')
@@ -406,8 +455,9 @@ function run_locked(cmds, delay) {
 	system(`(${delay ? `sleep ${delay}; ` : ''}mkdir -p /var/lock; exec 9>${FW_LOCK}; flock 9; sh -c ${shell_quote(locked_script(cmds))} 9>&-; true) >/dev/null 2>&1 &`);
 }
 
-// Commits and applies the changes shortly after the reply was sent.
-function apply(uci, packages) {
+// Commits and applies the changes shortly after the reply was sent; `after`
+// are more commands to run then.
+function apply(uci, packages, after) {
 	let cmds = [];
 
 	for (let pkg in packages)
@@ -422,14 +472,21 @@ function apply(uci, packages) {
 	if ('dhcp' in packages)
 		push(cmds, '/etc/init.d/dnsmasq reload');
 
-	run_locked(cmds, 1);
+	run_locked([ ...cmds, ...(after ?? []) ], 1);
 }
 
-function save_all(uci, packages) {
+function save_all(uci, packages, after) {
 	for (let pkg in packages)
 		uci.save(pkg);
 
-	apply(uci, packages);
+	apply(uci, packages, after);
+}
+
+// Tells WireGuard + Passwall that Wi-Fi networks on its networks changed:
+// Passwall runs while devices are on the Passwall network. Run after the
+// reply (luci.wgpasswall is served by rpcd, which waits for this call).
+function wgpasswall_sync() {
+	return access('/usr/share/rpcd/ucode/luci.wgpasswall') ? [ 'ubus call luci.wgpasswall sync' ] : [];
 }
 
 function ensure_settings(uci) {
@@ -554,7 +611,7 @@ function managed_ifnames(uci) {
 	const live = live_ifaces().ifaces;
 	let names = [];
 
-	for (let s in [ ...values(l.main), ...values(l.guest) ])
+	for (let s in managed_ifaces(l))
 		if (live[s['.name']])
 			push(names, live[s['.name']].ifname);
 
@@ -607,10 +664,28 @@ const methods = {
 				guest.address = uci.get('network', GUEST_NET, 'ipaddr');
 			}
 
+			let extras = [];
+
+			for (let id in sort(keys(l.extras), (a, b) => +a - +b)) {
+				const x = network_config(uci, l.extras[id], band_of);
+
+				x.id = id;
+				x.role = extra_role(uci, l.extras[id]);
+				x.enabled = length(filter(values(x.bands), (b) => b)) > 0;
+				push(extras, x);
+			}
+
 			return {
 				radios: list,
 				main: network_config(uci, l.main, band_of),
 				guest: guest ?? { enabled: false },
+				extras,
+				// the networks extra networks can be on, besides the LAN
+				networks: {
+					vpn: role_network(uci, 'vpn') != null,
+					proxy: role_network(uci, 'proxy') != null,
+					wgpasswall: access('/usr/share/rpcd/ucode/luci.wgpasswall') == true
+				},
 				country,
 				blocked: blocked_list(uci),
 				schedule: schedule_config(uci),
@@ -638,6 +713,10 @@ const methods = {
 
 			for (let dev, s in l.guest)
 				net_of[s['.name']] = 'guest';
+
+			for (let id, x in l.extras)
+				for (let dev, s in x)
+					net_of[s['.name']] = 'extra';
 
 			for (let s in radios(uci)) {
 				const r = live.radios[s['.name']] ?? {};
@@ -766,6 +845,110 @@ const methods = {
 
 			sync_macfilter(uci);
 			save_all(uci, packages);
+
+			return { result: true };
+		}
+	},
+
+	/*
+	 * Creates (no id) or saves an extra network: name, password, security,
+	 * hidden, the bands it is on (all if none given) and the network it is
+	 * on: "role" 'lan' (the home network), 'vpn' or 'proxy' (the VPN and
+	 * Passwall networks of WireGuard + Passwall).
+	 */
+	set_extra: {
+		args: { id: '', ssid: '', key: '', encryption: '', hidden: false, bands: [], role: '' },
+		call: function(req) {
+			const a = req.args;
+			const uci = cursor();
+			const l = layout(uci);
+			const list = radios(uci);
+			let id = a.id ?? '', err;
+
+			if (!length(list))
+				return { error: 'This router has no Wi-Fi radios' };
+
+			if (length(id) && !l.extras[id])
+				return { error: 'No such network' };
+
+			if (!length(id) && length(keys(l.extras)) >= MAX_EXTRAS)
+				return { error: `There can be at most ${MAX_EXTRAS} more Wi-Fi networks` };
+
+			const net = role_network(uci, a.role);
+
+			if (!net)
+				return { error: 'This network is not available' };
+
+			if (!ENCRYPTIONS[a.encryption])
+				return { error: 'Unknown security mode' };
+
+			if ((err = check_ssid(a.ssid)) || (err = check_key(a.key, a.encryption)))
+				return { error: err };
+
+			for (let s in managed_ifaces(l)) {
+				const x = match(s['.name'], EXTRA_RE);
+
+				if ((!x || x[1] != id) && s.ssid == a.ssid)
+					return { error: 'Another Wi-Fi network already has this name' };
+			}
+
+			const bands = length(a.bands ?? []) ? a.bands : map(list, (s) => s['.name']);
+
+			for (let b in bands)
+				if (!is_radio(uci, b))
+					return { error: 'Unknown band' };
+
+			if (!length(id)) {
+				let n = 1;
+
+				while (l.extras[`${n}`])
+					n++;
+
+				id = `${n}`;
+			}
+
+			const old_role = l.extras[id] ? extra_role(uci, l.extras[id]) : null;
+
+			for (let s in list) {
+				const dev = s['.name'];
+				let sid = l.extras[id]?.[dev]?.['.name'];
+
+				if (!sid) {
+					sid = `wifisetup_x${id}_${dev}`;
+					uci.set('wireless', sid, 'wifi-iface');
+					uci.set('wireless', sid, 'device', dev);
+					uci.set('wireless', sid, 'mode', 'ap');
+				}
+
+				uci.set('wireless', sid, 'network', net);
+				uci.set('wireless', sid, 'ssid', a.ssid);
+				set_security(uci, sid, a.encryption, a.key, radio_band(s));
+				set_flag(uci, sid, 'hidden', a.hidden);
+				set_flag(uci, sid, 'disabled', !(dev in bands));
+			}
+
+			sync_macfilter(uci);
+			save_all(uci, [ 'wireless' ], (a.role != 'lan' || (old_role && old_role != 'lan')) ? wgpasswall_sync() : []);
+
+			return { result: true, id };
+		}
+	},
+
+	remove_extra: {
+		args: { id: '' },
+		call: function(req) {
+			const uci = cursor();
+			const x = layout(uci).extras[req.args.id ?? ''];
+
+			if (!x)
+				return { error: 'No such network' };
+
+			const role = extra_role(uci, x);
+
+			for (let dev, s in x)
+				uci.delete('wireless', s['.name']);
+
+			save_all(uci, [ 'wireless' ], (role != 'lan') ? wgpasswall_sync() : []);
 
 			return { result: true };
 		}
@@ -968,7 +1151,8 @@ const methods = {
 		}
 	},
 
-	// QR code to join a network: an SVG image plus the plain credentials.
+	// QR code to join a network ('main', 'guest' or the id of an extra
+	// network): an SVG image plus the plain credentials.
 	qrcode: {
 		args: { net: '' },
 		call: function(req) {
@@ -979,7 +1163,8 @@ const methods = {
 			for (let s in radios(uci))
 				band_of[s['.name']] = radio_band(s);
 
-			const net = network_config(uci, (req.args.net == 'guest') ? l.guest : l.main, band_of);
+			const ifaces = (req.args.net == 'guest') ? l.guest : (req.args.net == 'main') ? l.main : l.extras[req.args.net ?? ''];
+			const net = ifaces ? network_config(uci, ifaces, band_of) : null;
 
 			if (!net)
 				return { error: 'This network is not set up yet' };

@@ -6,6 +6,7 @@ A clean, consumer-router style Wi-Fi page for OpenWrt's LuCI web interface. Ever
 - **Security**: WPA2/WPA3 (recommended), WPA3, WPA2, WPA/WPA2, Enhanced Open (OWE) or Open; 6 GHz automatically uses WPA3 / OWE, as the standard requires
 - **Hidden network** option
 - **Guest network** in one click: its own name and password, its own address range, internet only (no access to your devices or the router), guests kept apart from each other, pick the bands it's on
+- **More Wi-Fi networks**, each with its own name, password and bands, on your home network or, with [WireGuard + Passwall](../luci-app-wireguard-passwall/README.md), on its **VPN network** (every device on it goes through the VPN) or **Passwall network**
 - **Bands** (2.4 / 5 / 6 GHz): on/off, channel (with DFS hints), channel width and transmit power, plus the country setting
 - **Connected devices**: name, IP, band, signal, speed and connection time; **disconnect** or **block** a device (and unblock it later)
 - **Share** a network with a **QR code** that phones can scan to join
@@ -39,9 +40,25 @@ The guest network gets its own bridge `br-guestwifi`, interface `guestwifi` with
 
 Turning the guest network off disables its access points but keeps its settings, so turning it on again restores it.
 
+### More Wi-Fi networks
+
+**More Wi-Fi networks → Add Wi-Fi network** adds another Wi-Fi name (up to 8), with its own password, security and bands, and a choice of network:
+
+| Network | Its devices |
+|---|---|
+| 🏠 Home network | are on your LAN like those on the main Wi-Fi, e.g. a second name for older devices |
+| 🔒 VPN network | go through the VPN of WireGuard + Passwall (with its kill switch, if on) |
+| 🌐 Passwall network | go through Passwall |
+
+The VPN and Passwall networks are created by WireGuard + Passwall and are offered once it is installed (the Passwall network only with Passwall installed). They have their own address ranges. Each extra network is a set of `wifisetup_x<n>_<radio>` access points; after a change that involves the VPN or Passwall network, the app tells WireGuard + Passwall (`ubus call luci.wgpasswall sync`), which starts or stops Passwall as needed.
+
+<p align="center">
+  <img src="../docs/screenshots/wifisetup/extras.png" alt="More Wi-Fi networks" width="600">
+</p>
+
 ### Blocking devices
 
-A blocked device is disconnected and put on a deny list (`macfilter deny`) on all main and guest access points, so it can't join any of your Wi-Fi networks. Devices that use a random ("private") MAC address per network get a new address when they forget the network, so blocking is a convenience, not a security boundary: for that, change the password.
+A blocked device is disconnected and put on a deny list (`macfilter deny`) on all main, guest and extra access points, so it can't join any of your Wi-Fi networks. Devices that use a random ("private") MAC address per network get a new address when they forget the network, so blocking is a convenience, not a security boundary: for that, change the password.
 
 If you configured an *allow list* on an access point yourself (under *Network → Wireless*), this app leaves that access point's list alone.
 

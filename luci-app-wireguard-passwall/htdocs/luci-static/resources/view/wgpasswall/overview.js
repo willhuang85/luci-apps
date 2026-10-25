@@ -12,33 +12,24 @@ const callSave = rpc.declare({ object: 'luci.wgpasswall', method: 'save', params
 const callRemove = rpc.declare({ object: 'luci.wgpasswall', method: 'remove', params: [ 'id' ] });
 const callConnect = rpc.declare({ object: 'luci.wgpasswall', method: 'connect', params: [ 'id' ] });
 const callDisconnect = rpc.declare({ object: 'luci.wgpasswall', method: 'disconnect', params: [ 'id' ] });
-const callSetKillswitch = rpc.declare({ object: 'luci.wgpasswall', method: 'set_killswitch', params: [ 'enabled' ] });
-const callSetMode = rpc.declare({ object: 'luci.wgpasswall', method: 'set_mode', params: [ 'mode', 'node', 'id' ] });
+const callSetOptions = rpc.declare({ object: 'luci.wgpasswall', method: 'set_options', params: [ 'killswitch', 'via_passwall' ] });
+const callSetPorts = rpc.declare({ object: 'luci.wgpasswall', method: 'set_ports', params: [ 'ports' ] });
 const callReapply = rpc.declare({ object: 'luci.wgpasswall', method: 'reapply' });
-const callSetDevices = rpc.declare({ object: 'luci.wgpasswall', method: 'set_devices', params: [ 'scope', 'devices' ] });
 
-const MODE_INFO = {
-	vpn: { icon: '🔒', title: _('VPN'), desc: _('Your devices use the WireGuard VPN.') },
-	vpn_passwall: { icon: '🔀', title: _('VPN through Passwall'), desc: _('The VPN, hidden inside a Passwall proxy connection.') },
-	passwall: { icon: '🌐', title: _('Passwall only'), desc: _('No VPN; Passwall proxies your devices.') },
-	off: { icon: '⏻', title: _('Off'), desc: _('No VPN and no proxy: your regular internet connection.') }
+// The networks a wired port or Wi-Fi network can be on (status.networks)
+const NETWORKS = {
+	lan: { icon: '🏠', title: _('Home network'), desc: _('Your regular internet connection, no VPN.') },
+	vpn: { icon: '🔒', title: _('VPN network'), desc: _('Through the VPN.') },
+	proxy: { icon: '🌐', title: _('Passwall network'), desc: _('Through Passwall.') }
 };
 
-// Mode descriptions while only chosen devices use the VPN
-const MODE_DESC_DEVICES = {
-	vpn: _('Your chosen devices use the WireGuard VPN.'),
-	vpn_passwall: _('Chosen devices: the VPN hidden inside Passwall. Others: Passwall.')
-};
-
-// What the backend found out of step with the current mode (status.drift)
+// What the backend found out of step with the settings (status.drift)
 const DRIFT_TEXT = {
-	pw_settings: _('Passwall\'s settings were changed outside this page (main switch, node, Client Proxy, Localhost Proxy or proxy modes).'),
-	pw_acl: _('Passwall\'s access control rules of this page are missing or out of date.'),
+	pw_settings: _('Passwall\'s settings were changed outside this page (main switch, Client Proxy, Localhost Proxy, access control or proxy modes).'),
+	pw_acl: _('Passwall\'s access control rule for the Passwall network is missing or out of date.'),
 	fw_rules: _('Firewall rules of this page are saved but not active.'),
-	fw_missing: _('Firewall rules of this page were removed.')
+	fw_missing: _('The VPN network, its firewall zone or other firewall rules of this page were removed.')
 };
-
-const MAC_RE = /^[0-9A-Fa-f]{2}([:-][0-9A-Fa-f]{2}){5}$/;
 
 // A handshake older than this means the peer is not answering anymore.
 const HANDSHAKE_TIMEOUT = 180;
@@ -91,22 +82,23 @@ const CSS = `
 	border: 1px solid var(--wgc-line); vertical-align: middle; font-weight: normal; }
 .wgc-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .wgc-actions .btn, .wgc-actions .cbi-button { margin: 0; }
-.wgc-modes { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin-top: 12px; }
-.wgc-mode { height: auto; line-height: inherit; display: flex; flex-direction: column; justify-content: flex-start; text-align: left; border: 2px solid var(--wgc-line);
-	border-radius: 10px; padding: 12px; background: transparent; color: inherit; cursor: pointer; font: inherit; }
 .wgc-actions .btn:disabled { opacity: .45; cursor: not-allowed; }
-.wgc-mode:hover { border-color: var(--wgc-muted); }
-.wgc-mode.active { border-color: var(--wgc-ok); background: rgba(26,156,74,.08); }
-.wgc-mode:disabled { opacity: .5; cursor: not-allowed; }
-.wgc-mode-title { font-weight: 600; margin-top: 4px; }
-.wgc-mode-icon { font-size: 22px; line-height: 1; }
-@media (max-width: 600px) { .wgc-modes { grid-template-columns: 1fr 1fr; } }
-.wgc-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
-.wgc-chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--wgc-line); border-radius: 16px; padding: 3px 10px; }
-.wgc-chip .wgc-dot { width: 8px; height: 8px; }
-.wgc-devs { max-height: 50vh; overflow-y: auto; margin-top: 8px; }
-.wgc-dev { display: flex; align-items: center; gap: 12px; padding: 8px 4px; border-bottom: 1px solid var(--wgc-line); cursor: pointer; font-weight: normal; }
-.wgc-dev > input[type="checkbox"] { position: relative; top: 0; right: 0; margin: 0; flex: none; }
+.wgc-nets { margin-top: 12px; }
+.wgc-net { display: flex; gap: 14px; padding: 14px 0; border-top: 1px solid var(--wgc-line); }
+.wgc-net:first-child { border-top: 0; padding-top: 4px; }
+.wgc-net-icon { font-size: 22px; line-height: 1.2; flex: none; width: 28px; text-align: center; }
+.wgc-net-title { font-weight: 600; }
+.wgc-net-title .wgc-badge { margin-left: 6px; }
+.wgc-badge.ok { border-color: var(--wgc-ok); color: var(--wgc-ok); }
+.wgc-badge.warn { border-color: var(--wgc-warn); color: var(--wgc-warn); }
+.wgc-badge.bad { border-color: var(--wgc-bad); color: var(--wgc-bad); }
+.wgc-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.wgc-chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--wgc-line); border-radius: 16px; padding: 2px 10px; font-size: .9em; }
+.wgc-chip.none { border-style: dashed; color: var(--wgc-muted); }
+.wgc-opt { display: flex; align-items: center; gap: 16px; padding: 14px 0; border-top: 1px solid var(--wgc-line); }
+.wgc-opt:first-of-type { border-top: 0; padding-top: 4px; }
+.wgc-ports { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 10px 16px; align-items: center; margin-top: 12px; }
+.wgc-ports select { width: 100%; max-width: 320px; }
 .wgc-drop { border: 2px dashed var(--wgc-line); border-radius: 12px; padding: 32px 16px; text-align: center; cursor: pointer;
 	transition: border-color .15s, background .15s; }
 .wgc-drop:hover, .wgc-drop.over { border-color: var(--wgc-ok); background: rgba(26,156,74,.06); }
@@ -243,6 +235,13 @@ function addKeepalive(text, sec) {
 	return out.join('\n');
 }
 
+// "lan2" -> "LAN 2"
+function portLabel(name) {
+	const m = /^lan([0-9]*)$/i.exec(name ?? '');
+
+	return m ? (m[1] ? _('LAN %s').format(m[1]) : _('LAN')) : name;
+}
+
 function labelFromFilename(name) {
 	return (name || '').replace(/\.(conf|txt)$/i, '').replace(/[_-]+/g, ' ').trim().substring(0, 64);
 }
@@ -304,48 +303,33 @@ return view.extend({
 		return this.act(_('Disconnecting from %s…').format(p.label), () => callDisconnect(p.id));
 	},
 
-	handleMode(mode) {
-		const cur = this.data?.mode ?? 'vpn';
-		const node = this.root.querySelector('select[name="wgc-pw-node"]')?.value ?? '';
-		let msg = {
-			vpn: _('Switch to VPN mode?\n\nPasswall goes back to exactly the settings it had before you first used a Passwall mode, and your last VPN profile connects.'),
-			vpn_passwall: _('Switch to "VPN through Passwall"?\n\nPasswall is switched on with the selected node, "Client Proxy" off and "Localhost Proxy" on. WireGuard reaches your VPN server through Passwall\'s SOCKS port via a small relay on the router, with the tunnel MTU at 1280. Traffic from your LAN devices goes through the VPN; the router\'s own traffic and DNS go through Passwall.\n\nYour current Passwall settings are saved and restored when you switch back to VPN mode.'),
-			off: _('Turn everything off?\n\nThe VPN is disconnected, Passwall\'s main switch is turned off (its other settings stay as they are) and the kill switch is paused, so your devices use your regular internet connection. Pick another mode to turn things back on.'),
-			passwall: _('Switch to "Passwall only"?\n\nThe VPN is disconnected and Passwall proxies your LAN devices and the router itself with the selected node ("Client Proxy" and "Localhost Proxy" on, default proxy modes set to Proxy). A guest network goes out directly (a "No Proxy" access control rule). The kill switch is paused in this mode.\n\nYour current Passwall settings are saved and restored when you switch back to VPN mode.')
-		}[mode];
-
-		if (mode == 'vpn_passwall' && this.data?.scope == 'devices')
-			msg = _('Switch to "VPN through Passwall"?\n\nPasswall is switched on with the selected node. Your chosen devices go through the VPN, and WireGuard reaches your VPN server through Passwall\'s SOCKS port via a small relay on the router, with the tunnel MTU at 1280. All other LAN devices, and the router itself, are proxied by Passwall directly ("Client Proxy" and "Localhost Proxy" on, default proxy modes set to Proxy; "No Proxy" access control rules for your chosen devices and a guest network).\n\nYour current Passwall settings are saved and restored when you switch back to VPN mode.');
-
-		if (mode == cur || !confirm(msg))
-			return;
-
-		return this.act(_('Switching to %s…').format(MODE_INFO[mode].title),
-			() => callSetMode(mode, node, this.data?.last_profile ?? ''));
-	},
-
-	handleModeNode(ev) {
-		const mode = this.data?.mode;
-
-		if (mode != 'vpn_passwall' && mode != 'passwall')
-			return;
-
-		return this.act(_('Switching Passwall node…'), () => callSetMode(mode, ev.target.value, ''));
-	},
-
 	handleKillswitch(ev) {
 		const enabled = ev.target.checked;
-		const active = (this.data?.profiles ?? []).some((p) => profileState(p).cls == 'ok');
+		const d = this.data;
+		const active = (d?.profiles ?? []).some((p) => profileState(p).cls == 'ok');
+		const used = d?.networks?.vpn?.ports?.length || d?.networks?.vpn?.ssids?.length;
 
-		if (enabled && !active &&
-		    !confirm((this.data?.scope == 'devices')
-				? _('No VPN is connected right now. Turning on the kill switch will cut internet access for your chosen devices until a VPN connects. Continue?')
-				: _('No VPN is connected right now. Turning on the kill switch will cut internet access for all LAN devices until a VPN connects. Continue?'))) {
+		if (enabled && !active && used &&
+		    !confirm(_('No VPN is connected right now. With the kill switch on, devices on the VPN network have no internet access until a VPN connects. Continue?'))) {
 			ev.target.checked = false;
 			return;
 		}
 
-		return this.act(null, () => callSetKillswitch(enabled));
+		return this.act(null, () => callSetOptions(enabled));
+	},
+
+	handleViaPasswall(ev) {
+		const on = ev.target.checked;
+		const msg = on
+			? _('Carry the VPN through Passwall?\n\nWireGuard then reaches your VPN server through the node selected in Passwall (via a small relay on the router, with the tunnel MTU at 1280), which hides from your internet provider that you use a VPN. Passwall runs while the VPN is connected, and the router\'s own traffic goes through Passwall instead of the VPN.')
+			: _('Connect the VPN directly again?\n\nWireGuard then reaches your VPN server directly, and the router\'s own traffic goes through the VPN while it is connected.');
+
+		if (!confirm(msg)) {
+			ev.target.checked = !on;
+			return;
+		}
+
+		return this.act(on ? _('Carrying the VPN through Passwall…') : _('Connecting the VPN directly…'), () => callSetOptions(undefined, on));
 	},
 
 	handleDelete(p) {
@@ -452,7 +436,7 @@ return view.extend({
 
 					if (res.keepalive_missing)
 						preview.appendChild(E('div', { 'class': 'wgc-note' }, [
-							E('div', {}, _('No PersistentKeepalive: behind NAT or a proxy (VPN through Passwall), an idle tunnel can go quiet and stall. 15 seconds stays well inside the shortest UDP timeouts (about 30 seconds), even if one keepalive is lost.')),
+							E('div', {}, _('No PersistentKeepalive: behind NAT or a proxy (VPN carried through Passwall), an idle tunnel can go quiet and stall. 15 seconds stays well inside the shortest UDP timeouts (about 30 seconds), even if one keepalive is lost.')),
 							E('button', { 'class': 'btn cbi-button', style: 'margin-top:8px', click: (ev) => {
 								ev.preventDefault();
 								confInput.value = addKeepalive(confInput.value, 15);
@@ -521,7 +505,7 @@ return view.extend({
 			input.click();
 		} }, [ _('Load from file…') ]);
 
-		if (isNew && this.data?.mode != 'passwall' && this.data?.mode != 'off')
+		if (isNew)
 			buttons.push(E('button', { 'class': 'btn cbi-button cbi-button-positive', click: () => save(true) }, [ _('Save & connect') ]));
 
 		buttons.push(E('button', { 'class': 'btn cbi-button cbi-button-action' + (isNew ? '' : ' important'), click: () => save(false) }, [ _('Save') ]));
@@ -551,51 +535,43 @@ return view.extend({
 	renderHero(data) {
 		const profiles = data.profiles;
 		const live = profiles.find((p) => p.up) ?? profiles.find((p) => p.auto);
-
-		if (data.mode == 'off') {
-			return E('div', { 'class': 'wgc-card' }, [
-				E('div', { 'class': 'wgc-hero' }, [
-					E('div', { 'class': 'wgc-orb' }, '⏻'),
-					E('div', { 'class': 'wgc-hero-text' }, [
-						E('div', { 'class': 'wgc-hero-title' }, _('Everything is off')),
-						E('div', { 'class': 'wgc-sub' }, _('No VPN and no proxy: your devices use your regular internet connection.'))
-					])
-				])
-			]);
-		}
-
-		if (data.mode == 'passwall') {
-			const pw = data.passwall;
-			const node = pw.nodes.find((n) => n.id == pw.node);
-
-			return E('div', { 'class': 'wgc-card' }, [
-				E('div', { 'class': 'wgc-hero' }, [
-					E('div', { 'class': 'wgc-orb ' + (pw.running ? 'ok' : 'warn') }, pw.running ? '🌐' : '…'),
-					E('div', { 'class': 'wgc-hero-text' }, [
-						E('div', { 'class': 'wgc-hero-title' }, pw.running ? _('Passwall only') : _('Passwall is starting…')),
-						E('div', { 'class': 'wgc-sub' }, _('Your devices go through Passwall (%s). The VPN is off.').format(node?.label ?? _('no node')))
-					])
-				])
-			]);
-		}
+		const vpnNet = data.networks?.vpn ?? {};
+		const empty = !vpnNet.ports?.length && !vpnNet.ssids?.length;
 
 		if (!live) {
+			let sub;
+
+			if (!profiles.length)
+				sub = _('Import a WireGuard configuration file to get started.');
+			else if (empty)
+				sub = _('Connect a profile below, and put devices on the VPN network (Networks).');
+			else if (data.killswitch_active)
+				sub = _('The kill switch keeps devices on the VPN network offline until a VPN connects.');
+			else
+				sub = _('Devices on the VPN network use your regular internet connection until a VPN connects.');
+
 			return E('div', { 'class': 'wgc-card' }, [
 				E('div', { 'class': 'wgc-hero' }, [
-					E('div', { 'class': 'wgc-orb' + (data.killswitch_active ? ' bad' : '') }, data.killswitch_active ? '⛔' : '⏻'),
+					E('div', { 'class': 'wgc-orb' + ((data.killswitch_active && !empty) ? ' bad' : '') }, (data.killswitch_active && !empty) ? '⛔' : '⏻'),
 					E('div', { 'class': 'wgc-hero-text' }, [
-						E('div', { 'class': 'wgc-hero-title' }, _('Not connected')),
-						E('div', { 'class': 'wgc-sub' }, data.killswitch_active
-							? _('The kill switch is blocking internet access for LAN devices until a VPN connects.')
-							: profiles.length
-								? _('Your traffic is using your regular internet connection. Pick a profile below to connect.')
-								: _('Import a WireGuard configuration file to get started.'))
+						E('div', { 'class': 'wgc-hero-title' }, _('VPN not connected')),
+						E('div', { 'class': 'wgc-sub' }, sub)
 					])
 				])
 			]);
 		}
 
 		const state = profileState(live);
+		let sub;
+
+		if (empty)
+			sub = _('Nothing is on the VPN network yet: put a wired port or Wi-Fi network on it (Networks).');
+		else if (!live.full_tunnel)
+			sub = _('Devices on the VPN network send traffic for %s through the VPN.').format(live.allowed_ips.join(', '));
+		else if (data.via_passwall)
+			sub = _('Devices on the VPN network go through the VPN, carried through Passwall.');
+		else
+			sub = _('Devices on the VPN network, and the router itself, go through the VPN.');
 
 		return E('div', { 'class': 'wgc-card' }, [
 			E('div', { 'class': 'wgc-hero' }, [
@@ -604,11 +580,7 @@ return view.extend({
 					E('div', { 'class': 'wgc-hero-title' }, state.cls == 'ok'
 						? _('Connected to %s').format(live.label)
 						: '%s — %s'.format(live.label, state.text)),
-					E('div', { 'class': 'wgc-sub' }, (data.scope == 'devices')
-						? N_(data.settings.devices.length, 'Internet traffic from your chosen device is going through the VPN.', 'Internet traffic from your %d chosen devices is going through the VPN.').format(data.settings.devices.length)
-						: live.full_tunnel
-							? _('All internet traffic from your network is going through the VPN.')
-							: _('Only traffic for %s is going through the VPN.').format(live.allowed_ips.join(', ')))
+					E('div', { 'class': 'wgc-sub' }, sub)
 				]),
 				E('button', { 'class': 'btn cbi-button cbi-button-negative', click: ui.createHandlerFn(this, 'handleDisconnect', live) }, [ _('Disconnect') ])
 			]),
@@ -619,7 +591,7 @@ return view.extend({
 				this.renderStat(_('Uptime'), formatUptime(live.uptime)),
 				this.renderStat(_('Downloaded'), formatBytes(live.rx_bytes)),
 				this.renderStat(_('Uploaded'), formatBytes(live.tx_bytes)),
-				data.mode == 'vpn_passwall'
+				data.via_passwall
 					? this.renderStat(_('Route'), live.proxied === true ? '✓ ' + _('Via Passwall') : live.proxied === false ? '⚠ ' + _('Waiting for Passwall') : _('Starting…'))
 					: ''
 			])
@@ -633,167 +605,209 @@ return view.extend({
 		]);
 	},
 
-	renderKillswitch(data) {
-		const s = data.settings;
-		const connected = data.profiles.some((p) => profileState(p).cls == 'ok');
-		let note = '';
+	// Where devices go: the networks with their wired ports and Wi-Fi networks.
+	renderNetworks(data) {
+		const nets = data.networks ?? {};
+		const pw = data.passwall ?? {};
+		const live = data.profiles.find((p) => p.up) ?? data.profiles.find((p) => p.auto);
+		const subnet = (n) => n.address ? n.address.replace(/\.[0-9]+$/, '.0/24') : null;
 
-		if (data.killswitch_paused)
-			note = E('div', { 'class': 'wgc-note' }, data.mode == 'off'
-				? _('Paused while everything is off. It comes back when you switch to a VPN mode.')
-				: _('Paused while in "Passwall only" mode, because Passwall sends some traffic directly on purpose. It comes back when you switch to a VPN mode.'));
-		else if (!data.lan_zone_ok || !data.wan_zone_ok)
-			note = E('div', { 'class': 'wgc-note bad' }, _('The kill switch needs the firewall zones "%s" and "%s", but at least one of them does not exist.').format(s.lan_zone, s.wan_zone));
-		else if (data.killswitch_active && !connected)
-			note = E('div', { 'class': 'wgc-note bad' }, (data.scope == 'devices')
-				? _('No VPN is connected, so your chosen devices currently have no internet access.')
-				: _('No VPN is connected, so LAN devices currently have no internet access.'));
-		else if (data.killswitch_active)
-			note = E('div', { 'class': 'wgc-note ok' }, (data.scope == 'devices')
-				? _('Protected: if the VPN drops, your chosen devices are cut off instead of leaking traffic.')
-				: _('Protected: if the VPN drops, LAN devices are cut off instead of leaking traffic.'));
+		const members = (n) => {
+			const chips = [
+				...(n.ports ?? []).map((p) => E('span', { 'class': 'wgc-chip', title: _('Wired port') }, [ '🔌 ', portLabel(p) ])),
+				...(n.ssids ?? []).map((ssid) => E('span', { 'class': 'wgc-chip', title: _('Wi-Fi network') }, [ '📶 ', ssid ]))
+			];
+
+			return E('div', { 'class': 'wgc-chips' }, chips.length ? chips
+				: [ E('span', { 'class': 'wgc-chip none' }, _('No ports or Wi-Fi networks')) ]);
+		};
+
+		const row = (key, badge, desc, extra) => {
+			const n = nets[key] ?? {};
+
+			return E('div', { 'class': 'wgc-net' }, [
+				E('div', { 'class': 'wgc-net-icon' }, NETWORKS[key].icon),
+				E('div', { 'class': 'wgc-grow' }, [
+					E('div', { 'class': 'wgc-net-title' }, [ NETWORKS[key].title, badge ?? '' ]),
+					E('div', { 'class': 'wgc-sub' }, [ desc, subnet(n) ? ' · ' + subnet(n) : '' ]),
+					members(n),
+					extra ?? ''
+				])
+			]);
+		};
+
+		const badge = (cls, text) => E('span', { 'class': 'wgc-badge ' + cls }, text);
+		const vpnState = live ? profileState(live) : null;
+		const rows = [
+			row('lan', null, NETWORKS.lan.desc),
+			row('vpn',
+				vpnState?.cls == 'ok' ? badge('ok', _('Connected')) : vpnState ? badge('warn', vpnState.text)
+					: data.killswitch_active ? badge('bad', _('Offline: kill switch')) : badge('', _('VPN not connected')),
+				!live ? (data.killswitch_active ? _('Through the VPN; no internet while it is not connected.') : _('Through the VPN; your regular connection while it is not connected.'))
+					: data.via_passwall ? _('Through %s, carried through Passwall.').format(live.label) : _('Through %s.').format(live.label))
+		];
+
+		if (pw.installed) {
+			const used = nets.proxy?.ports?.length || nets.proxy?.ssids?.length;
+			let b = null, note = '';
+
+			if (used && !pw.node)
+				b = badge('bad', _('No node'));
+			else if (used && !pw.running)
+				b = badge('warn', _('Starting…'));
+			else if (used)
+				b = badge('ok', _('Running'));
+
+			if (!pw.node && (used || data.via_passwall))
+				note = E('div', { 'class': 'wgc-note bad' }, [
+					_('No node is selected in Passwall, so there is no internet through it. '),
+					E('a', { href: L.url('admin/services/passwall') }, _('Choose a node in Passwall'))
+				]);
+
+			rows.push(row('proxy', b, pw.node ? _('Through Passwall, with its node %s.').format(pw.node.label) : _('Through Passwall.'), note));
+		}
 
 		return E('div', { 'class': 'wgc-card' }, [
-			E('div', { 'class': 'wgc-row' }, [
+			E('div', { 'class': 'wgc-row', style: 'flex-wrap:wrap' }, [
 				E('div', { 'class': 'wgc-grow' }, [
-					E('p', { 'class': 'wgc-h' }, '🛡 ' + _('Kill switch')),
-					E('div', { 'class': 'wgc-sub' }, (data.scope == 'devices')
-						? _('Block internet traffic from your chosen devices that does not go through the VPN.')
-						: _('Block all internet traffic from LAN devices that does not go through the VPN.'))
-				]),
-				E('label', { 'class': 'wgc-switch', title: _('Kill switch') }, [
-					E('input', {
-						type: 'checkbox',
-						role: 'switch',
-						'aria-label': _('Kill switch'),
-						checked: s.killswitch ? '' : null,
-						change: ui.createHandlerFn(this, 'handleKillswitch')
-					}),
-					E('span', { 'class': 'wgc-slider' })
+					E('p', { 'class': 'wgc-h' }, '🧭 ' + _('Networks')),
+					E('div', { 'class': 'wgc-sub' }, _('Each wired port and Wi-Fi network belongs to one network, which decides how its devices reach the internet.'))
 				])
 			]),
-			note
-		]);
-	},
-
-	// Mode picker: VPN / VPN through Passwall / Passwall only.
-	renderMode(data) {
-		const pw = data.passwall;
-		const mode = data.mode ?? 'vpn';
-		const live = data.profiles.find((p) => p.up);
-		let note = '';
-
-		if (!pw.nodes.length) {
-			note = E('div', { 'class': 'wgc-note' }, [
-				_('Add a node in Passwall to use the Passwall modes. '),
-				E('a', { href: L.url('admin/services/passwall') }, _('Open Passwall'))
-			]);
-		}
-		else if ((mode == 'vpn_passwall' || mode == 'passwall') && !pw.running) {
-			note = E('div', { 'class': 'wgc-note' }, _('Passwall is starting… this can take up to a minute.'));
-		}
-		else if (mode == 'vpn_passwall' && live?.proxied === true) {
-			note = E('div', { 'class': 'wgc-note ok' }, _('Wrapped: WireGuard reaches the VPN server through Passwall.'));
-		}
-		else if (mode == 'vpn_passwall' && live?.proxied === false) {
-			note = E('div', { 'class': 'wgc-note bad' }, _('Waiting for Passwall: the relay cannot use Passwall\'s SOCKS port yet. It retries every few seconds; if this stays, check that Passwall is running and that its node supports UDP.'));
-		}
-		else if (mode == 'vpn_passwall' && live) {
-			note = E('div', { 'class': 'wgc-note' }, _('Starting the relay…'));
-		}
-
-		const buttons = Object.keys(MODE_INFO).map((m) => E('button', {
-			'class': 'wgc-mode' + (m == mode ? ' active' : ''),
-			'aria-pressed': (m == mode) ? 'true' : 'false',
-			disabled: ((m == 'vpn_passwall' || m == 'passwall') && !pw.nodes.length) ? '' : null,
-			click: () => this.handleMode(m)
-		}, [
-			E('div', { 'class': 'wgc-mode-icon' }, MODE_INFO[m].icon),
-			E('div', { 'class': 'wgc-mode-title' }, MODE_INFO[m].title),
-			E('div', { 'class': 'wgc-sub' }, ((data.scope == 'devices') ? MODE_DESC_DEVICES[m] : null) ?? MODE_INFO[m].desc)
-		]));
-
-		const nodeSelect = E('select', {
-			'class': 'cbi-input-select',
-			name: 'wgc-pw-node',
-			style: 'max-width:100%',
-			change: ui.createHandlerFn(this, 'handleModeNode')
-		}, pw.nodes.map((n) => E('option', { value: n.id, selected: (n.id == pw.node) ? '' : null }, n.label)));
-
-		return E('div', { 'class': 'wgc-card' }, [
-			E('p', { 'class': 'wgc-h' }, _('Mode')),
-			E('div', { 'class': 'wgc-modes' }, buttons),
-			pw.nodes.length ? E('div', { 'class': 'wgc-row', style: 'margin-top:12px; flex-wrap:wrap; gap:8px' }, [
-				E('span', { 'class': 'wgc-sub', style: 'margin:0' }, _('Passwall node')),
-				nodeSelect
-			]) : '',
-			note
-		]);
-	},
-
-	// Who uses the VPN: all devices or only chosen ones (by MAC address).
-	renderDevices(data) {
-		const chosen = data.settings.devices ?? [];
-		const scope = data.scope;
-		const seen = {};
-		let others = '';
-
-		(data.lan_devices ?? []).forEach((d) => seen[d.mac] = d);
-
-		let dns = '';
-
-		if (data.mode == 'vpn' || data.mode == 'vpn_passwall')
-			dns = data.vpn_dns
-				? _('Their DNS goes to the VPN\'s DNS server (%s) through the tunnel.').format([ data.vpn_dns.v4, data.vpn_dns.v6 ].filter((a) => a).join(', '))
-				: data.profiles.some((p) => p.auto)
-					? _('The VPN profile has no DNS server, so their DNS goes to the router\'s DNS servers outside the VPN.')
-					: '';
-
-		if (scope == 'devices')
-			others = (data.mode == 'vpn_passwall')
-				? _('All other devices go through Passwall, without the VPN.')
-				: (data.mode == 'vpn')
-					? _('All other devices use your regular internet connection.')
-					: _('This applies in the VPN modes.');
-
-		const tile = (s, icon, title, desc) => E('button', {
-			'class': 'wgc-mode' + (s == scope ? ' active' : ''),
-			'aria-pressed': (s == scope) ? 'true' : 'false',
-			click: () => (s == 'devices') ? this.showDevices() : this.handleScopeAll()
-		}, [
-			E('div', { 'class': 'wgc-mode-icon' }, icon),
-			E('div', { 'class': 'wgc-mode-title' }, title),
-			E('div', { 'class': 'wgc-sub' }, desc)
-		]);
-
-		return E('div', { 'class': 'wgc-card' }, [
-			E('p', { 'class': 'wgc-h' }, _('Devices using the VPN')),
-			E('div', { 'class': 'wgc-modes' }, [
-				tile('all', '🏠', _('All devices'), _('Every device on your network. A guest network never uses the VPN.')),
-				tile('devices', '💻', _('Only chosen devices'), _('For example your work laptops. Picked by their hardware (MAC) address.'))
+			E('div', { 'class': 'wgc-nets' }, rows),
+			E('div', { 'class': 'wgc-actions', style: 'justify-content:flex-end; margin-top:8px' }, [
+				E('a', { 'class': 'btn cbi-button', href: L.url('admin/services/wifisetup') }, [ '📶 ' + _('Wi-Fi networks…') ]),
+				E('button', { 'class': 'btn cbi-button cbi-button-action', click: () => this.showPorts() }, [ '🔌 ' + _('Wired ports…') ])
 			]),
-			(scope == 'devices') ? E('div', { 'class': 'wgc-chips' }, [
-				...chosen.map((mac) => E('span', { 'class': 'wgc-chip', title: mac }, [
-					E('span', { 'class': 'wgc-dot' + (seen[mac] ? ' ok' : ''), title: seen[mac] ? _('On the network') : _('Not seen on the network right now') }),
-					seen[mac]?.name ?? mac
-				])),
-				E('button', { 'class': 'btn cbi-button', click: () => this.showDevices() }, [ _('Change…') ])
-			]) : '',
-			dns ? E('div', { 'class': 'wgc-sub', style: 'margin-top:10px' }, dns) : '',
-			data.ipv6_blocked ? E('div', { 'class': 'wgc-sub', style: 'margin-top:10px' },
-				_('Their IPv6 internet traffic is blocked: the VPN profile only carries IPv4, so IPv6 would go around the VPN. Apps use IPv4 instead.')) : '',
-			others ? E('div', { 'class': 'wgc-sub', style: 'margin-top:10px' }, others) : ''
+			E('div', { 'class': 'wgc-sub', style: 'margin-top:10px; font-size:.9em' }, _('Wi-Fi networks and the network each one is on are set in Wi-Fi Setup. A guest network always uses your regular internet connection.'))
 		]);
+	},
+
+	// Settings of the VPN network: kill switch, VPN through Passwall, DNS.
+	renderVpnOptions(data) {
+		const s = data.settings;
+		const pw = data.passwall ?? {};
+		const live = data.profiles.find((p) => p.up);
+		const connected = data.profiles.some((p) => profileState(p).cls == 'ok');
+		const toggle = (checked, label, handler) => E('label', { 'class': 'wgc-switch', title: label }, [
+			E('input', { type: 'checkbox', role: 'switch', 'aria-label': label, checked: checked ? '' : null, change: ui.createHandlerFn(this, handler) }),
+			E('span', { 'class': 'wgc-slider' })
+		]);
+		let ksNote = '', viaNote = '', info = [];
+
+		if (!data.wan_zone_ok)
+			ksNote = E('div', { 'class': 'wgc-note bad' }, _('The kill switch needs the firewall zone "%s", which does not exist.').format(s.wan_zone));
+		else if (data.killswitch_active && !connected)
+			ksNote = E('div', { 'class': 'wgc-note bad' }, _('No VPN is connected, so devices on the VPN network currently have no internet access.'));
+
+		if (data.via_passwall && !pw.running && data.profiles.some((p) => p.auto))
+			viaNote = E('div', { 'class': 'wgc-note' }, _('Passwall is starting… this can take up to a minute.'));
+		else if (data.via_passwall && live?.proxied === true)
+			viaNote = E('div', { 'class': 'wgc-note ok' }, _('Wrapped: WireGuard reaches the VPN server through Passwall.'));
+		else if (data.via_passwall && live?.proxied === false)
+			viaNote = E('div', { 'class': 'wgc-note bad' }, _('Waiting for Passwall: the relay cannot use Passwall\'s SOCKS port yet. It retries every few seconds; if this stays, check that Passwall is running and that its node supports UDP.'));
+		else if (data.via_passwall && live)
+			viaNote = E('div', { 'class': 'wgc-note' }, _('Starting the relay…'));
+
+		if (data.vpn_dns)
+			info.push(_('DNS of the VPN network goes to the VPN\'s DNS server (%s) through the tunnel.').format([ data.vpn_dns.v4, data.vpn_dns.v6 ].filter((a) => a).join(', ')));
+		else if (data.profiles.some((p) => p.auto))
+			info.push(_('The VPN profile has no DNS server, so the VPN network uses the router\'s DNS servers, outside the VPN.'));
+
+		if (data.ipv6_blocked)
+			info.push(_('IPv6 internet traffic of the VPN network is blocked: the profile only carries IPv4, so IPv6 would go around the VPN.'));
+
+		return E('div', { 'class': 'wgc-card' }, [
+			E('p', { 'class': 'wgc-h', style: 'margin-bottom:6px' }, '🔒 ' + _('VPN network settings')),
+			E('div', { 'class': 'wgc-opt' }, [
+				E('div', { 'class': 'wgc-grow' }, [
+					E('div', { 'class': 'wgc-net-title' }, '🛡 ' + _('Kill switch')),
+					E('div', { 'class': 'wgc-sub' }, _('While the VPN is not connected, devices on the VPN network get no internet instead of using your regular connection.')),
+					ksNote
+				]),
+				toggle(s.killswitch, _('Kill switch'), 'handleKillswitch')
+			]),
+			pw.installed ? E('div', { 'class': 'wgc-opt' }, [
+				E('div', { 'class': 'wgc-grow' }, [
+					E('div', { 'class': 'wgc-net-title' }, '🔀 ' + _('Carry the VPN through Passwall')),
+					E('div', { 'class': 'wgc-sub' }, pw.node
+						? _('WireGuard reaches your VPN server through Passwall\'s node (%s), hiding that you use a VPN. Slower, and only as reliable as the node.').format(pw.node.label)
+						: _('WireGuard reaches your VPN server through the node selected in Passwall, hiding that you use a VPN.')),
+					viaNote
+				]),
+				toggle(data.via_passwall, _('Carry the VPN through Passwall'), 'handleViaPasswall')
+			]) : '',
+			info.length ? E('div', { 'class': 'wgc-sub', style: 'margin-top:6px' }, info.map((t) => E('div', { style: 'margin-top:4px' }, t))) : ''
+		]);
+	},
+
+	// Dialog to move wired ports between the networks.
+	showPorts() {
+		const nets = this.data?.networks ?? {};
+		const keys = Object.keys(NETWORKS).filter((k) => nets[k]?.exists);
+		const ports = [];
+
+		for (let k of keys)
+			for (let p of nets[k].ports ?? [])
+				ports.push({ name: p, role: k });
+
+		ports.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+
+		const selects = {};
+		const saveBtn = E('button', { 'class': 'btn cbi-button cbi-button-positive important', disabled: '' }, [ _('Save') ]);
+		const changed = () => ports.filter((p) => selects[p.name].value != p.role);
+		const warn = E('div', { 'class': 'wgc-note', style: 'display:none' });
+
+		const update = () => {
+			const c = changed();
+
+			saveBtn.disabled = !c.length;
+			warn.style.display = c.length ? '' : 'none';
+			dom.content(warn, [
+				_('Devices on a port that moves get an address on the other network. If this computer is plugged into one of them, the page loses its connection: unplug the cable and plug it in again, then open the router at its address on that network: '),
+				E('strong', {}, c.map((p) => '%s → %s'.format(portLabel(p.name), nets[selects[p.name].value]?.address ?? '?')).join(', '))
+			]);
+		};
+
+		const rows = ports.map((p) => {
+			selects[p.name] = E('select', { 'class': 'cbi-input-select', change: update }, keys.map((k) =>
+				E('option', { value: k, selected: k == p.role ? '' : null }, '%s %s'.format(NETWORKS[k].icon, NETWORKS[k].title))));
+
+			return [ E('label', { style: 'font-weight:600' }, '🔌 ' + portLabel(p.name)), selects[p.name] ];
+		}).flat();
+
+		saveBtn.addEventListener('click', () => {
+			const map = {};
+
+			for (let p of changed())
+				map[p.name] = selects[p.name].value;
+
+			ui.hideModal();
+			return this.act(_('Moving ports…'), () => callSetPorts(map));
+		});
+
+		ui.showModal(_('Wired ports'), [
+			E('div', { 'class': 'wgc wgc-modal' }, [
+				E('div', { 'class': 'wgc-sub' }, _('Choose the network for each LAN port. A switch or access point plugged into a port puts all its devices on that network.')),
+				ports.length ? E('div', { 'class': 'wgc-ports' }, rows)
+					: E('div', { 'class': 'wgc-note' }, _('No LAN ports found: the home network has no bridge with ports ("br-lan").')),
+				warn
+			]),
+			E('div', { 'class': 'right', style: 'margin-top:16px; display:flex; gap:8px; justify-content:flex-end; flex-wrap:wrap' }, [
+				E('button', { 'class': 'btn cbi-button', click: ui.hideModal }, [ _('Cancel') ]),
+				saveBtn
+			])
+		], 'cbi-modal');
 	},
 
 	handleReapply() {
-		if (!confirm(_('Apply the current mode again?\n\nThe Passwall settings this mode uses, the routing and the firewall rules are set again; then the firewall reloads and, in the Passwall modes, Passwall restarts. Proxied devices lose the connection for a few seconds.')))
+		if (!confirm(_('Apply everything again?\n\nThe networks, routing, firewall rules and the Passwall settings this page uses are set again; then the firewall reloads and, if Passwall is in use, Passwall restarts. Devices on the VPN and Passwall networks lose the connection for a few seconds.')))
 			return;
 
 		return this.act(_('Reapplying settings…'), () => callReapply());
 	},
 
-	// Shown when something no longer matches what the current mode set up.
+	// Shown when something no longer matches what this page set up.
 	renderDrift(data) {
 		const issues = (data.drift ?? []).filter((d) => DRIFT_TEXT[d]);
 
@@ -811,101 +825,11 @@ return view.extend({
 		]);
 	},
 
-	handleScopeAll() {
-		if (this.data?.scope != 'devices')
-			return;
-
-		if (!confirm(_('Use the VPN for all devices on your network again?')))
-			return;
-
-		return this.act(_('Saving…'), () => callSetDevices('all', this.data.settings.devices ?? []));
-	},
-
-	// Picker for the devices that use the VPN.
-	showDevices() {
-		const chosen = new Set(this.data?.settings?.devices ?? []);
-		const devs = {};
-
-		(this.data?.lan_devices ?? []).forEach((d) => devs[d.mac] = d);
-		chosen.forEach((mac) => devs[mac] ??= { mac, ip: null, name: null, away: true });
-
-		const list = E('div', { 'class': 'wgc-devs' });
-		const saveBtn = E('button', { 'class': 'btn cbi-button cbi-button-positive important' }, [ _('Save') ]);
-		const update = () => saveBtn.disabled = !chosen.size;
-
-		const renderList = () => {
-			const rows = Object.values(devs).sort((a, b) =>
-				(chosen.has(b.mac) - chosen.has(a.mac)) || (a.name ?? '~' + a.mac).localeCompare(b.name ?? '~' + b.mac));
-
-			dom.content(list, rows.length ? rows.map((d) => {
-				const cb = E('input', { type: 'checkbox', checked: chosen.has(d.mac) ? '' : null });
-
-				cb.addEventListener('change', () => { cb.checked ? chosen.add(d.mac) : chosen.delete(d.mac); update(); });
-
-				return E('label', { 'class': 'wgc-dev' }, [
-					cb,
-					E('div', { 'class': 'wgc-grow' }, [
-						E('div', { style: 'font-weight:600' }, d.name ?? _('Unnamed device')),
-						E('div', { 'class': 'wgc-sub', style: 'margin:0' }, [ d.ip ?? _('not on the network right now'), ' · ', d.mac ])
-					])
-				]);
-			}) : E('div', { 'class': 'wgc-sub' }, _('No devices found on your network. Add one by its MAC address below.')));
-		};
-
-		const macInput = E('input', { type: 'text', 'class': 'cbi-input-text', placeholder: 'AA:BB:CC:DD:EE:FF', style: 'flex:1 1 180px; min-width:0' });
-		const addMac = (ev) => {
-			ev?.preventDefault();
-			const mac = macInput.value.trim().toUpperCase().replace(/-/g, ':');
-
-			if (!MAC_RE.test(mac))
-				return ui.addNotification(null, E('p', {}, _('Enter a MAC address like AA:BB:CC:DD:EE:FF.')), 'warning');
-
-			devs[mac] ??= { mac, ip: null, name: null };
-			chosen.add(mac);
-			macInput.value = '';
-			renderList();
-			update();
-		};
-
-		macInput.addEventListener('keydown', (ev) => { if (ev.key == 'Enter') addMac(ev); });
-
-		saveBtn.addEventListener('click', () => {
-			const devices = [ ...chosen ];
-
-			ui.hideModal();
-			return this.act(_('Saving…'), () => callSetDevices('devices', devices));
-		});
-
-		ui.showModal(_('Devices using the VPN'), [
-			E('div', { 'class': 'wgc wgc-modal' }, [
-				E('div', { 'class': 'wgc-sub' }, (this.data?.mode == 'vpn_passwall')
-					? _('The devices you tick go through the VPN; all others go through Passwall without the VPN.')
-					: _('The devices you tick go through the VPN; all others use your regular internet connection.')),
-				list,
-				E('div', { 'class': 'wgc-row', style: 'margin-top:12px; flex-wrap:wrap; gap:8px' }, [
-					macInput,
-					E('button', { 'class': 'btn cbi-button cbi-button-add', click: addMac }, [ _('Add') ])
-				]),
-				E('div', { 'class': 'wgc-sub', style: 'margin-top:10px; font-size:.9em' }, _('Wired devices always keep their hardware address. Phones and laptops on Wi-Fi use a private address per network that stays the same, unless set to change ("Rotating" on Apple devices, "Change daily" on Windows) or you forget and rejoin the network. A device behind another router shows up with that router\'s address.'))
-			]),
-			E('div', { 'class': 'right', style: 'margin-top:16px; display:flex; gap:8px; justify-content:flex-end; flex-wrap:wrap' }, [
-				E('button', { 'class': 'btn cbi-button', click: ui.hideModal }, [ _('Cancel') ]),
-				saveBtn
-			])
-		], 'cbi-modal');
-
-		renderList();
-		update();
-	},
-
-	// Shown when a transparent proxy app is installed next to this one.
+	// Shown when a transparent proxy app other than Passwall is installed.
 	renderProxyInfo(data) {
-		if (data.passwall?.installed)
-			return this.renderMode(data);
-
 		const apps = data.proxy_apps ?? [];
 
-		if (!apps.length)
+		if (data.passwall?.installed || !apps.length)
 			return '';
 
 		return E('div', { 'class': 'wgc-card' }, [
@@ -913,7 +837,7 @@ return view.extend({
 			E('div', { 'class': 'wgc-sub' }, _('The VPN uses its own routing table, so the proxy keeps working side by side:')),
 			E('ul', { 'class': 'wgc-list', style: 'margin:8px 0 0 18px; padding:0' }, [
 				E('li', {}, _('Connections made by the proxy core (Xray / sing-box) bypass the VPN, so they never loop into the tunnel.')),
-				E('li', {}, _('Install Passwall to also get the "VPN through Passwall" and "Passwall only" modes.'))
+				E('li', {}, _('Install Passwall to also get a Passwall network and to carry the VPN through Passwall.'))
 			])
 		]);
 	},
@@ -921,7 +845,6 @@ return view.extend({
 	renderProfile(p) {
 		const state = profileState(p);
 		const isOn = p.up || p.auto;
-		const noVpn = this.data?.mode == 'passwall' || this.data?.mode == 'off';
 
 		return E('div', { 'class': 'wgc-card wgc-profile' + (isOn ? ' active' : '') }, [
 			E('span', { 'class': 'wgc-dot ' + state.cls, title: state.text }),
@@ -937,12 +860,7 @@ return view.extend({
 			E('div', { 'class': 'wgc-actions' }, [
 				isOn
 					? E('button', { 'class': 'btn cbi-button cbi-button-negative', click: ui.createHandlerFn(this, 'handleDisconnect', p) }, [ _('Disconnect') ])
-					: E('button', {
-						'class': 'btn cbi-button cbi-button-positive',
-						disabled: noVpn ? '' : null,
-						title: noVpn ? _('Pick a VPN mode in the Mode card to connect') : null,
-						click: ui.createHandlerFn(this, 'handleConnect', p)
-					}, [ _('Connect') ]),
+					: E('button', { 'class': 'btn cbi-button cbi-button-positive', click: ui.createHandlerFn(this, 'handleConnect', p) }, [ _('Connect') ]),
 				E('button', { 'class': 'btn cbi-button', title: _('Edit'), click: ui.createHandlerFn(this, 'handleEdit', p) }, [ _('Edit') ]),
 				E('button', { 'class': 'btn cbi-button', title: _('Download .conf'), click: ui.createHandlerFn(this, 'handleExport', p) }, [ _('Export') ]),
 				E('button', { 'class': 'btn cbi-button cbi-button-remove', title: _('Delete'), click: ui.createHandlerFn(this, 'handleDelete', p) }, [ _('Delete') ])
@@ -983,9 +901,9 @@ return view.extend({
 		return [
 			this.renderHero(data),
 			this.renderDrift(data),
-			this.renderKillswitch(data),
+			this.renderNetworks(data),
+			this.renderVpnOptions(data),
 			this.renderProxyInfo(data),
-			profiles.length ? this.renderDevices(data) : '',
 			E('div', { 'class': 'wgc-list-head' }, [
 				E('p', { 'class': 'wgc-h' }, _('VPN profiles')),
 				profiles.length ? E('button', { 'class': 'btn cbi-button cbi-button-add', click: () => this.showEditor({}) }, [ '+ ' + _('Import') ]) : ''
@@ -1008,7 +926,7 @@ return view.extend({
 		return E([], [
 			E('style', {}, CSS),
 			E('h2', {}, _('WireGuard + Passwall')),
-			E('div', { 'class': 'cbi-map-descr', style: 'margin-bottom:16px' }, _('Connect your whole network to a WireGuard VPN, optionally carried through a Passwall proxy node. Import the configuration file from your VPN provider, pick a mode and connect.')),
+			E('div', { 'class': 'cbi-map-descr', style: 'margin-bottom:16px' }, _('Devices on the VPN network go through your WireGuard VPN, devices on the Passwall network through Passwall, and everything else uses your regular internet connection. Choose the network of each wired port here and of each Wi-Fi network in Wi-Fi Setup.')),
 			this.root
 		]);
 	}

@@ -10,7 +10,7 @@
 		},
 		"write": {
 			"ubus": {
-				"luci.wifisetup": [ "set_network", "set_radio", "set_region", "kick", "block", "unblock", "set_schedule" ]
+				"luci.wifisetup": [ "set_network", "set_extra", "remove_extra", "set_radio", "set_region", "kick", "block", "unblock", "set_schedule" ]
 			},
 			"uci": [ "wifisetup" ]
 		}

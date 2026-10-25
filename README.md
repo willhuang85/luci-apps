@@ -6,7 +6,7 @@ Simple, consumer-router style apps for OpenWrt's LuCI web interface. Built and t
 |---|---|---|
 | [**Wi-Fi Setup**](luci-app-wifisetup/README.md) (`luci-app-wifisetup`) | Services → Wi-Fi Setup | Network name, password and security for all bands, guest network, channels / width / power, connected devices with block, QR code sharing, Wi-Fi schedule |
 | [**Phone Tethering**](luci-app-tether/README.md) (`luci-app-tether`) | Services → Phone Tethering | When the main internet is down, use an iPhone's or Android phone's mobile data over USB or its Wi-Fi hotspot; switch back when the main connection works again |
-| [**WireGuard + Passwall**](luci-app-wireguard-passwall/README.md) (`luci-app-wireguard-passwall`) | Services → WireGuard + Passwall | WireGuard VPN client: import your provider's `.conf`, one-click connect, kill switch, and modes to carry the VPN through a Passwall proxy node |
+| [**WireGuard + Passwall**](luci-app-wireguard-passwall/README.md) (`luci-app-wireguard-passwall`) | Services → WireGuard + Passwall | WireGuard VPN client with networks: put wired ports and Wi-Fi networks on a VPN network or a Passwall network; one-click connect, kill switch, VPN carried through Passwall |
 
 | Wi-Fi Setup | Phone Tethering | WireGuard + Passwall |
 |---|---|---|

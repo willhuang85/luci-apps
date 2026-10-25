@@ -9,6 +9,9 @@ const callGet = rpc.declare({ object: 'luci.wifisetup', method: 'get' });
 const callStatus = rpc.declare({ object: 'luci.wifisetup', method: 'status' });
 const callSetNetwork = rpc.declare({ object: 'luci.wifisetup', method: 'set_network',
 	params: [ 'net', 'ssid', 'key', 'encryption', 'hidden', 'same_name', 'ssids', 'enabled', 'isolate', 'bands' ] });
+const callSetExtra = rpc.declare({ object: 'luci.wifisetup', method: 'set_extra',
+	params: [ 'id', 'ssid', 'key', 'encryption', 'hidden', 'bands', 'role' ] });
+const callRemoveExtra = rpc.declare({ object: 'luci.wifisetup', method: 'remove_extra', params: [ 'id' ] });
 const callSetRadio = rpc.declare({ object: 'luci.wifisetup', method: 'set_radio', params: [ 'id', 'enabled', 'channel', 'htmode', 'txpower' ] });
 const callSetRegion = rpc.declare({ object: 'luci.wifisetup', method: 'set_region', params: [ 'country' ] });
 const callKick = rpc.declare({ object: 'luci.wifisetup', method: 'kick', params: [ 'mac', 'ifname' ] });
@@ -37,6 +40,15 @@ const SECURITY = [
 	{ value: 'owe', label: _('Enhanced Open (no password, but encrypted)'), key: false, owe: true },
 	{ value: 'none', label: _('Open (no password)'), key: false }
 ];
+
+// The networks a Wi-Fi network can be on; VPN and Passwall come with
+// WireGuard + Passwall
+const ROLES = {
+	lan: { icon: '🏠', title: _('Home network'), desc: _('Your regular internet connection, like your main Wi-Fi.') },
+	vpn: { icon: '🔒', title: _('VPN network'), desc: _('All its devices go through the VPN (WireGuard + Passwall).') },
+	proxy: { icon: '🌐', title: _('Passwall network'), desc: _('All its devices go through Passwall.') },
+	other: { icon: '❔', title: _('Other network'), desc: _('A network set up elsewhere.') }
+};
 
 const DAYS = [
 	[ 'mon', _('Mon') ], [ 'tue', _('Tue') ], [ 'wed', _('Wed') ], [ 'thu', _('Thu') ],
@@ -105,6 +117,7 @@ const CSS = `
 	border: 1px solid var(--tw-line); vertical-align: middle; font-weight: normal; }
 .tw-badge.guest { border-color: var(--tw-warn); color: var(--tw-warn); }
 .tw-badge.bad { border-color: var(--tw-bad); color: var(--tw-bad); }
+.tw-badge.vpn { border-color: var(--tw-ok); color: var(--tw-ok); }
 .tw-dev { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 12px 0; border-top: 1px solid var(--tw-line); }
 .tw-dev:first-child { border-top: 0; }
 .tw-dev-name { font-weight: 600; overflow-wrap: anywhere; }
@@ -748,6 +761,165 @@ return view.extend({
 		]);
 	},
 
+	/* --- More networks */
+
+	renderExtras() {
+		const cfg = this.cfg;
+		const extras = cfg.extras ?? [];
+		const nets = cfg.networks ?? {};
+		const label = {};
+
+		(cfg.radios ?? []).forEach((r) => label[r.id] = r.label);
+
+		const rows = extras.map((x) => {
+			const role = ROLES[x.role] ?? ROLES.other;
+			const on = Object.keys(x.bands ?? {}).filter((id) => x.bands[id]).map((id) => label[id] ?? id);
+
+			return E('div', { 'class': 'tw-band' }, [
+				E('span', { 'class': 'tw-dot' + (x.enabled ? ' ok' : '') }),
+				E('div', { 'class': 'tw-grow' }, [
+					E('div', { 'class': 'tw-band-name' }, [
+						x.ssid,
+						E('span', { 'class': 'tw-badge' + (x.role == 'vpn' ? ' vpn' : '') }, '%s %s'.format(role.icon, role.title))
+					]),
+					E('div', { 'class': 'tw-sub' }, [
+						on.length ? on.join(' · ') : _('Off'),
+						' · ', securityInfo(x.encryption).key ? _('password') : _('no password'),
+						x.hidden ? ' · ' + _('hidden') : ''
+					])
+				]),
+				E('div', { 'class': 'tw-actions', style: 'margin-top:0' }, [
+					x.enabled ? E('button', { 'class': 'btn cbi-button', click: () => this.showQr(x.id) }, [ '▦ ' + _('Share') ]) : '',
+					E('button', { 'class': 'btn cbi-button', click: () => this.showExtraEditor(x) }, [ _('Edit') ]),
+					E('button', { 'class': 'btn cbi-button cbi-button-remove', click: () => this.handleRemoveExtra(x) }, [ _('Remove') ])
+				])
+			]);
+		});
+
+		let hint = '';
+
+		if (!nets.wgpasswall)
+			hint = _('Install WireGuard + Passwall to put a Wi-Fi network on a VPN network, whose devices all go through the VPN.');
+
+		return E('div', { 'class': 'tw-card' }, [
+			E('div', { 'class': 'tw-row', style: 'flex-wrap:wrap' }, [
+				E('div', { 'class': 'tw-grow' }, [
+					E('p', { 'class': 'tw-h' }, '➕ ' + _('More Wi-Fi networks')),
+					E('div', { 'class': 'tw-sub' }, nets.wgpasswall
+						? _('More Wi-Fi names, each on a network of its own: for example one whose devices all go through the VPN, and one through Passwall.')
+						: _('More Wi-Fi names on your home network, e.g. one for older devices.'))
+				]),
+				E('button', { 'class': 'btn cbi-button cbi-button-add', click: () => this.showExtraEditor(null) }, [ '+ ' + _('Add Wi-Fi network') ])
+			]),
+			rows.length ? E('div', { style: 'margin-top:8px' }, rows) : '',
+			hint ? E('div', { 'class': 'tw-hint', style: 'margin-top:10px' }, hint) : ''
+		]);
+	},
+
+	handleRemoveExtra(x) {
+		if (!confirm(_('Remove the Wi-Fi network "%s"? Devices connected to it lose Wi-Fi.').format(x.ssid)))
+			return;
+
+		return this.act(_('Removing %s…').format(x.ssid), () => callRemoveExtra(x.id), { restartsWifi: true });
+	},
+
+	// Add / edit dialog of an extra network.
+	showExtraEditor(x) {
+		const cfg = this.cfg;
+		const nets = cfg.networks ?? {};
+		const radios = cfg.radios ?? [];
+		const cur = x ?? {};
+		const avail = { lan: true, vpn: !!nets.vpn, proxy: !!nets.proxy };
+		const ssid = E('input', { type: 'text', 'class': 'cbi-input-text', value: cur.ssid ?? '', maxlength: 32,
+			placeholder: avail.vpn ? _('e.g. Home VPN') : _('e.g. Home 2') });
+		const ssidHint = E('div', { 'class': 'tw-hint' });
+		const role = E('select', { 'class': 'cbi-input-select' }, [ 'lan', 'vpn', 'proxy' ]
+			.filter((k) => avail[k] || cur.role == k)
+			.map((k) => E('option', { value: k, selected: (cur.role ?? (avail.vpn ? 'vpn' : 'lan')) == k ? '' : null },
+				'%s %s'.format(ROLES[k].icon, ROLES[k].title))));
+		const roleHint = E('div', { 'class': 'tw-hint' });
+		const pw = this.passwordField(cur.key, () => validate());
+		const keyHint = E('div', { 'class': 'tw-hint' });
+		const keyRow = [ E('label', {}, _('Password')), E('div', {}, [ pw.el, keyHint ]) ];
+		const security = this.securitySelect(cur.encryption ?? 'sae-mixed', () => validate());
+		const hidden = E('input', { type: 'checkbox', checked: cur.hidden ? '' : null, change: () => validate() });
+		const bandBoxes = {};
+		const saveBtn = E('button', { 'class': 'btn cbi-button cbi-button-save important', click: () => save() }, [ x ? _('Save') : _('Add') ]);
+
+		for (let r of radios)
+			bandBoxes[r.id] = E('input', { type: 'checkbox', change: () => validate(),
+				checked: (radios.length == 1 || (x ? cur.bands?.[r.id] : r.band != '6g')) ? '' : null });
+
+		const taken = [ cfg.main?.ssid, cfg.guest?.enabled ? cfg.guest?.ssid : null,
+			...(cfg.extras ?? []).filter((e) => e.id != cur.id).map((e) => e.ssid) ].filter((n) => n);
+
+		const validate = () => {
+			const keyed = securityInfo(security.value).key;
+			const se = ssidError(ssid.value) ?? (taken.includes(ssid.value) ? _('Another Wi-Fi network already has this name') : null);
+			const ke = keyed ? keyError(pw.input.value, security.value) : null;
+
+			ssidHint.textContent = se ?? '';
+			ssidHint.className = 'tw-hint' + (se ? ' bad' : '');
+			keyRow.forEach((el) => el.style.display = keyed ? '' : 'none');
+			keyHint.textContent = ke ?? '';
+			keyHint.className = 'tw-hint' + (ke ? ' bad' : '');
+			roleHint.textContent = (ROLES[role.value] ?? ROLES.other).desc +
+				((role.value != 'lan' && nets.wgpasswall) ? ' ' + _('Its devices get their own address range.') : '');
+
+			const ok = !se && !ke && Object.values(bandBoxes).some((b) => b.checked);
+
+			saveBtn.disabled = !ok;
+			return ok;
+		};
+
+		ssid.addEventListener('input', validate);
+		role.addEventListener('change', validate);
+
+		const save = () => {
+			if (!validate())
+				return;
+
+			const enc = security.value;
+			const key = securityInfo(enc).key ? pw.input.value : '';
+
+			if (enc == 'none' && !confirm(_('Without a password anyone nearby can join this network. Continue?')))
+				return;
+
+			ui.hideModal();
+
+			return this.act(_('Saving…'), () => callSetExtra(cur.id ?? '', ssid.value, key, enc, hidden.checked,
+				Object.keys(bandBoxes).filter((id) => bandBoxes[id].checked), role.value), { restartsWifi: true });
+		};
+
+		const rows = [
+			E('label', {}, _('Network name')), E('div', {}, [ ssid, ssidHint ]),
+			E('label', {}, _('Network')), E('div', {}, [ role, roleHint ]),
+			E('label', {}, _('Security')), security, ...keyRow
+		];
+
+		if (radios.length > 1)
+			rows.push(E('label', {}, _('Bands')), E('div', { 'class': 'tw-checks' }, radios.map((r) =>
+				E('label', { 'class': 'tw-check' }, [ bandBoxes[r.id], r.label ]))));
+
+		rows.push(E('div', { 'class': 'tw-full' }, E('label', { 'class': 'tw-check' }, [
+			hidden, _('Hide network name (devices must enter the name by hand to join)')
+		])));
+
+		ui.showModal(x ? _('Edit %s').format(cur.ssid) : _('Add Wi-Fi network'), [
+			E('div', { 'class': 'tw' }, [
+				E('div', { 'class': 'tw-form', style: 'margin-top:0' }, rows),
+				(!nets.vpn && nets.wgpasswall) ? E('div', { 'class': 'tw-note info' }, _('The VPN network of WireGuard + Passwall is missing: open its page and click "Reapply settings".')) : ''
+			]),
+			E('div', { 'class': 'tw-actions' }, [
+				E('button', { 'class': 'btn cbi-button', click: ui.hideModal }, [ _('Cancel') ]),
+				saveBtn
+			])
+		], 'cbi-modal');
+
+		validate();
+		ssid.focus();
+	},
+
 	/* --- Bands */
 
 	handleRadioToggle(r, ev) {
@@ -947,7 +1119,7 @@ return view.extend({
 				E('div', { 'class': 'tw-dev-name' }, [
 					c.name ?? c.mac,
 					c.network == 'guest' ? E('span', { 'class': 'tw-badge guest' }, _('Guest')) : '',
-					c.network == 'other' && c.ssid ? E('span', { 'class': 'tw-badge' }, c.ssid) : ''
+					(c.network == 'other' || c.network == 'extra') && c.ssid ? E('span', { 'class': 'tw-badge' }, c.ssid) : ''
 				]),
 				E('div', { 'class': 'tw-sub' }, [
 					label[c.radio] ?? c.radio,
@@ -1066,7 +1238,7 @@ return view.extend({
 			const pwEl = E('span', { 'class': 'tw-mono' }, '••••••••');
 			let shown = false;
 
-			ui.showModal(net == 'guest' ? _('Join the guest network') : _('Join the Wi-Fi'), [
+			ui.showModal(net == 'guest' ? _('Join the guest network') : (net == 'main') ? _('Join the Wi-Fi') : _('Join "%s"').format(res.ssid), [
 				E('div', { 'class': 'tw tw-qr' }, [
 					res.svg
 						? E('img', { src: 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(res.svg), alt: _('QR code to join %s').format(res.ssid) })
@@ -1103,6 +1275,7 @@ return view.extend({
 			(this.cfg.radios ?? []).length ? [
 				this.renderMain(),
 				this.renderGuest(),
+				this.renderExtras(),
 				this.renderBands(),
 				this.devicesEl,
 				this.renderSchedule()
@@ -1121,7 +1294,7 @@ return view.extend({
 			E('style', {}, CSS),
 			E('h2', {}, _('Wi-Fi Setup')),
 			E('div', { 'class': 'cbi-map-descr', style: 'margin-bottom:16px' },
-				_('Your Wi-Fi name and password, a guest network for visitors, and the devices that are connected.')),
+				_('Your Wi-Fi name and password, a guest network for visitors, more Wi-Fi networks (e.g. one whose devices go through the VPN), and the devices that are connected.')),
 			this.root
 		]);
 	}

@@ -16,7 +16,7 @@ define Package/luci-app-wireguard-passwall
   SECTION:=luci
   CATEGORY:=LuCI
   SUBMENU:=3. Applications
-  TITLE:=WireGuard + Passwall: VPN client with proxy modes and kill switch
+  TITLE:=WireGuard + Passwall: VPN and Passwall networks with a kill switch
   DEPENDS:=+luci-base +rpcd +rpcd-mod-ucode +ucode-mod-fs +ucode-mod-uci +ucode-mod-ubus \
 	+ucode-mod-socket +ucode-mod-uloop +wireguard-tools +kmod-wireguard
   PKGARCH:=all
@@ -24,10 +24,11 @@ endef
 
 define Package/luci-app-wireguard-passwall/description
   A simple LuCI interface to connect an OpenWrt router to a WireGuard VPN:
-  import .conf files from your VPN provider, connect with one click and
-  optionally block all non-VPN traffic from the LAN with a kill switch.
-  With Passwall installed it adds modes to carry the VPN through a Passwall
-  proxy node, to use Passwall alone, or to switch everything off.
+  import .conf files from your VPN provider and connect with one click.
+  Wired ports and Wi-Fi networks are put on a VPN network, whose devices
+  only go out through the VPN (optionally enforced by a kill switch), or,
+  with Passwall installed, on a Passwall network; the VPN itself can also be
+  carried through Passwall.
 endef
 
 define Package/luci-app-wireguard-passwall/conffiles
@@ -59,42 +60,36 @@ define Package/luci-app-wireguard-passwall/postinst
 	# OpenWrt only enables new init scripts on fresh installs, not upgrades
 	/etc/init.d/wgpasswall enable
 	/etc/init.d/wgpasswall restart
+	# set up the VPN (and Passwall) network, and bring settings of older
+	# versions in line, once rpcd has loaded the new backend
+	( sleep 5; ubus call luci.wgpasswall sync >/dev/null 2>&1 ) </dev/null >/dev/null 2>&1 &
 	echo "luci-app-wireguard-passwall: reload the LuCI page, then open Services -> WireGuard + Passwall"
 }
 exit 0
 endef
 
-# Never leave the LAN locked out after the app is gone.
+# Never leave the LAN locked out after the app is gone: wired ports and Wi-Fi
+# networks go back to the LAN, and Passwall gets its own settings back.
 define Package/luci-app-wireguard-passwall/prerm
 #!/bin/sh
 [ -n "$${IPKG_INSTROOT}" ] || {
-	# put Passwall back the way it was before any Passwall mode was used
-	ubus call luci.wgpasswall set_mode '{"mode":"vpn","connect":false}' >/dev/null 2>&1
+	ubus call luci.wgpasswall uninstall >/dev/null 2>&1 && exit 0
+	# the backend did not answer: at least lift the kill switch and remove
+	# the app's Passwall rules and DNS rules
 	uci -q set wgpasswall.settings.killswitch='0'
 	uci -q commit wgpasswall
-	# the Passwall rule that keeps it away from the VPN devices (gone after
-	# the switch to VPN mode, unless that failed)
 	for s in $$(uci -q show passwall | sed -n -E "s/^passwall\.((0wgpasswall_|zzz_wgpasswall_lan_|wgpasswall_lan_|wgpasswall_vpn_devices)[A-Za-z0-9_]*)=acl_rule$$/\1/p"); do
 		uci -q delete passwall.$$s
 	done
 	uci -q commit passwall
-	# the VPN devices' DNS rules: an nftables table of their own
 	nft delete table inet wgpasswall_dns 2>/dev/null
 	rm -f /etc/wgpasswall/devices-dns.nft
-	# the profiles' DNS servers go back onto their interfaces
-	for p in $$(uci -q show wgpasswall | sed -n "s/^wgpasswall\.\(wgc_[A-Za-z0-9_]*\)\.dns=.*/\1/p"); do
-		for d in $$(uci -q get wgpasswall.$$p.dns); do uci -q add_list network.$$p.dns="$$d"; done
-	done
-	uci -q commit network
-	if uci -q get firewall.wgpasswall_killswitch >/dev/null || uci -q get firewall.wgpasswall_devices >/dev/null || \
-	   uci -q get firewall.wgpasswall_devices_dns >/dev/null || uci -q get firewall.wgpasswall_no_ipv6 >/dev/null; then
-		uci -q delete firewall.wgpasswall_killswitch
-		uci -q delete firewall.wgpasswall_devices
-		uci -q delete firewall.wgpasswall_devices_dns
-		uci -q delete firewall.wgpasswall_no_ipv6
-		uci -q commit firewall
-		/etc/init.d/firewall reload >/dev/null 2>&1
-	fi
+	uci -q delete firewall.wgpasswall_killswitch
+	uci -q delete firewall.wgpasswall_devices
+	uci -q delete firewall.wgpasswall_devices_dns
+	uci -q delete firewall.wgpasswall_no_ipv6
+	uci -q commit firewall
+	/etc/init.d/firewall reload >/dev/null 2>&1
 }
 exit 0
 endef

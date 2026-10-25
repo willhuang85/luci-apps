@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // UDP relay that carries WireGuard through a local SOCKS5 proxy, used for
-// the "VPN through Passwall" mode: each tunnel's endpoint points at
+// "Carry the VPN through Passwall": each tunnel's endpoint points at
 // 127.0.0.1:<listen>, and every datagram is forwarded with SOCKS5 UDP
 // ASSOCIATE to the proxy (Passwall's node SOCKS port), which sends it to
 // the real VPN server over the proxy connection.
@@ -13,7 +13,7 @@
 // packets as replies and lets them out directly.
 //
 // The relays are read from /etc/config/network: every WireGuard peer with
-// "wgpasswall_orig_host" set (by the app, while in that mode) is relayed from
+// "wgpasswall_orig_host" set (by the app, while that is on) is relayed from
 // 127.0.0.1:<endpoint_port> to its original endpoint. The SOCKS port is
 // Passwall's "node_socks_port". For tests, WGPASSWALL_RELAY_CONFIG can point
 // to a JSON file instead:

@@ -1,13 +1,13 @@
 #!/bin/sh /etc/rc.common
-# Runs the relay that carries WireGuard through Passwall's SOCKS port in
-# "VPN through Passwall" mode, see /usr/libexec/wgpasswall-relay.
+# Runs the relay that carries WireGuard through Passwall's SOCKS port while
+# "Carry the VPN through Passwall" is on, see /usr/libexec/wgpasswall-relay.
 
 START=99
 USE_PROCD=1
 
 start_service() {
 	rm -f /var/run/wgpasswall/relay-status.json
-	[ "$(uci -q get wgpasswall.settings.mode)" = vpn_passwall ] || return 0
+	[ "$(uci -q get wgpasswall.settings.via_passwall)" = 1 ] || return 0
 	uci -q show network | grep -q '\.wgpasswall_orig_host=' || return 0
 
 	procd_open_instance relay
@@ -18,7 +18,7 @@ start_service() {
 }
 
 # the relay rewrites its status file every 2 seconds; do not leave a stale
-# one behind when it stops (e.g. when switching to another mode)
+# one behind when it stops (e.g. when the VPN no longer goes through Passwall)
 stop_service() {
 	rm -f /var/run/wgpasswall/relay-status.json
 }

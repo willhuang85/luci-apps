@@ -231,6 +231,35 @@ W.default_radio0.key = 'a"b:c\\d';
 check('qr escaping', call('qrcode', { net: 'main' }).text == 'WIFI:T:WPA;S:My\\;Net;P:a\\"b\\:c\\\\d;;');
 check('qr guest open', call('qrcode', { net: 'guest' }).text == 'WIFI:T:nopass;S:Home Guest;;');
 
+// --- extra networks
+W.default_radio0.ssid = 'Home';
+check('extra: none yet', length(call('get').extras) == 0 && !call('get').networks.vpn);
+check('extra: VPN network missing', call('set_extra', { ssid: 'Home VPN', key: 'correct horse', encryption: 'psk2', role: 'vpn' }).error != null);
+check('extra: unknown network', call('set_extra', { ssid: 'Home VPN', key: 'correct horse', encryption: 'psk2', role: 'wan' }).error != null);
+st.network.wgvpn = { '.type': 'interface', '.name': 'wgvpn', '.index': 30, proto: 'static' };
+check('extra: name taken', call('set_extra', { ssid: 'Home', key: 'correct horse', encryption: 'psk2', role: 'vpn' }).error != null);
+check('extra: bad password', call('set_extra', { ssid: 'Home VPN', key: 'short', encryption: 'psk2', role: 'vpn' }).error != null);
+r = call('set_extra', { ssid: 'Home VPN', key: 'correct horse', encryption: 'sae-mixed', role: 'vpn', bands: [ 'radio1' ] });
+check('extra: created', r.result && r.id == '1' && W.wifisetup_x1_radio1?.network == 'wgvpn' && W.wifisetup_x1_radio1?.ssid == 'Home VPN' &&
+	W.wifisetup_x1_radio1?.disabled == null && W.wifisetup_x1_radio0?.disabled == '1' && W.wifisetup_x1_radio2?.encryption == 'sae');
+r = call('get');
+check('extra: read back', length(r.extras) == 1 && r.extras[0].id == '1' && r.extras[0].role == 'vpn' && r.extras[0].ssid == 'Home VPN' &&
+	r.extras[0].bands.radio1 && !r.extras[0].bands.radio0 && r.extras[0].enabled && r.networks.vpn && !r.networks.proxy);
+check('extra: main untouched', r.main.ssid == 'Home' && W.default_radio0.network == 'lan');
+r = call('set_extra', { ssid: 'Home 2', key: '', encryption: 'owe', role: 'lan' });
+check('extra: second', r.id == '2' && W.wifisetup_x2_radio0?.network == 'lan' && W.wifisetup_x2_radio0?.disabled == null);
+check('extra: on the LAN is not the main network', call('get').main.ssid == 'Home' && call('get').extras[1].role == 'lan');
+r = call('set_extra', { id: '1', ssid: 'Home VPN', key: 'correct horse', encryption: 'sae-mixed', role: 'lan', bands: [ 'radio0', 'radio1' ] });
+check('extra: moved to the LAN', r.id == '1' && W.wifisetup_x1_radio0.network == 'lan' && W.wifisetup_x1_radio0.disabled == null);
+check('extra: unknown id', call('set_extra', { id: '9', ssid: 'X', key: '', encryption: 'owe', role: 'lan' }).error != null);
+call('block', { mac: 'aa:bb:cc:dd:ee:09' });
+check('extra: blocked devices', W.wifisetup_x1_radio0.macfilter == 'deny');
+call('unblock', { mac: 'aa:bb:cc:dd:ee:09' });
+check('extra: qr', call('qrcode', { net: '2' }).text == 'WIFI:T:nopass;S:Home 2;;');
+check('extra: remove', call('remove_extra', { id: '1' }).result && W.wifisetup_x1_radio0 == null && W.wifisetup_x1_radio1 == null &&
+	length(call('get').extras) == 1);
+check('extra: remove unknown', call('remove_extra', { id: '1' }).error != null);
+
 // rpcd serves iwinfo itself: calling it from the plugin would block rpcd
 check('never calls iwinfo', !length(filter(global.__ubus_calls, (c) => index(c, 'iwinfo.') == 0)));
 

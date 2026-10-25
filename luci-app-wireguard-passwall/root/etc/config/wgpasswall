@@ -1,6 +1,9 @@
 
 config settings 'settings'
+	# block the VPN network's internet access while the VPN is not connected
 	option killswitch '0'
+	# carry the VPN through Passwall (its global node)
+	option via_passwall '0'
 	option lan_zone 'lan'
 	option wan_zone 'wan'
 	# Policy routing (only change if it clashes with other apps):
@@ -14,5 +17,3 @@ config settings 'settings'
 	option bypass_mask '0xff'
 	# fwmark of WireGuard's own encrypted packets
 	option wg_fwmark '0xca6c'
-	# mark bit set on the traffic of the devices chosen to use the VPN
-	option device_mark '0x1000000'
