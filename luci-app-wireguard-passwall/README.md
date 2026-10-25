@@ -9,7 +9,7 @@ A simple WireGuard VPN **client** for OpenWrt's LuCI web interface that can also
 - Edit, export and delete profiles; works on desktop and phone
 - **Modes** (with Passwall installed): VPN, VPN carried through a Passwall node, Passwall only, and Off, switched with one click (see below)
 
-Menu: **VPN → WireGuard + Passwall**. Installation: see the [main README](../README.md).
+Menu: **Services → WireGuard + Passwall**. Installation: see the [main README](../README.md).
 
 <p align="center">
   <img src="../docs/screenshots/wgpasswall/overview.png" alt="Connected in VPN through Passwall mode" width="720">
@@ -97,7 +97,7 @@ luci-app-wireguard-passwall/
 └── root/
     ├── etc/config/wgpasswall                        settings (kill switch, zone names)
     └── usr/share/
-        ├── luci/menu.d/luci-app-wireguard-passwall.json     menu entry (VPN → WireGuard + Passwall)
+        ├── luci/menu.d/luci-app-wireguard-passwall.json     menu entry (Services → WireGuard + Passwall)
         ├── rpcd/acl.d/luci-app-wireguard-passwall.json      permissions
         ├── rpcd/ucode/luci.wgpasswall               backend (ubus object luci.wgpasswall)
         └── ucode/wgpasswall/conf.uc                 .conf parser / writer

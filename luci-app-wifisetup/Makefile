@@ -58,7 +58,7 @@ define Package/luci-app-wifisetup/postinst
 	# OpenWrt only enables new init scripts on fresh installs, not upgrades
 	/etc/init.d/wifisetup enable
 	/etc/init.d/wifisetup reload
-	echo "luci-app-wifisetup: reload the LuCI page, then open Network -> Wi-Fi Setup"
+	echo "luci-app-wifisetup: reload the LuCI page, then open Services -> Wi-Fi Setup"
 }
 exit 0
 endef

@@ -1,5 +1,5 @@
 {
-	"admin/network/wifisetup": {
+	"admin/services/wifisetup": {
 		"title": "Wi-Fi Setup",
 		"order": 14,
 		"action": {

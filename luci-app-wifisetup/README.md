@@ -12,7 +12,7 @@ A clean, consumer-router style Wi-Fi page for OpenWrt's LuCI web interface. Ever
 - **Schedule**: turn Wi-Fi off at night or during set hours, on chosen days
 - Works on desktop and phone, light and dark theme
 
-Menu: **Network → Wi-Fi Setup**. Installation: see the [main README](../README.md).
+Menu: **Services → Wi-Fi Setup**. Installation: see the [main README](../README.md).
 
 <p align="center">
   <img src="../docs/screenshots/wifisetup/overview.png" alt="Wi-Fi Setup page" width="720">
@@ -78,7 +78,7 @@ luci-app-wifisetup/
     └── usr/
         ├── libexec/wifisetup-schedule                Wi-Fi off/on, writes the cron entries
         └── share/
-            ├── luci/menu.d/luci-app-wifisetup.json   menu entry (Network → Wi-Fi Setup)
+            ├── luci/menu.d/luci-app-wifisetup.json   menu entry (Services → Wi-Fi Setup)
             ├── rpcd/acl.d/luci-app-wifisetup.json    permissions
             ├── rpcd/ucode/luci.wifisetup             backend (ubus object luci.wifisetup)
             └── ucode/wifisetup/schedule.uc           schedule helpers

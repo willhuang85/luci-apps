@@ -1,5 +1,5 @@
 {
-	"admin/vpn/wgpasswall": {
+	"admin/services/wgpasswall": {
 		"title": "WireGuard + Passwall",
 		"order": 90,
 		"action": {

@@ -56,7 +56,7 @@ define Package/luci-app-tether/postinst
 	/etc/init.d/rpcd reload 2>/dev/null
 	/etc/init.d/usbmuxd enable 2>/dev/null
 	/etc/init.d/usbmuxd start 2>/dev/null
-	echo "luci-app-tether: reload the LuCI page, then open Network -> Phone Tethering"
+	echo "luci-app-tether: reload the LuCI page, then open Services -> Phone Tethering"
 }
 exit 0
 endef

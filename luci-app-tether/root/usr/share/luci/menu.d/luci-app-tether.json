@@ -1,5 +1,5 @@
 {
-	"admin/network/tether": {
+	"admin/services/tether": {
 		"title": "Phone Tethering",
 		"order": 15,
 		"action": {

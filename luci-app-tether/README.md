@@ -8,7 +8,7 @@ When your main internet is down, switch the whole network to your phone's mobile
 - **Live status**: step-by-step checklist (plugged in, tethering link, internet address), time connected, data downloaded / uploaded
 - Switch between USB and Wi-Fi while tethering, and back to the main internet with one click
 
-Menu: **Network → Phone Tethering**. Installation: see the [main README](../README.md). The package pulls in the USB tethering drivers: `kmod-usb-net-ipheth` and `usbmuxd` for iPhones (`usbmuxd` handles the "Trust this computer?" pairing), `kmod-usb-net-cdc-ncm` for recent Android phones such as Pixels, and `kmod-usb-net-rndis` for older ones.
+Menu: **Services → Phone Tethering**. Installation: see the [main README](../README.md). The package pulls in the USB tethering drivers: `kmod-usb-net-ipheth` and `usbmuxd` for iPhones (`usbmuxd` handles the "Trust this computer?" pairing), `kmod-usb-net-cdc-ncm` for recent Android phones such as Pixels, and `kmod-usb-net-rndis` for older ones.
 
 <p align="center">
   <img src="../docs/screenshots/tether/main-down.png" alt="Main internet down, ready to switch to the phone" width="720">
@@ -31,7 +31,7 @@ Do this once while your internet works, so everything is ready when it isn't:
 
 ## When your internet goes down
 
-1. Open **Network → Phone Tethering** (connect to the router by cable or its Wi-Fi as usual). The page checks your main internet and says if it isn't working.
+1. Open **Services → Phone Tethering** (connect to the router by cable or its Wi-Fi as usual). The page checks your main internet and says if it isn't working.
 2. Pick **USB cable** or **Wi-Fi hotspot** and press **Use phone**.
 3. On the phone, turn on the hotspot or USB tethering as above (iPhone over USB: plug it in, unlock it, Personal Hotspot on). The checklist turns green and the page shows e.g. "Internet via Pixel 9".
 4. When the page says **Your main internet works again**, press **Switch back** (or **Back to main internet** at any time).
@@ -73,7 +73,7 @@ luci-app-tether/
     ├── etc/config/tether                           on/off, method, saved main-internet settings
     ├── etc/hotplug.d/net/30-tether                 follows the phone's USB network device
     └── usr/share/
-        ├── luci/menu.d/luci-app-tether.json        menu entry (Network → Phone Tethering)
+        ├── luci/menu.d/luci-app-tether.json        menu entry (Services → Phone Tethering)
         ├── rpcd/acl.d/luci-app-tether.json         permissions
         └── rpcd/ucode/luci.tether                  backend (ubus object luci.tether)
 ```

@@ -4,9 +4,9 @@ Simple, consumer-router style apps for OpenWrt's LuCI web interface. Built and t
 
 | App | Menu | What it does |
 |---|---|---|
-| [**Wi-Fi Setup**](luci-app-wifisetup/README.md) (`luci-app-wifisetup`) | Network → Wi-Fi Setup | Network name, password and security for all bands, guest network, channels / width / power, connected devices with block, QR code sharing, Wi-Fi schedule |
-| [**Phone Tethering**](luci-app-tether/README.md) (`luci-app-tether`) | Network → Phone Tethering | When the main internet is down, use an iPhone's or Android phone's mobile data over USB or its Wi-Fi hotspot; switch back when the main connection works again |
-| [**WireGuard + Passwall**](luci-app-wireguard-passwall/README.md) (`luci-app-wireguard-passwall`) | VPN → WireGuard + Passwall | WireGuard VPN client: import your provider's `.conf`, one-click connect, kill switch, and modes to carry the VPN through a Passwall proxy node |
+| [**Wi-Fi Setup**](luci-app-wifisetup/README.md) (`luci-app-wifisetup`) | Services → Wi-Fi Setup | Network name, password and security for all bands, guest network, channels / width / power, connected devices with block, QR code sharing, Wi-Fi schedule |
+| [**Phone Tethering**](luci-app-tether/README.md) (`luci-app-tether`) | Services → Phone Tethering | When the main internet is down, use an iPhone's or Android phone's mobile data over USB or its Wi-Fi hotspot; switch back when the main connection works again |
+| [**WireGuard + Passwall**](luci-app-wireguard-passwall/README.md) (`luci-app-wireguard-passwall`) | Services → WireGuard + Passwall | WireGuard VPN client: import your provider's `.conf`, one-click connect, kill switch, and modes to carry the VPN through a Passwall proxy node |
 
 | Wi-Fi Setup | Phone Tethering | WireGuard + Passwall |
 |---|---|---|
@@ -30,7 +30,7 @@ Simple, consumer-router style apps for OpenWrt's LuCI web interface. Built and t
    apk add --allow-untrusted /tmp/luci-app-*.apk
    ```
    `apk update` lets apk pull the dependencies it doesn't find on the router (`qrencode`, `usbmuxd`, `wireguard-tools`, the ucode modules, ...) from the official feeds, so the router needs internet access for the install. Install the tethering app **before** you need it.
-4. **Reload the LuCI page** (Ctrl+F5), then open the new pages under **Network** and **VPN**. Installing doesn't log you out.
+4. **Reload the LuCI page** (Ctrl+F5), then open the new pages under **Services**. Installing doesn't log you out.
 
 ### Installing from LuCI (signed packages)
 

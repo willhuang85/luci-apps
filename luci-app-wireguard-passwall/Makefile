@@ -59,7 +59,7 @@ define Package/luci-app-wireguard-passwall/postinst
 	# OpenWrt only enables new init scripts on fresh installs, not upgrades
 	/etc/init.d/wgpasswall enable
 	/etc/init.d/wgpasswall restart
-	echo "luci-app-wireguard-passwall: reload the LuCI page, then open VPN -> WireGuard + Passwall"
+	echo "luci-app-wireguard-passwall: reload the LuCI page, then open Services -> WireGuard + Passwall"
 }
 exit 0
 endef
