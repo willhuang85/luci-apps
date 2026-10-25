@@ -47,6 +47,15 @@ for i in 1 2 3 4 5 6 7 8 9 10; do
 	sleep 1
 done
 
+# waits until the firewall reloads / Passwall restarts the app queued are done
+wait_queue() {
+	for i in $(seq 1 120); do
+		pgrep -f '^/bin/sh -c [(]mkdir -p /var/lock; exec 9>' >/dev/null || return 0
+		sleep 0.5
+	done
+	fail "queued firewall reloads / Passwall restarts did not finish"
+}
+
 fail() {
 	echo "FAIL: $*"
 	echo "--- rpcd log"; cat "$WORK/rpcd.log"
@@ -300,11 +309,12 @@ uci delete firewall.wgpasswall_devices
 uci commit passwall; uci commit firewall
 ubus call luci.wgpasswall status | jq -e '(.drift | index("pw_settings")) and (.drift | index("pw_acl")) and (.drift | index("fw_missing"))' >/dev/null || \
 	fail "changes made elsewhere not reported: $(ubus call luci.wgpasswall status | jq -c .drift)"
+wait_queue
 : > /tmp/order.log
 ubus call luci.wgpasswall reapply | jq -e '.result' >/dev/null || fail "reapply"
 check_devices
 ubus call luci.wgpasswall status | jq -e '.drift == []' >/dev/null || fail "drift left after reapply"
-for i in $(seq 1 20); do grep -q restart-end /tmp/order.log && break; sleep 0.5; done
+wait_queue
 grep -q firewall-reload /tmp/order.log && grep -q restart-end /tmp/order.log || fail "reapply did not reload the firewall and restart Passwall"
 ubus call luci.wgpasswall set_devices '{"scope":"all","devices":["AA:BB:CC:DD:EE:01"]}' | jq -e '.result' >/dev/null || fail "set_devices all"
 uci -q get passwall.wgpasswall_vpn_devices >/dev/null && fail "VPN device rule left behind"
@@ -338,9 +348,11 @@ uci -q get network.wgpasswall_rule_vpn >/dev/null && fail "device rule left behi
 # Passwall commands run in the background, queued behind earlier restarts
 for i in $(seq 1 30); do grep -qx disable /tmp/passwall-init.log && break; sleep 0.5; done
 grep -qx disable /tmp/passwall-init.log || fail "passwall service not disabled again"
-uci set passwall.@global[0].node=realitynode; uci commit passwall
+uci set passwall.@global[0].node=realitynode
+uci set passwall.wgpasswall_lan_lan=acl_rule; uci set passwall.wgpasswall_lan_lan.interface=lan; uci commit passwall
 ubus call luci.wgpasswall reapply >/dev/null || fail "reapply in VPN mode"
 [ "$(uci -q get passwall.@global[0].node)" = realitynode ] || fail "reapply in VPN mode changed Passwall"
+uci -q get passwall.wgpasswall_lan_lan >/dev/null && fail "reapply in VPN mode left a rule of the app in Passwall"
 ubus call luci.wgpasswall status | jq -e '.drift == []' >/dev/null || fail "Passwall's own settings reported as drift in VPN mode"
 uci delete passwall.@global[0].node; uci commit passwall
 

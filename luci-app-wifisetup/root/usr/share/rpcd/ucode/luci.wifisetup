@@ -388,8 +388,9 @@ function set_flag(uci, sid, opt, on) {
 // with it closed: daemons a command starts (Passwall's xray, dnsmasq, ...)
 // would otherwise inherit it and hold the lock for as long as they run,
 // blocking every later reload. The "; true" keeps the shell from running the
-// last command in place of the subshell, which would close the lock early. The file name changed with that fix, as
-// daemons started by older versions may still hold the old one.
+// last command in place of the subshell, which would close the lock early.
+// The file name changed with that fix, as daemons started by older versions
+// may still hold the old one.
 const FW_LOCK = '/var/lock/luci-apps.lock';
 
 // The commands as one script; failures end up in the system log.

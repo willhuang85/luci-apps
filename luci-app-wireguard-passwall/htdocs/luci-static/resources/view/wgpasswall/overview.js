@@ -18,7 +18,7 @@ const callReapply = rpc.declare({ object: 'luci.wgpasswall', method: 'reapply' }
 const callSetDevices = rpc.declare({ object: 'luci.wgpasswall', method: 'set_devices', params: [ 'scope', 'devices' ] });
 
 const MODE_INFO = {
-	vpn: { icon: '🔒', title: _('VPN'), desc: _('All devices use the WireGuard VPN.') },
+	vpn: { icon: '🔒', title: _('VPN'), desc: _('Your devices use the WireGuard VPN.') },
 	vpn_passwall: { icon: '🔀', title: _('VPN through Passwall'), desc: _('The VPN, hidden inside a Passwall proxy connection.') },
 	passwall: { icon: '🌐', title: _('Passwall only'), desc: _('No VPN; Passwall proxies your devices.') },
 	off: { icon: '⏻', title: _('Off'), desc: _('No VPN and no proxy: your regular internet connection.') }
@@ -32,8 +32,8 @@ const MODE_DESC_DEVICES = {
 
 // What the backend found out of step with the current mode (status.drift)
 const DRIFT_TEXT = {
-	pw_settings: _('Passwall\'s settings were changed outside this page (main switch, node or Client Proxy).'),
-	pw_acl: _('Passwall\'s rule for the devices that use the VPN is missing or out of date.'),
+	pw_settings: _('Passwall\'s settings were changed outside this page (main switch, node, Client Proxy, Localhost Proxy or proxy modes).'),
+	pw_acl: _('Passwall\'s access control rules of this page are missing or out of date.'),
 	fw_rules: _('Firewall rules of this page are saved but not active.'),
 	fw_missing: _('Firewall rules of this page were removed.')
 };
@@ -719,7 +719,7 @@ return view.extend({
 		return E('div', { 'class': 'wgc-card' }, [
 			E('p', { 'class': 'wgc-h' }, _('Devices using the VPN')),
 			E('div', { 'class': 'wgc-modes' }, [
-				tile('all', '🏠', _('All devices'), _('Every device on your network.')),
+				tile('all', '🏠', _('All devices'), _('Every device on your network. A guest network never uses the VPN.')),
 				tile('devices', '💻', _('Only chosen devices'), _('For example your work laptops. Picked by their hardware (MAC) address.'))
 			]),
 			(scope == 'devices') ? E('div', { 'class': 'wgc-chips' }, [

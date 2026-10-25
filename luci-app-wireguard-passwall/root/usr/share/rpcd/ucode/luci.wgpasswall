@@ -5,9 +5,11 @@
 // Every imported profile is a regular netifd "wireguard" interface named
 // "wgc_<slug>" in /etc/config/network, with its peers stored in
 // "wireguard_wgc_<slug>" sections. All profiles share the firewall zone
-// "wgpasswall". The kill switch is a firewall rule rejecting all forwarded
-// traffic from the LAN zone to the WAN zone, so LAN clients can only reach
-// the internet through the tunnel.
+// "wgpasswall". The kill switch is a firewall rule rejecting forwarded
+// traffic from the LAN zone to the WAN zone (only from the chosen devices
+// when the VPN is limited to them), so they can only reach the internet
+// through the tunnel. Other zones, such as a guest network, never use the
+// VPN or Passwall.
 //
 // Routing is policy based (like wg-quick) so that transparent proxies such as
 // Passwall, Passwall2, HomeProxy or OpenClash keep working and can even wrap
@@ -29,8 +31,13 @@
 // The VPN can be limited to chosen devices (scope "devices"): a firewall rule
 // sets the device_mark bit on everything those MAC addresses send, and only
 // packets with that bit are routed into the VPN table. In "VPN through
-// Passwall" mode Passwall then proxies all other devices, while an access
-// control rule tells it to leave the chosen ones alone.
+// Passwall" mode Passwall then proxies the other LAN devices, while an access
+// control rule tells it to leave the chosen ones alone (pw_sync_acl).
+//
+// Devices that use the VPN get the profile's DNS server through the tunnel
+// (vpn_dns_nft), and no IPv6 internet access while the profile only carries
+// IPv4 (ipv6_outside_vpn). Both follow the configured connection: while a
+// profile is set to connected they apply, even if its tunnel is down.
 
 'use strict';
 
@@ -255,7 +262,7 @@ function load_profile(uci, id) {
 		iface: {
 			private_key: uci.get('network', id, 'private_key'),
 			addresses: as_list(uci.get('network', id, 'addresses')),
-			// kept aside while only chosen devices use the VPN (see sync_dns)
+			// kept off the interface, in wgpasswall.<profile>.dns (see sync_dns)
 			dns: as_list(uci.get('network', id, 'dns') ?? uci.get('wgpasswall', id, 'dns')),
 			dns_search: as_list(uci.get('network', id, 'dns_search')),
 			mtu: uci.get('network', id, 'mtu') ? +uci.get('network', id, 'mtu') : null,
@@ -628,15 +635,15 @@ function sync_firewall(uci) {
 // with it closed: daemons a command starts (Passwall's xray, dnsmasq, ...)
 // would otherwise inherit it and hold the lock for as long as they run,
 // blocking every later reload. The "; true" keeps the shell from running the
-// last command in place of the subshell, which would close the lock early. The file name changed with that fix, as
+// last command in place of the subshell, which would close the lock early.
+// The file name changed with that fix, as daemons started by older versions
+// may still hold the old one.
+const FW_LOCK = '/var/lock/luci-apps.lock';
 
 // The commands as one script; failures end up in the system log.
 function locked_script(cmds) {
 	return join('; ', map(cmds, (c) => `${c} || logger -t luci-apps ${shell_quote(`failed: ${c}`)}`));
 }
-
-// daemons started by older versions may still hold the old one.
-const FW_LOCK = '/var/lock/luci-apps.lock';
 
 function run_locked(cmds) {
 	if (!length(cmds))
@@ -919,11 +926,11 @@ function pw_lan_acl_sid(net) {
  */
 function pw_sync_acl(uci) {
 	const devices = settings(uci).devices;
-	const vpn_devices = get_mode(uci) == 'vpn_passwall' && devices_only(uci);
+	const exempt = get_mode(uci) == 'vpn_passwall' && devices_only(uci);
 	const nets = pw_proxied_networks(uci);
 	let wanted = {}, ours = [], count = 0;
 
-	if (vpn_devices)
+	if (exempt)
 		wanted[ACL_SID] = true;
 
 	for (let net in nets)
@@ -940,7 +947,7 @@ function pw_sync_acl(uci) {
 		if (!wanted[sid])
 			uci.delete('passwall', sid);
 
-	if (vpn_devices) {
+	if (exempt) {
 		uci.set('passwall', ACL_SID, 'acl_rule');
 		uci.set('passwall', ACL_SID, 'enabled', '1');
 		uci.set('passwall', ACL_SID, 'remarks', 'WireGuard + Passwall: devices that use the VPN');
@@ -975,6 +982,9 @@ function pw_sync_acl(uci) {
 
 	if (g && length(keys(wanted)))
 		uci.set('passwall', g, 'acl_enable', '1');
+
+	// whether rules of the app were removed
+	return length(filter(ours, (sid) => !wanted[sid])) > 0;
 }
 
 /*
@@ -1378,10 +1388,13 @@ const methods = {
 				id = slugify(uci, label);
 			}
 
-			if (req.args.connect && killswitch_paused(uci))
+			if (req.args.connect && !vpn_mode(uci))
 				return { error: 'Switch the mode to VPN to connect a profile' };
 
 			const connect_now = req.args.connect || auto;
+
+			// the new .conf defines the DNS servers; sync_dns keeps them aside
+			uci.delete('wgpasswall', id, 'dns');
 
 			if (req.args.connect) {
 				for (let other in profile_ids(uci))
@@ -1455,7 +1468,7 @@ const methods = {
 			if (!is_profile(uci, id))
 				return { error: 'No such profile' };
 
-			if (killswitch_paused(uci))
+			if (!vpn_mode(uci))
 				return { error: 'Switch the mode to VPN to connect a profile' };
 
 			for (let other in profile_ids(uci)) {
@@ -1581,11 +1594,6 @@ const methods = {
 	},
 
 	/*
-	 * Chooses who uses the VPN: all devices (scope "all") or only the given
-	 * MAC addresses (scope "devices"). In "VPN through Passwall" mode the
-	 * other devices then go through Passwall.
-	 */
-	/*
 	 * Applies the current mode again: Passwall's options and rule for it,
 	 * routing and firewall rules, then reloads the firewall and restarts
 	 * Passwall. For when something was changed elsewhere or did not apply.
@@ -1606,6 +1614,12 @@ const methods = {
 				uci.save('passwall');
 				pw = pw_restart(mode != 'off');
 			}
+			else if (pw_installed(uci) && pw_sync_acl(uci)) {
+				// VPN mode: Passwall is the user's own, only rules of the app
+				// left behind are removed
+				uci.save('passwall');
+				pw = pw_restart(false);
+			}
 
 			sync_routing(uci);
 			sync_firewall(uci);
@@ -1618,6 +1632,11 @@ const methods = {
 		}
 	},
 
+	/*
+	 * Chooses who uses the VPN: all LAN devices (scope "all") or only the
+	 * given MAC addresses (scope "devices"). In "VPN through Passwall" mode
+	 * the other LAN devices then go through Passwall.
+	 */
 	set_devices: {
 		args: { scope: '', devices: [] },
 		call: function(req) {
@@ -1654,7 +1673,7 @@ const methods = {
 
 			let pw = [];
 
-			// Passwall proxies either nobody or everybody but the VPN devices
+			// Passwall's rules depend on the devices in VPN through Passwall mode
 			if (pw_installed(uci) && pw_enabled(uci)) {
 				const r = pw_apply_mode(uci, 'vpn_passwall', null);
 

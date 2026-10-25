@@ -171,7 +171,11 @@ call('save', { id: 'wgc_myhomevpn', label: 'Renamed', conf: replace(text, 'Allow
 check('ipv6: not blocked with ::/0', st.firewall.wgpasswall_no_ipv6.enabled == '0' && !call('status').ipv6_blocked);
 call('save', { id: 'wgc_myhomevpn', label: 'Renamed', conf: replace(text, 'AllowedIPs = 0.0.0.0/0', 'AllowedIPs = 10.0.0.0/8') });
 check('ipv6: not blocked for a split tunnel', st.firewall.wgpasswall_no_ipv6.enabled == '0');
+call('save', { id: 'wgc_myhomevpn', label: 'Renamed', conf: replace(text, 'DNS = 10.2.0.1\n', '') });
+check('dns: removed from the profile by editing', st.wgpasswall.wgc_myhomevpn.dns == null && st.network.wgc_myhomevpn.dns == null &&
+	index(call('get', { id: 'wgc_myhomevpn' }).conf, 'DNS') < 0 && call('status').vpn_dns == null && index(dns_nft(), 'dnat') < 0);
 call('save', { id: 'wgc_myhomevpn', label: 'Renamed', conf: text });
+check('dns: back after editing', join(',', st.wgpasswall.wgc_myhomevpn.dns) == '10.2.0.1');
 check('all: LAN device from netifd', index(dns_nft(), 'iifname { "br-home" }') >= 0);
 check('off: mode set', call('set_mode', { mode: 'off' }).mode == 'off');
 check('off: no dns redirect', index(dns_nft(), 'dnat') < 0);
