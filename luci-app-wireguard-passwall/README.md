@@ -51,6 +51,8 @@ Under **Devices using the VPN** pick **Only chosen devices** and tick the device
 
 The kill switch then only holds back the chosen devices.
 
+In **VPN through Passwall** mode this switches on Passwall's access control (its rules only work with that switch on) and adds a "No Proxy" rule for the chosen devices ahead of your own rules. If you have access control rules of your own that are enabled, they apply too while this mode is on. Leaving the mode puts the switch back as it was.
+
 Devices are recognised by their hardware (MAC) address, so it works for IPv4 and IPv6 and no fixed IP addresses are needed. Wired devices always keep theirs. Phones and laptops on Wi-Fi use a private address per network that stays the same, unless it is set to change ("Rotating" on Apple devices, "Change daily" on Windows) or you forget and rejoin the network; then tick the device again. A device behind another router shows up with that router's address.
 
 ### Good to know

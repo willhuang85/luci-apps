@@ -514,7 +514,7 @@ const PW_MTU = 1280;
 const UNSET = '__unset__';
 // Passwall options the modes change; their original values are saved once
 // when leaving VPN mode and restored when coming back to it
-const PW_MANAGED = [ 'enabled', 'node', 'client_proxy', 'tcp_proxy_mode', 'udp_proxy_mode' ];
+const PW_MANAGED = [ 'enabled', 'node', 'client_proxy', 'tcp_proxy_mode', 'udp_proxy_mode', 'acl_enable' ];
 
 function first_section(uci, config, stype) {
 	let sid = null;
@@ -658,8 +658,15 @@ function pw_baseline_saved(uci) {
 }
 
 function pw_save_baseline(uci, g, fw) {
-	if (pw_baseline_saved(uci))
+	if (pw_baseline_saved(uci)) {
+		// options added to PW_MANAGED after the copy was saved: the app has
+		// not changed them yet, so their current value is the original
+		for (let opt in PW_MANAGED)
+			if (uci.get('wgpasswall', 'passwall', `pw_${opt}`) == null)
+				uci.set('wgpasswall', 'passwall', `pw_${opt}`, uci.get('passwall', g, opt) ?? UNSET);
+
 		return;
+	}
 
 	uci.set('wgpasswall', 'passwall', 'passwall');
 
@@ -711,7 +718,18 @@ function pw_sync_acl(uci) {
 	uci.set('passwall', ACL_SID, 'remarks', 'WireGuard + Passwall: devices that use the VPN');
 	uci.set('passwall', ACL_SID, 'sources', devices);
 	uci.set('passwall', ACL_SID, 'mode', '0');
+	// what "No Proxy" means; Passwall before 26.8.10 has no "mode" option
+	// and only understands this
+	uci.set('passwall', ACL_SID, 'tcp_no_redir_ports', '1:65535');
+	uci.set('passwall', ACL_SID, 'udp_no_redir_ports', '1:65535');
 	uci.reorder('passwall', ACL_SID, 0);
+
+	// access control rules only work with Passwall's access control switched
+	// on (its original value is restored with the other PW_MANAGED options)
+	const g = first_section(uci, 'passwall', 'global');
+
+	if (g)
+		uci.set('passwall', g, 'acl_enable', '1');
 }
 
 /*
