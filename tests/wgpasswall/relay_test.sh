@@ -16,7 +16,7 @@ trap cleanup EXIT
 fail() { echo "FAIL: $*"; cat "$T/relay.log" 2>/dev/null; cat "$T/status.json" 2>/dev/null; exit 1; }
 
 start_stub() {
-	python3 "$SRC/tests/wgpasswall/helpers/socks5_udp_stub.py" $SOCKS $ECHO > "$T/stub.log" 2>&1 &
+	python3 "$SRC/tests/wgpasswall/helpers/socks5_udp_stub.py" $SOCKS $ECHO "$T/generation" > "$T/stub.log" 2>&1 &
 	STUB=$!
 	for i in 1 2 3 4 5 6 7 8 9 10; do grep -q ready "$T/stub.log" 2>/dev/null && return; sleep 0.3; done
 	fail "stub did not start"
@@ -41,8 +41,18 @@ cat > "$T/relay.json" <<JSON
               { "listen": $L2, "host": "localhost", "port": $ECHO } ] }
 JSON
 
+# WireGuard's view (wg show all dump): the peer behind relay L1 and its
+# latest handshake
+handshake() {
+	printf 'wgc_test\tPUB\t(none)\t127.0.0.1:%s\t0.0.0.0/0\t%s\t0\t0\t25\n' $L1 "$1" > "$T/wg.dump"
+}
+handshake "$(date +%s)"
+echo 1 > "$T/generation"
+
 start_stub
 WGPASSWALL_RELAY_CONFIG="$T/relay.json" WGPASSWALL_RELAY_STATUS="$T/status.json" \
+	WGPASSWALL_RELAY_WG_DUMP="$T/wg.dump" WGPASSWALL_RELAY_CHECK_MS=500 WGPASSWALL_RELAY_GRACE=2 \
+	WGPASSWALL_RELAY_HANDSHAKE_MAX=5 WGPASSWALL_RELAY_RECENT_TX=5 \
 	ucode "$SRC/luci-app-wireguard-passwall/root/usr/libexec/wgpasswall-relay" > "$T/relay.log" 2>&1 &
 RELAY=$!
 sleep 1
@@ -61,5 +71,30 @@ start_stub
 sleep 4
 [ "$(ping_relay $L1 again)" = "pong:again" ] || fail "relay did not recover after proxy restart"
 kill -0 $RELAY || fail "relay died"
+
+echo "== healthy tunnel is left alone"
+handshake "$(date +%s)"
+for i in 1 2 3 4; do ping_relay $L1 busy >/dev/null; sleep 1; done
+! grep -q '"resets": [1-9]' "$T/status.json" || fail "relay reconnected a working tunnel"
+
+echo "== proxy's upstream dies but the association stays open"
+echo 2 > "$T/generation"
+[ "$(ping_relay $L1 lost)" = "timeout" ] || fail "stub did not simulate the dead upstream"
+handshake $(( $(date +%s) - 100 ))
+for i in $(seq 1 12); do
+	r=$(ping_relay $L1 retry)
+	[ "$r" = "pong:retry" ] && break
+done
+[ "$r" = "pong:retry" ] || fail "relay did not recover from a dead upstream"
+sleep 2.5
+grep -q '"resets": [1-9]' "$T/status.json" || fail "status does not count the reconnect"
+grep -q "no handshake through the proxy" "$T/relay.log" || fail "reconnect not logged"
+
+echo "== idle tunnel (nothing sent) is left alone"
+handshake 0
+sleep 7
+before=$(grep -o '"resets": [0-9]*' "$T/status.json" | head -1)
+sleep 3
+[ "$(grep -o '"resets": [0-9]*' "$T/status.json" | head -1)" = "$before" ] || fail "relay reconnected an idle tunnel"
 
 echo "relay: all checks passed"

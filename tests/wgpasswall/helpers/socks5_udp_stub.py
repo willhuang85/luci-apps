@@ -1,9 +1,22 @@
 #!/usr/bin/env python3
 # Minimal SOCKS5 server with UDP ASSOCIATE, plus a UDP echo "VPN server",
-# for testing wgpasswall-relay. Usage: socks5_udp_stub.py <socks_port> <echo_port>
+# for testing wgpasswall-relay.
+# Usage: socks5_udp_stub.py <socks_port> <echo_port> [<generation file>]
+# With a generation file, an association silently drops its UDP once the
+# file's content changes, while its TCP connection stays open: like Xray
+# keeping a UDP session on a dead upstream. New associations work.
 import selectors, socket, struct, sys, threading
 
 socks_port, echo_port = int(sys.argv[1]), int(sys.argv[2])
+gen_file = sys.argv[3] if len(sys.argv) > 3 else None
+
+
+def generation():
+    try:
+        with open(gen_file) as f:
+            return f.read()
+    except (TypeError, OSError):
+        return None
 
 
 def echo():
@@ -47,6 +60,7 @@ def session(conn):
         udp.bind(("127.0.0.1", 0))
         conn.sendall(b"\x05\x00\x00\x01" + socket.inet_aton("0.0.0.0") + struct.pack(">H", udp.getsockname()[1]))
         client = None
+        born = generation()
         sel = selectors.DefaultSelector()
         sel.register(conn, selectors.EVENT_READ, "ctrl")
         sel.register(udp, selectors.EVENT_READ, "udp")
@@ -57,6 +71,8 @@ def session(conn):
                         return
                     continue
                 data, addr = udp.recvfrom(65535)
+                if generation() != born:
+                    continue        # upstream "dead"
                 if addr[0] == "127.0.0.1" and addr[1] == echo_port:
                     hdr = b"\x00\x00\x00\x01" + socket.inet_aton(addr[0]) + struct.pack(">H", addr[1])
                     udp.sendto(hdr + data, client)

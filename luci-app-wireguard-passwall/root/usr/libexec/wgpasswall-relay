@@ -20,16 +20,31 @@
 //   { "socks": { "host": "127.0.0.1", "port": 1070 },
 //     "relays": [ { "listen": 51821, "host": "vpn.example.com", "port": 51820 } ] }
 // Status: /var/run/wgpasswall/relay-status.json
+//
+// Watchdog: the association to the local SOCKS port can stay open while the
+// proxy's own connection to its server is dead (seen with Xray: it keeps the
+// UDP session of a sender, kept busy by WireGuard's keepalives, on the dead
+// upstream). So when WireGuard keeps sending through a relay but has not
+// completed a handshake for HANDSHAKE_MAX seconds, the relay drops the
+// association and opens a new one from a new local port, so the proxy builds
+// a fresh session. WireGuard renews its handshake every 2 minutes while
+// traffic flows; an idle tunnel sends nothing and is left alone. For tests,
+// WGPASSWALL_RELAY_WG_DUMP can name a file to read instead of `wg show all
+// dump`, and the WGPASSWALL_RELAY_* timings below can be shortened.
 
 'use strict';
 
 import * as socket from 'socket';
 import * as uloop from 'uloop';
-import { readfile, writefile, rename, mkdir } from 'fs';
+import { readfile, writefile, rename, mkdir, popen } from 'fs';
 import { cursor } from 'uci';
 
 const STATUS = getenv('WGPASSWALL_RELAY_STATUS') ?? '/var/run/wgpasswall/relay-status.json';
 const RETRY_MS = 3000;
+const CHECK_MS = +(getenv('WGPASSWALL_RELAY_CHECK_MS') ?? 10000);
+const GRACE = +(getenv('WGPASSWALL_RELAY_GRACE') ?? 30);		// s after (re)connecting
+const HANDSHAKE_MAX = +(getenv('WGPASSWALL_RELAY_HANDSHAKE_MAX') ?? 180);
+const RECENT_TX = +(getenv('WGPASSWALL_RELAY_RECENT_TX') ?? 15);	// s
 
 function load_config() {
 	if (getenv('WGPASSWALL_RELAY_CONFIG'))
@@ -177,8 +192,10 @@ let connect_relay;	// defined below, needed by the retry timer
 function set_down(r, error) {
 	if (r.ctrl_handle) r.ctrl_handle.delete();
 	if (r.ctrl) r.ctrl.close();
+	if (r.out_handle) r.out_handle.delete();
+	if (r.out) r.out.close();
 
-	r.ctrl = r.ctrl_handle = r.relay = null;
+	r.ctrl = r.ctrl_handle = r.relay = r.out = r.out_handle = null;
 	r.up = false;
 	r.error = error;
 
@@ -186,11 +203,45 @@ function set_down(r, error) {
 		r.retry = uloop.timer(RETRY_MS, () => { r.retry = null; connect_relay(r); });
 }
 
+// proxy -> WireGuard
+function open_out(r) {
+	r.out = socket.create(socket.AF_INET, socket.SOCK_DGRAM);
+
+	if (!r.out || !r.out.bind({ address: '127.0.0.1', port: 0 }))
+		return false;
+
+	r.out_handle = uloop.handle(r.out, () => {
+		const d = r.out.recv(65535);
+
+		if (length(d) < 4 || !r.client)
+			return;
+
+		const alen = socks_addr_len(d, 3);
+
+		if (alen == null || length(d) <= 3 + alen)
+			return;
+
+		const payload = substr(d, 3 + alen);
+
+		if (r.local.send(payload, 0, r.client) != null)
+			r.rx += length(payload);
+	}, uloop.ULOOP_READ);
+
+	return true;
+}
+
 connect_relay = function(r) {
 	const a = associate();
 
 	if (a.error)
 		return set_down(r, a.error);
+
+	// a new local port for every association: the proxy keys its UDP
+	// sessions by the sender, so this gets a fresh session upstream
+	if (!open_out(r)) {
+		a.ctrl.close();
+		return set_down(r, 'cannot create socket');
+	}
 
 	r.ctrl = a.ctrl;
 	r.relay = a.relay;
@@ -215,10 +266,8 @@ for (let c in cfg.relays) {
 	};
 
 	r.local = socket.create(socket.AF_INET, socket.SOCK_DGRAM);
-	r.out = socket.create(socket.AF_INET, socket.SOCK_DGRAM);
 
-	if (!r.local || !r.local.bind({ address: '127.0.0.1', port: r.listen }) ||
-	    !r.out || !r.out.bind({ address: '127.0.0.1', port: 0 })) {
+	if (!r.local || !r.local.bind({ address: '127.0.0.1', port: r.listen })) {
 		warn(`wgpasswall-relay: cannot listen on 127.0.0.1:${r.listen}\n`);
 		exit(1);
 	}
@@ -233,29 +282,63 @@ for (let c in cfg.relays) {
 
 		r.client = { address: from.address, port: from.port };
 
-		if (r.up && r.out.send(r.header + d, 0, r.relay) != null)
+		if (r.up && r.out.send(r.header + d, 0, r.relay) != null) {
 			r.tx += length(d);
-	}, uloop.ULOOP_READ);
-
-	// proxy -> WireGuard
-	r.out_handle = uloop.handle(r.out, () => {
-		const d = r.out.recv(65535);
-
-		if (length(d) < 4 || !r.client)
-			return;
-
-		const alen = socks_addr_len(d, 3);
-
-		if (alen == null || length(d) <= 3 + alen)
-			return;
-
-		const payload = substr(d, 3 + alen);
-
-		if (r.local.send(payload, 0, r.client) != null)
-			r.rx += length(payload);
+			r.last_tx = time();
+		}
 	}, uloop.ULOOP_READ);
 
 	push(relays, r);
+}
+
+// Latest WireGuard handshake per relay port: { <listen port>: <unix time> },
+// from the peers whose endpoint is 127.0.0.1:<port>.
+function handshakes() {
+	let out = {}, text;
+
+	if (getenv('WGPASSWALL_RELAY_WG_DUMP'))
+		text = readfile(getenv('WGPASSWALL_RELAY_WG_DUMP'));
+	else {
+		const p = popen('wg show all dump 2>/dev/null', 'r');
+
+		text = p ? p.read('all') : null;
+		p?.close();
+	}
+
+	// peer lines: iface, pubkey, psk, endpoint, allowed ips, handshake, rx, tx, keepalive
+	for (let line in split(text ?? '', '\n')) {
+		const f = split(line, '\t');
+		const m = (length(f) == 9) ? match(f[3], /^127\.0\.0\.1:([0-9]+)$/) : null;
+
+		if (m)
+			out[m[1]] = +f[5];
+	}
+
+	return out;
+}
+
+function watchdog() {
+	const now = time();
+	let hs = null;
+
+	for (let r in relays) {
+		if (!r.up || now - r.since < GRACE || !r.last_tx || now - r.last_tx > RECENT_TX)
+			continue;
+
+		hs ??= handshakes();
+
+		const last = hs[`${r.listen}`];
+
+		// unknown peer (not WireGuard's endpoint?): nothing to judge by
+		if (last == null)
+			continue;
+
+		if (now - last > HANDSHAKE_MAX) {
+			warn(`wgpasswall-relay: no handshake through the proxy for ${r.host}:${r.port} since ${last ? now - last + 's' : 'start'}; reconnecting\n`);
+			r.resets = (r.resets ?? 0) + 1;
+			set_down(r, 'no answer from the VPN server through the proxy; reconnecting');
+		}
+	}
 }
 
 function write_status() {
@@ -264,7 +347,7 @@ function write_status() {
 	for (let r in relays)
 		push(st, {
 			listen: r.listen, host: r.host, port: r.port, up: r.up,
-			error: r.error, since: r.since, rx_bytes: r.rx, tx_bytes: r.tx
+			error: r.error, since: r.since, rx_bytes: r.rx, tx_bytes: r.tx, resets: r.resets ?? 0
 		});
 
 	writefile(STATUS + '.tmp', sprintf('%J', { updated: time(), relays: st }));
@@ -280,6 +363,12 @@ let status_timer;
 status_timer = uloop.timer(2000, function() {
 	write_status();
 	status_timer.set(2000);
+});
+
+let watchdog_timer;
+watchdog_timer = uloop.timer(CHECK_MS, function() {
+	watchdog();
+	watchdog_timer.set(CHECK_MS);
 });
 
 uloop.run();
