@@ -78,9 +78,14 @@ define Package/luci-app-wireguard-passwall/prerm
 		uci -q delete passwall.wgpasswall_vpn_devices
 		uci -q commit passwall
 	fi
-	# the chosen devices' DNS rules: an nftables table of their own
+	# the VPN devices' DNS rules: an nftables table of their own
 	nft delete table inet wgpasswall_dns 2>/dev/null
 	rm -f /etc/wgpasswall/devices-dns.nft
+	# the profiles' DNS servers go back onto their interfaces
+	for p in $$(uci -q show wgpasswall | sed -n "s/^wgpasswall\.\(wgc_[A-Za-z0-9_]*\)\.dns=.*/\1/p"); do
+		for d in $$(uci -q get wgpasswall.$$p.dns); do uci -q add_list network.$$p.dns="$$d"; done
+	done
+	uci -q commit network
 	if uci -q get firewall.wgpasswall_killswitch >/dev/null || uci -q get firewall.wgpasswall_devices >/dev/null || \
 	   uci -q get firewall.wgpasswall_devices_dns >/dev/null; then
 		uci -q delete firewall.wgpasswall_killswitch

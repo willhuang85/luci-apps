@@ -32,7 +32,7 @@ echo "== installing package files"
 install -D -m 0644 "$R/usr/share/rpcd/ucode/luci.wgpasswall" /usr/share/rpcd/ucode/luci.wgpasswall
 install -D -m 0644 "$R/usr/share/ucode/wgpasswall/conf.uc" /usr/share/ucode/wgpasswall/conf.uc
 install -D -m 0644 "$R/etc/config/wgpasswall" /etc/config/wgpasswall
-printf "config interface 'lan'\n\toption proto 'static'\n\nconfig interface 'wan'\n\toption proto 'dhcp'\n" > /etc/config/network
+printf "config interface 'lan'\n\toption proto 'static'\n\toption device 'br-lan'\n\nconfig interface 'wan'\n\toption proto 'dhcp'\n" > /etc/config/network
 printf "config zone\n\toption name 'lan'\n\nconfig zone\n\toption name 'wan'\n" > /etc/config/firewall
 mkdir -p /var/run
 
@@ -261,7 +261,7 @@ check_devices() {
 	grep -q "ether saddr { aa:bb:cc:dd:ee:01, aa:bb:cc:dd:ee:02 } .* dnat ip to 10.2.0.1:53" /etc/wgpasswall/devices-dns.nft || \
 		{ cat /etc/wgpasswall/devices-dns.nft; fail "VPN devices' DNS not sent to the VPN's DNS server"; }
 	nft -c -f /etc/wgpasswall/devices-dns.nft || fail "DNS rules do not load"
-	ubus call luci.wgpasswall status | jq -e '.devices_dns.v4 == "10.2.0.1"' >/dev/null || fail "status devices_dns"
+	ubus call luci.wgpasswall status | jq -e '.vpn_dns.v4 == "10.2.0.1"' >/dev/null || fail "status vpn_dns"
 }
 check_devices
 ubus call luci.wgpasswall set_mode '{"mode":"passwall"}' >/dev/null || fail "Passwall only with chosen devices"
@@ -290,8 +290,9 @@ uci -q get passwall.wgpasswall_vpn_devices >/dev/null && fail "VPN device rule l
 uci -q get passwall.@global[0].acl_enable >/dev/null && fail "access control switch left on"
 uci -q get firewall.wgpasswall_devices >/dev/null && fail "mark rule left behind"
 uci -q get firewall.wgpasswall_killswitch.src_mac >/dev/null && fail "kill switch still limited to devices"
-[ "$(uci -q get network.wgc_civpn.dns)" = 10.2.0.1 ] || fail "VPN DNS not back on the interface for all devices"
-grep -q dnat /etc/wgpasswall/devices-dns.nft && fail "DNS redirect left for all devices"
+uci -q get network.wgc_civpn.dns >/dev/null && fail "VPN DNS an upstream of the router's resolver with all devices"
+grep -q 'iifname { "br-lan" } .* dnat ip to 10.2.0.1:53' /etc/wgpasswall/devices-dns.nft || \
+	{ cat /etc/wgpasswall/devices-dns.nft; fail "LAN devices' DNS not sent to the VPN's DNS server"; }
 check_wrapped
 ubus call luci.wgpasswall set_devices '{"scope":"devices","devices":["AA:BB:CC:DD:EE:01"]}' >/dev/null || fail "set_devices again"
 

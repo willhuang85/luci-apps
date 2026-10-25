@@ -5,7 +5,7 @@
 
 global.__uci_store = {
 	network: {
-		lan: { '.type': 'interface', '.name': 'lan', '.index': 1000, proto: 'static' },
+		lan: { '.type': 'interface', '.name': 'lan', '.index': 1000, proto: 'static', device: 'br-lan' },
 		wan: { '.type': 'interface', '.name': 'wan', '.index': 1001, proto: 'dhcp' }
 	},
 	firewall: {
@@ -136,7 +136,7 @@ const dns_nft = () => readfile(getenv('WGPASSWALL_DNS_NFT')) ?? '';
 call('connect', { id: 'wgc_myhomevpn' });
 check('dns: kept off the router resolver', st.network.wgc_myhomevpn.dns == null && join(',', st.wgpasswall.wgc_myhomevpn.dns) == '10.2.0.1');
 check('dns: still in the profile', index(call('get', { id: 'wgc_myhomevpn' }).conf, 'DNS = 10.2.0.1') >= 0);
-check('dns: status', call('status').devices_dns?.v4 == '10.2.0.1');
+check('dns: status', call('status').vpn_dns?.v4 == '10.2.0.1');
 check('dns: include', st.firewall.wgpasswall_devices_dns?.['.type'] == 'include' && st.firewall.wgpasswall_devices_dns?.type == 'nftables' &&
 	st.firewall.wgpasswall_devices_dns?.path == getenv('WGPASSWALL_DNS_NFT'));
 check('dns: redirect to VPN DNS', index(dns_nft(), 'ether saddr { aa:bb:cc:dd:ee:ff, 11:22:33:44:55:66 } meta l4proto { tcp, udp } meta nfproto ipv4 th dport 53 counter dnat ip to 10.2.0.1:53') >= 0);
@@ -152,8 +152,14 @@ delete st.wgpasswall.settings.device_mark;
 r = call('set_devices', { scope: 'all', devices: [ '11:22:33:44:55:66' ] });
 check('all: rule for all traffic', st.network.wgpasswall_rule_vpn.mark == '0x0/0xff');
 check('all: mark rule removed', st.firewall.wgpasswall_devices == null && st.firewall.wgpasswall_killswitch.src_mac == null);
-check('all: dns back on the interface', join(',', st.network.wgc_myhomevpn.dns) == '10.2.0.1' && st.wgpasswall.wgc_myhomevpn.dns == null);
-check('all: no dns redirect', index(dns_nft(), 'dnat') < 0);
+check('all: dns still kept off the router resolver', st.network.wgc_myhomevpn.dns == null && join(',', st.wgpasswall.wgc_myhomevpn.dns) == '10.2.0.1');
+check('all: whole LAN gets the VPN DNS', index(dns_nft(), 'iifname { "br-lan" } meta l4proto { tcp, udp } meta nfproto ipv4 th dport 53 counter dnat ip to 10.2.0.1:53') >= 0);
+global.__ifaces = [ { interface: 'lan', l3_device: 'br-home' }, { interface: 'wgc_myhomevpn', up: true } ];
+call('connect', { id: 'wgc_myhomevpn' });
+check('all: LAN device from netifd', index(dns_nft(), 'iifname { "br-home" }') >= 0);
+check('off: mode set', call('set_mode', { mode: 'off' }).mode == 'off');
+check('off: no dns redirect', index(dns_nft(), 'dnat') < 0);
+call('set_mode', { mode: 'vpn', id: 'wgc_myhomevpn' });
 check('all: chosen devices kept', join(',', st.wgpasswall.settings.vpn_device) == '11:22:33:44:55:66' && call('status').scope == 'all');
 call('set_killswitch', { enabled: false });
 

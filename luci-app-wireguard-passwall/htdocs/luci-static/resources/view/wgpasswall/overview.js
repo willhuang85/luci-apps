@@ -692,9 +692,9 @@ return view.extend({
 
 		let dns = '';
 
-		if (scope == 'devices' && (data.mode == 'vpn' || data.mode == 'vpn_passwall'))
-			dns = data.devices_dns
-				? _('Their DNS goes to the VPN\'s DNS server (%s) through the tunnel.').format([ data.devices_dns.v4, data.devices_dns.v6 ].filter((a) => a).join(', '))
+		if (data.mode == 'vpn' || data.mode == 'vpn_passwall')
+			dns = data.vpn_dns
+				? _('Their DNS goes to the VPN\'s DNS server (%s) through the tunnel.').format([ data.vpn_dns.v4, data.vpn_dns.v6 ].filter((a) => a).join(', '))
 				: data.profiles.some((p) => p.auto)
 					? _('The VPN profile has no DNS server, so their DNS goes to the router\'s DNS servers outside the VPN.')
 					: '';
