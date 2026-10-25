@@ -452,12 +452,12 @@ return view.extend({
 
 					if (res.keepalive_missing)
 						preview.appendChild(E('div', { 'class': 'wgc-note' }, [
-							E('div', {}, _('No PersistentKeepalive: behind NAT or a proxy (VPN through Passwall), an idle tunnel can go quiet and stall. 25 seconds is recommended for a router.')),
+							E('div', {}, _('No PersistentKeepalive: behind NAT or a proxy (VPN through Passwall), an idle tunnel can go quiet and stall. 15 seconds stays well inside the shortest UDP timeouts (about 30 seconds), even if one keepalive is lost.')),
 							E('button', { 'class': 'btn cbi-button', style: 'margin-top:8px', click: (ev) => {
 								ev.preventDefault();
-								confInput.value = addKeepalive(confInput.value, 25);
+								confInput.value = addKeepalive(confInput.value, 15);
 								validate();
-							} }, [ _('Add PersistentKeepalive = 25') ])
+							} }, [ _('Add PersistentKeepalive = 15') ])
 						]));
 				}
 
