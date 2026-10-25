@@ -44,6 +44,8 @@ const text = `[Interface]\nPrivateKey = ${PRIV}\nAddress = 10.2.0.2/32\nDNS = 10
 let r = call('parse', { conf: text });
 check('parse summary', r.full_tunnel && r.endpoint == '1.2.3.4:51820');
 check('parse error', call('parse', { conf: 'junk' }).error != null);
+check('parse: keepalive missing', r.keepalive_missing == 1);
+check('parse: keepalive set', call('parse', { conf: replace(text, 'Endpoint = 1.2.3.4:51820', 'Endpoint = 1.2.3.4:51820\nPersistentKeepalive = 25') }).keepalive_missing == 0);
 
 r = call('save', { label: 'My Home VPN!', conf: text });
 check('save ok', r.id == 'wgc_myhomevpn' && !r.error);

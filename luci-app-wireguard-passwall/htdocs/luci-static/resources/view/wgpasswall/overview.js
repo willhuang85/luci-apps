@@ -203,6 +203,46 @@ function readFile(file) {
 	});
 }
 
+// Adds "PersistentKeepalive = <sec>" to every [Peer] section of a .conf
+// text that has none, at the end of the section.
+function addKeepalive(text, sec) {
+	const lines = text.replace(/\r\n/g, '\n').split('\n');
+	const out = [];
+	let inPeer = false, has = false;
+
+	const close = () => {
+		if (!inPeer || has)
+			return;
+
+		// before the trailing blank lines of the section
+		let i = out.length;
+
+		while (i > 0 && out[i - 1].trim() == '')
+			i--;
+
+		out.splice(i, 0, 'PersistentKeepalive = %d'.format(sec));
+	};
+
+	for (const line of lines) {
+		const section = line.match(/^\s*\[([^\]]+)\]/);
+
+		if (section) {
+			close();
+			inPeer = section[1].trim().toLowerCase() == 'peer';
+			has = false;
+		}
+		else if (inPeer && /^\s*PersistentKeepalive\s*=/i.test(line)) {
+			has = true;
+		}
+
+		out.push(line);
+	}
+
+	close();
+
+	return out.join('\n');
+}
+
 function labelFromFilename(name) {
 	return (name || '').replace(/\.(conf|txt)$/i, '').replace(/[_-]+/g, ' ').trim().substring(0, 64);
 }
@@ -409,6 +449,16 @@ return view.extend({
 						]),
 						res.warnings?.length ? E('ul', { 'class': 'wgc-list' }, res.warnings.map((w) => E('li', {}, w))) : ''
 					]));
+
+					if (res.keepalive_missing)
+						preview.appendChild(E('div', { 'class': 'wgc-note' }, [
+							E('div', {}, _('No PersistentKeepalive: behind NAT or a proxy (VPN through Passwall), an idle tunnel can go quiet and stall. 25 seconds is recommended for a router.')),
+							E('button', { 'class': 'btn cbi-button', style: 'margin-top:8px', click: (ev) => {
+								ev.preventDefault();
+								confInput.value = addKeepalive(confInput.value, 25);
+								validate();
+							} }, [ _('Add PersistentKeepalive = 25') ])
+						]));
 				}
 
 				setButtons();

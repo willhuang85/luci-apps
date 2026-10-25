@@ -1332,6 +1332,9 @@ const methods = {
 				peer_count: length(r.peers),
 				allowed_ips: allowed,
 				full_tunnel: conf.is_full_tunnel(allowed),
+				// peers without PersistentKeepalive: behind NAT or a proxy their
+				// tunnel goes quiet and can stall when idle (the page offers to add it)
+				keepalive_missing: length(filter(r.peers, (p) => !p.persistent_keepalive)),
 				warnings: r.warnings
 			};
 		}
