@@ -85,5 +85,23 @@ check('bad cidr', ep('1.2.3.4').error == null && conf.parse(`[Interface]\nPrivat
 check('garbage line', conf.parse(`[Interface]\nfoo bar\n`).error != null);
 check('unknown section', conf.parse(`[Foo]\n`).error != null);
 
+// AmneziaWG 2.0
+const awg = replace(sample, 'MTU = 1420', 'MTU = 1420\nJc = 4\nJmin = 40\nJmax = 70\nS1 = 15\nS2 = 68\nS3 = 20\nS4 = 8\nH1 = 1185351331-1185351350\nH2 = 2084431420\nH3 = 6243\nH4 = 1452637521-1452637600\nI1 = <b 0xc6000000010843290a47ba8ba2ed000044d0><r 16>');
+r = conf.parse(awg);
+check('awg: parsed', r.error == null && r.iface.awg.jc == '4' && r.iface.awg.s4 == '8' && r.iface.awg.h1 == '1185351331-1185351350' &&
+	r.iface.awg.i1 == '<b 0xc6000000010843290a47ba8ba2ed000044d0><r 16>' && conf.is_awg(r));
+check('awg: no warnings for its settings', !length(filter(r.warnings, (w) => index(w, 'Jc') >= 0 || index(w, 'H1') >= 0)));
+check('awg: plain WireGuard is not', !conf.is_awg(conf.parse(sample)));
+check('awg: round trip', (() => {
+	const t = conf.serialize(r);
+	const back = conf.parse(t);
+	return index(t, 'Jc = 4\n') >= 0 && index(t, 'H4 = 1452637521-1452637600\n') >= 0 && index(t, 'I1 = <b 0xc6') >= 0 &&
+		sprintf('%J', back.iface.awg) == sprintf('%J', r.iface.awg);
+})());
+check('awg: bad Jc', conf.parse(replace(awg, 'Jc = 4', 'Jc = lots')).error != null);
+check('awg: S out of range', conf.parse(replace(awg, 'S1 = 15', 'S1 = 70000')).error != null);
+check('awg: bad H range', conf.parse(replace(awg, 'H2 = 2084431420', 'H2 = 20-10')).error != null);
+check('awg: Jmin above Jmax', conf.parse(replace(awg, 'Jmin = 40', 'Jmin = 90')).error != null);
+
 print(`${total - failures}/${total} passed\n`);
 exit(failures ? 1 : 0);

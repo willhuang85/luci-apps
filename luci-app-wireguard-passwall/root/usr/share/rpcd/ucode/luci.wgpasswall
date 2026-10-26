@@ -4,8 +4,10 @@
 //
 // Every imported profile is a regular netifd "wireguard" interface named
 // "wgc_<slug>" in /etc/config/network, with its peers stored in
-// "wireguard_wgc_<slug>" sections. All profiles share the firewall zone
-// "wgpasswall"; one profile at a time is connected.
+// "wireguard_wgc_<slug>" sections; a profile with AmneziaWG settings is an
+// "amneziawg" interface instead (awg-openwrt), with "awg_*" options and its
+// peers in "amneziawg_wgc_<slug>" sections. All profiles share the firewall
+// zone "wgpasswall"; one profile at a time is connected.
 //
 // Networks decide what goes where. Every wired port and Wi-Fi network (SSID)
 // belongs to one network:
@@ -180,11 +182,20 @@ function detect_proxy_apps(uci) {
 	return found;
 }
 
+// netifd protocols of profiles: plain WireGuard, and AmneziaWG
+const PROTOS = [ 'wireguard', 'amneziawg' ];
+// AmneziaWG's netifd protocol, installed with amneziawg-tools
+const AWG_PROTO = getenv('WGPASSWALL_AWG_PROTO') ?? '/lib/netifd/proto/amneziawg.sh';
+
+function awg_installed() {
+	return access(AWG_PROTO) == true;
+}
+
 function profile_ids(uci) {
 	let ids = [];
 
 	uci.foreach('network', 'interface', (s) => {
-		if (index(s['.name'], PREFIX) == 0 && s.proto == 'wireguard')
+		if (index(s['.name'], PREFIX) == 0 && (s.proto in PROTOS))
 			push(ids, s['.name']);
 	});
 
@@ -194,7 +205,12 @@ function profile_ids(uci) {
 function is_profile(uci, id) {
 	return type(id) == 'string' && index(id, PREFIX) == 0 &&
 		uci.get('network', id) == 'interface' &&
-		uci.get('network', id, 'proto') == 'wireguard';
+		(uci.get('network', id, 'proto') in PROTOS);
+}
+
+// Section type of a profile's peers, e.g. "wireguard_wgc_home".
+function peer_type(uci, id) {
+	return `${uci.get('network', id, 'proto') == 'amneziawg' ? 'amneziawg' : 'wireguard'}_${id}`;
 }
 
 function slugify(uci, label) {
@@ -225,9 +241,16 @@ function zone_exists(uci, name) {
 
 // Reads a profile back from uci into the structure used by conf.uc.
 function load_profile(uci, id) {
-	let peers = [];
+	let peers = [], awg = {};
 
-	uci.foreach('network', `wireguard_${id}`, (s) => {
+	for (let key in keys(conf.AWG_KEYS)) {
+		const v = uci.get('network', id, `awg_${key}`);
+
+		if (v != null)
+			awg[key] = v;
+	}
+
+	uci.foreach('network', peer_type(uci, id), (s) => {
 		push(peers, {
 			public_key: s.public_key,
 			preshared_key: s.preshared_key,
@@ -248,7 +271,8 @@ function load_profile(uci, id) {
 			dns: as_list(uci.get('network', id, 'dns') ?? uci.get('wgpasswall', id, 'dns')),
 			dns_search: as_list(uci.get('network', id, 'dns_search')),
 			mtu: uci.get('network', id, 'mtu') ? +uci.get('network', id, 'mtu') : null,
-			listen_port: uci.get('network', id, 'listen_port') ? +uci.get('network', id, 'listen_port') : null
+			listen_port: uci.get('network', id, 'listen_port') ? +uci.get('network', id, 'listen_port') : null,
+			awg
 		},
 		peers
 	};
@@ -257,7 +281,9 @@ function load_profile(uci, id) {
 function write_profile(uci, id, cfg, auto) {
 	let old_peers = [];
 
-	uci.foreach('network', `wireguard_${id}`, (s) => push(old_peers, s['.name']));
+	// both kinds: an edit can turn a WireGuard profile into an AmneziaWG one
+	for (let p in PROTOS)
+		uci.foreach('network', `${p}_${id}`, (s) => push(old_peers, s['.name']));
 
 	for (let sid in old_peers)
 		uci.delete('network', sid);
@@ -272,8 +298,11 @@ function write_profile(uci, id, cfg, auto) {
 		uci.set('network', id, 'interface');
 	}
 
-	uci.set('network', id, 'proto', 'wireguard');
+	uci.set('network', id, 'proto', conf.is_awg(cfg) ? 'amneziawg' : 'wireguard');
 	uci.set('network', id, 'private_key', cfg.iface.private_key);
+
+	for (let key, v in cfg.iface.awg ?? {})
+		uci.set('network', id, `awg_${key}`, v);
 	uci.set('network', id, 'addresses', cfg.iface.addresses);
 	uci.set('network', id, 'auto', auto ? '1' : '0');
 
@@ -290,7 +319,7 @@ function write_profile(uci, id, cfg, auto) {
 		uci.set('network', id, 'listen_port', `${cfg.iface.listen_port}`);
 
 	for (let p in cfg.peers) {
-		const sid = uci.add('network', `wireguard_${id}`);
+		const sid = uci.add('network', peer_type(uci, id));
 
 		uci.set('network', sid, 'public_key', p.public_key);
 		uci.set('network', sid, 'route_allowed_ips', '1');
@@ -791,12 +820,15 @@ function iface_down(id) {
 function runtime_status() {
 	let wg = {}, ifaces = {};
 
-	// interface line: name, privkey, pubkey, port, fwmark
+	// interface line: name, privkey, pubkey, port, then fwmark (WireGuard) or
+	// AmneziaWG's settings and fwmark (awg)
 	// peer line: name, pubkey, psk, endpoint, allowed, handshake, rx, tx, keepalive
-	for (let line in split(run('wg show all dump') ?? '', '\n')) {
+	const dump = (run('wg show all dump') ?? '') + '\n' + (awg_installed() ? (run('awg show all dump') ?? '') : '');
+
+	for (let line in split(dump, '\n')) {
 		const f = split(line, '\t');
 
-		if (length(f) == 5)
+		if (length(f) >= 5 && length(f) != 9)
 			wg[f[0]] = { public_key: f[2], listen_port: f[3], peers: [] };
 		else if (length(f) == 9 && wg[f[0]])
 			push(wg[f[0]].peers, {
@@ -919,7 +951,7 @@ function relay_sync(uci) {
 	for (let id in profile_ids(uci)) {
 		let peers = [], before = [];
 
-		uci.foreach('network', `wireguard_${id}`, (s) => push(peers, s));
+		uci.foreach('network', peer_type(uci, id), (s) => push(peers, s));
 
 		for (let s in peers)
 			push(before, `${s.endpoint_host}:${s.endpoint_port}`);
@@ -958,7 +990,7 @@ function relay_sync(uci) {
 
 		let after = [];
 
-		uci.foreach('network', `wireguard_${id}`, (s) => push(after, `${s.endpoint_host}:${s.endpoint_port}`));
+		uci.foreach('network', peer_type(uci, id), (s) => push(after, `${s.endpoint_host}:${s.endpoint_port}`));
 
 		if (join(' ', before) != join(' ', after))
 			push(changed, id);
@@ -1427,6 +1459,7 @@ const methods = {
 				push(profiles, {
 					id,
 					label: uci.get('wgpasswall', id, 'label') || substr(id, length(PREFIX)),
+					amneziawg: uci.get('network', id, 'proto') == 'amneziawg',
 					auto: uci.get('network', id, 'auto') != '0',
 					up: !!ifc?.up,
 					pending: !!ifc?.pending,
@@ -1502,12 +1535,15 @@ const methods = {
 				// peers without PersistentKeepalive: behind NAT or a proxy their
 				// tunnel goes quiet and can stall when idle (the page offers to add it)
 				keepalive_missing: length(filter(r.peers, (p) => !p.persistent_keepalive)),
+				// AmneziaWG settings, and whether AmneziaWG is installed to use them
+				amneziawg: conf.is_awg(r) ? r.iface.awg : null,
+				awg_installed: awg_installed(),
 				warnings: r.warnings
 			};
 		}
 	},
 
-		get: {
+	get: {
 		args: { id: '' },
 		call: function(req) {
 			const uci = cursor();
@@ -1541,6 +1577,9 @@ const methods = {
 
 			if (r.error)
 				return { error: r.error };
+
+			if (conf.is_awg(r) && !awg_installed())
+				return { error: 'This configuration uses AmneziaWG, which is not installed (packages kmod-amneziawg and amneziawg-tools)' };
 
 			if (!length(label) || length(label) > 64)
 				return { error: 'Please enter a name of 1 to 64 characters' };
@@ -1598,7 +1637,7 @@ const methods = {
 
 			let peers = [];
 
-			uci.foreach('network', `wireguard_${id}`, (s) => push(peers, s['.name']));
+			uci.foreach('network', peer_type(uci, id), (s) => push(peers, s['.name']));
 
 			for (let sid in peers)
 				uci.delete('network', sid);

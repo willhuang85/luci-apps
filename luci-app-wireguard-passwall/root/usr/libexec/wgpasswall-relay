@@ -373,7 +373,8 @@ function handshakes() {
 	if (getenv('WGPASSWALL_RELAY_WG_DUMP'))
 		text = readfile(getenv('WGPASSWALL_RELAY_WG_DUMP'));
 	else {
-		const p = popen('wg show all dump 2>/dev/null', 'r');
+		// AmneziaWG tunnels too (their peer lines look the same)
+		const p = popen('wg show all dump 2>/dev/null; awg show all dump 2>/dev/null', 'r');
 
 		text = p ? p.read('all') : null;
 		p?.close();

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// Parser / serializer for wg-quick style WireGuard configuration files.
+// Parser / serializer for wg-quick style WireGuard configuration files,
+// including the obfuscation settings of AmneziaWG 2.0 (iface.awg).
 // Kept free of uci/ubus dependencies so it can be unit tested on any host.
 
 'use strict';
@@ -12,6 +13,34 @@ const IGNORED_IFACE_KEYS = {
 	table: 'Table', preup: 'PreUp', postup: 'PostUp', predown: 'PreDown',
 	postdown: 'PostDown', saveconfig: 'SaveConfig', fwmark: 'FwMark'
 };
+
+// AmneziaWG 2.0 [Interface] settings, in .conf order: lower case key ->
+// [ name in the .conf, kind ]. u16: 0..65535; range: a 32-bit number or a
+// range "a-b"; text: a packet template such as "<b 0x...><r 16>".
+const AWG_KEYS = {
+	jc: [ 'Jc', 'u16' ], jmin: [ 'Jmin', 'u16' ], jmax: [ 'Jmax', 'u16' ],
+	s1: [ 'S1', 'u16' ], s2: [ 'S2', 'u16' ], s3: [ 'S3', 'u16' ], s4: [ 'S4', 'u16' ],
+	h1: [ 'H1', 'range' ], h2: [ 'H2', 'range' ], h3: [ 'H3', 'range' ], h4: [ 'H4', 'range' ],
+	i1: [ 'I1', 'text' ], i2: [ 'I2', 'text' ], i3: [ 'I3', 'text' ], i4: [ 'I4', 'text' ], i5: [ 'I5', 'text' ]
+};
+
+function valid_awg(kind, val) {
+	if (kind == 'u16')
+		return match(val, /^[0-9]{1,5}$/) != null && +val <= 65535;
+
+	if (kind == 'range') {
+		const m = match(val, /^([0-9]{1,10})(-([0-9]{1,10}))?$/);
+
+		return m != null && +m[1] <= 4294967295 && (m[3] == null || (+m[3] <= 4294967295 && +m[3] >= +m[1]));
+	}
+
+	return length(val) > 0 && length(val) <= 8192;
+}
+
+// true for a profile with AmneziaWG settings
+function is_awg(cfg) {
+	return length(keys(cfg?.iface?.awg ?? {})) > 0;
+}
 
 function split_list(value) {
 	return filter(map(split(value ?? "", /[, \t]+/), (s) => trim(s)), (s) => length(s) > 0);
@@ -154,7 +183,7 @@ function parse(text) {
 				if (iface)
 					return { error: `Line ${lineno}: duplicate [Interface] section` };
 
-				cur = iface = { addresses: [], dns: [], dns_search: [] };
+				cur = iface = { addresses: [], dns: [], dns_search: [], awg: {} };
 			}
 			else if (section == 'peer') {
 				cur = { allowed_ips: [] };
@@ -221,7 +250,13 @@ function parse(text) {
 				break;
 
 			default:
-				if (IGNORED_IFACE_KEYS[key])
+				if (AWG_KEYS[key]) {
+					if (!valid_awg(AWG_KEYS[key][1], val))
+						return { error: `Line ${lineno}: invalid ${AWG_KEYS[key][0]} "${val}"` };
+
+					iface.awg[key] = val;
+				}
+				else if (IGNORED_IFACE_KEYS[key])
 					push(warnings, `${IGNORED_IFACE_KEYS[key]} is not supported on OpenWrt and was ignored`);
 				else
 					push(warnings, `Unknown option "${m[1]}" was ignored`);
@@ -292,6 +327,9 @@ function parse(text) {
 	if (!length(peers))
 		return { error: 'At least one [Peer] section is required' };
 
+	if (iface.awg.jmin != null && iface.awg.jmax != null && +iface.awg.jmin > +iface.awg.jmax)
+		return { error: 'Jmin must not be larger than Jmax' };
+
 	for (let i, p in peers) {
 		if (!p.public_key)
 			return { error: `[Peer] #${i + 1} has no PublicKey` };
@@ -324,6 +362,10 @@ function serialize(cfg) {
 	if (cfg.iface.listen_port)
 		push(out, `ListenPort = ${cfg.iface.listen_port}`);
 
+	for (let key, k in AWG_KEYS)
+		if (cfg.iface.awg?.[key] != null)
+			push(out, `${k[0]} = ${cfg.iface.awg[key]}`);
+
 	for (let p in cfg.peers) {
 		push(out, '', '[Peer]', `PublicKey = ${p.public_key}`);
 
@@ -345,4 +387,4 @@ function serialize(cfg) {
 	return join('\n', out) + '\n';
 }
 
-export { expand_default_routes, collapse_default_routes, is_full_tunnel, parse, serialize };
+export { AWG_KEYS, is_awg, expand_default_routes, collapse_default_routes, is_full_tunnel, parse, serialize };
