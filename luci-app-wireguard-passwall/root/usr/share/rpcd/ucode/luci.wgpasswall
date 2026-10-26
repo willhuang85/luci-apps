@@ -1306,14 +1306,21 @@ function drift(uci) {
 		push(issues, 'fw_missing');
 	// skipped while queued reloads are still running (they hold the lock)
 	else if (system(`flock -n ${FW_LOCK} true >/dev/null 2>&1`) == 0) {
-		const live = length(want) ? run('nft list table inet fw4') : null;
+		// only the VPN network's forward chain, where fw4 puts both rules: the
+		// whole fw4 table is large, and the page asks every 5 seconds
+		const live = length(want) ? run(`nft list chain inet fw4 forward_${NETS.vpn.zone}`) : null;
 		let ok = true;
 
-		// no fw4 table (another firewall, or not started): nothing to compare
-		if (length(live))
+		if (length(live)) {
 			for (let c in want)
 				if (index(live, `!fw4: ${c}"`) < 0)
 					ok = false;
+		}
+		// no such chain: the rules are not loaded, unless fw4 is not running at
+		// all (another firewall, or not started), then there is nothing to compare
+		else if (length(want) && index(run('nft list tables') ?? '', 'inet fw4') >= 0) {
+			ok = false;
+		}
 
 		if (length(live) || !length(want))
 			if ((index(run(`nft list table inet ${DNS_TABLE}`) ?? '', 'counter') >= 0) != dns_rules)
@@ -1326,11 +1333,17 @@ function drift(uci) {
 	return issues;
 }
 
+// Public keys by private key: status asks for them every 5 seconds while the
+// page is open, so each is worked out once ("wg pubkey") and kept.
+let pubkeys = {};
+
 function local_pubkey(private_key) {
 	if (!match(private_key ?? '', /^[A-Za-z0-9+\/]{42}[AEIMQUYcgkosw480]=$/))
 		return null;
 
-	return trim(run(`echo ${shell_quote(private_key)} | wg pubkey`) ?? '') || null;
+	pubkeys[private_key] ??= trim(run(`echo ${shell_quote(private_key)} | wg pubkey`) ?? '') || null;
+
+	return pubkeys[private_key];
 }
 
 // A network's IPv4 address and subnet, e.g. { address: '192.168.8.1',
