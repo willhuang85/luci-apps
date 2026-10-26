@@ -27,13 +27,11 @@ global.__uci_store = {
 	dhcp: {},
 	wgpasswall: {
 		// settings of an earlier version: the modes and chosen devices
-		settings: { '.type': 'settings', '.name': 'settings', '.index': 1008, killswitch: '0', mode: 'vpn_passwall',
-			scope: 'devices', vpn_device: [ 'AA:BB:CC:DD:EE:FF' ], pw_node: 'n1', wg_fwmark: '0xca6c' }
+		settings: { '.type': 'settings', '.name': 'settings', '.index': 1008, killswitch: '0', via_passwall: '1' }
 	}
 };
 
-// left by an earlier version
-global.__uci_store.firewall.wgpasswall_devices = { '.type': 'rule', '.name': 'wgpasswall_devices', '.index': 1009, target: 'MARK' };
+// a stale routing rule of the app, removed by the next sync
 global.__uci_store.network.wgpasswall_rule_vpn_lan = { '.type': 'rule', '.name': 'wgpasswall_rule_vpn_lan', '.index': 1010, in: 'lan' };
 
 const plugin = loadfile(sourcepath(0, true) + '/../../luci-app-wireguard-passwall/root/usr/share/rpcd/ucode/luci.wgpasswall')();
@@ -73,11 +71,7 @@ check('peer split routes', join(',', filter(values(st.network), (s) => s['.type'
 check('label stored', st.wgpasswall.wgc_myhomevpn?.label == 'My Home VPN!');
 
 // the modes of earlier versions
-check('migrate: VPN through Passwall kept', st.wgpasswall.settings.via_passwall == '1');
-check('migrate: old options gone', st.wgpasswall.settings.mode == null && st.wgpasswall.settings.scope == null &&
-	st.wgpasswall.settings.vpn_device == null && st.wgpasswall.settings.pw_node == null);
-check('migrate: device marking removed', st.firewall.wgpasswall_devices == null);
-check('migrate: LAN rule removed', st.network.wgpasswall_rule_vpn_lan == null);
+check('stale routing rule removed', st.network.wgpasswall_rule_vpn_lan == null);
 // without Passwall the tunnel goes directly
 check('no Passwall: not through Passwall', !call('status').via_passwall);
 
@@ -98,8 +92,7 @@ check('no Passwall: no Passwall network', st.network.wgproxy == null && st.netwo
 check('zone created', st.firewall.wgpasswall_zone?.name == 'wgpasswall' && st.firewall.wgpasswall_zone?.network?.[0] == 'wgc_myhomevpn');
 check('ks disabled', st.firewall.wgpasswall_killswitch?.enabled == '0');
 check('ip4table', st.network.wgc_myhomevpn?.ip4table == '51820' && st.network.wgc_myhomevpn?.ip6table == '51820');
-check('wg fwmark: ends in 0xff (skipped by Passwall), old default migrated', st.network.wgc_myhomevpn?.fwmark == '0xcaff' &&
-	st.wgpasswall.settings.wg_fwmark == '0xcaff');
+check('wg fwmark: ends in 0xff (skipped by Passwall)', st.network.wgc_myhomevpn?.fwmark == '0xcaff');
 check('rule main', st.network.wgpasswall_rule_main?.['.type'] == 'rule' && st.network.wgpasswall_rule_main?.lookup == 'main' &&
 	st.network.wgpasswall_rule_main?.suppress_prefixlength == '0' && st.network.wgpasswall_rule_main?.priority == '30100');
 check('rule vpn: the VPN network', st.network.wgpasswall_rule_vpn_wgvpn?.mark == '0x0/0xff' && st.network.wgpasswall_rule_vpn_wgvpn?.lookup == '51820' &&

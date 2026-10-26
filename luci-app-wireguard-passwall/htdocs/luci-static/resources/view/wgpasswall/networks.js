@@ -28,7 +28,8 @@ const DRIFT_TEXT = {
 	pw_settings: _('Passwall\'s settings were changed outside this page (main switch, Client Proxy, access control or proxy modes).'),
 	pw_acl: _('Passwall\'s access control rule for the Passwall network is missing or out of date.'),
 	fw_rules: _('Firewall rules of this page are saved but not active.'),
-	fw_missing: _('The VPN network, its firewall zone or other firewall rules of this page were removed.')
+	fw_missing: _('The VPN network, its firewall zone or other firewall rules of this page were removed.'),
+	wg_endpoint: _('The connected VPN tunnel does not use the server it should: it was not restarted after "Carry the VPN through Passwall" changed.')
 };
 
 // The status format this page reads (status.api); a different one means
@@ -941,8 +942,7 @@ return view.extend({
 
 	// Fetches this page's script past the browser's cache, then reloads:
 	// LuCI asks for it under the LuCI version, which an app update does not
-	// change, so a normal reload can keep the old copy. (The file was renamed
-	// from overview.js for the same reason when the modes were replaced.)
+	// change, so a normal reload can keep the old copy.
 	reloadPage() {
 		const url = '%s/view/wgpasswall/networks.js%s'.format(L.env.base_url, L.env.resource_version ? '?v=' + L.env.resource_version : '');
 

@@ -231,27 +231,18 @@ pw_same() {
 cp /etc/passwall/rules/proxy_ip "$WORK/proxy_ip.orig"
 cp /etc/passwall/rules/direct_ip "$WORK/direct_ip.orig"
 
-# settings and Passwall rules of earlier versions: the modes, chosen devices
-uci set wgpasswall.settings.mode=vpn_passwall; uci set wgpasswall.settings.scope=devices
-uci add_list wgpasswall.settings.vpn_device=AA:BB:CC:DD:EE:01; uci set wgpasswall.settings.pw_node=realitynode; uci commit wgpasswall
-uci set passwall.0wgpasswall_vpn_devices=acl_rule; uci set passwall.0wgpasswall_vpn_devices.mode=0
-uci set passwall.0wgpasswall_direct_guestwifi=acl_rule; uci set passwall.0wgpasswall_direct_guestwifi.interface=guestwifi
-uci set passwall.zzz_wgpasswall_lan_lan=acl_rule; uci set passwall.zzz_wgpasswall_lan_lan.interface=lan; uci commit passwall
-uci set firewall.wgpasswall_devices=rule; uci set firewall.wgpasswall_devices.target=MARK; uci commit firewall
+# the VPN carried through Passwall (not connected yet), and a rule of the
+# app that nothing needs any more
+uci set wgpasswall.settings.via_passwall=1; uci commit wgpasswall
+uci set passwall.0wgpasswall_net_gone=acl_rule; uci set passwall.0wgpasswall_net_gone.interface=gone; uci commit passwall
 
 ubus call luci.wgpasswall status | jq -e '.passwall.installed and (.passwall.needed | not) and .passwall.node.id == "hy2node"' >/dev/null || fail "passwall not detected"
 ubus call luci.wgpasswall reapply >/dev/null || fail "reapply after installing Passwall"
 wait_queue
-[ "$(uci -q get wgpasswall.settings.via_passwall)" = 1 ] || fail "VPN through Passwall mode not migrated"
-uci -q get wgpasswall.settings.mode >/dev/null && fail "old mode left behind"
-uci -q get wgpasswall.settings.vpn_device >/dev/null && fail "old device list left behind"
-uci -q get firewall.wgpasswall_devices >/dev/null && fail "old device mark left behind"
-for acl in 0wgpasswall_vpn_devices 0wgpasswall_direct_guestwifi zzz_wgpasswall_lan_lan; do
-	uci -q get passwall.$acl >/dev/null && fail "old Passwall rule $acl left behind"
-done
+uci -q get passwall.0wgpasswall_net_gone >/dev/null && fail "unneeded rule of the app left behind"
 pw_same || { uci show passwall | sort | diff "$WORK/passwall.orig" -; fail "Passwall changed while nothing needs it"; }
-# restarted once to drop the old rules, and not again
-grep -q restart-end /tmp/order.log || fail "Passwall not restarted to drop the old rules"
+# restarted once to drop the rule, and not again
+grep -q restart-end /tmp/order.log || fail "Passwall not restarted to drop the rule"
 : > /tmp/order.log
 ubus call luci.wgpasswall reapply >/dev/null || fail "reapply again"
 wait_queue

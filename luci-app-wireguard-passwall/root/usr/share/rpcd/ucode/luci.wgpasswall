@@ -87,10 +87,6 @@ const NET_FWDS = {
 // section names and skips names containing "default"; the networks never
 // overlap, so the order does not matter.
 const PW_NET_ACL_PREFIX = '0wgpasswall_net_';
-// rules and sections of earlier versions (per device / per LAN), removed
-const OLD_ACL_SIDS = [ 'wgpasswall_vpn_devices', '0wgpasswall_vpn_devices' ];
-const OLD_ACL_PREFIXES = [ 'wgpasswall_lan_', 'zzz_wgpasswall_lan_', '0wgpasswall_direct_' ];
-const OLD_MARK_SID = 'wgpasswall_devices';
 
 // DNS of the VPN network's devices: an nftables table of its own, loaded by
 // fw4 through an include, ahead of Passwall's DNS redirect
@@ -696,7 +692,6 @@ function sync_firewall(uci) {
 	uci.set('firewall', KS_SID, 'family', 'any');
 	uci.set('firewall', KS_SID, 'target', 'REJECT');
 	uci.set('firewall', KS_SID, 'enabled', s.killswitch ? '1' : '0');
-	uci.delete('firewall', KS_SID, 'src_mac');
 
 	// IPv6 of the VPN network must not go out directly while the VPN only
 	// carries IPv4 (see ipv6_outside_vpn)
@@ -708,10 +703,6 @@ function sync_firewall(uci) {
 	uci.set('firewall', NO_V6_SID, 'family', 'ipv6');
 	uci.set('firewall', NO_V6_SID, 'target', 'REJECT');
 	uci.set('firewall', NO_V6_SID, 'enabled', ipv6_outside_vpn(uci) ? '1' : '0');
-	uci.delete('firewall', NO_V6_SID, 'src_mac');
-
-	// per-device marking of earlier versions
-	uci.delete('firewall', OLD_MARK_SID);
 
 	// the file must exist whenever the include does, or fw4 fails to load
 	const nft = vpn_dns_nft(uci);
@@ -741,8 +732,6 @@ function sync_firewall(uci) {
 // would otherwise inherit it and hold the lock for as long as they run,
 // blocking every later reload. The "; true" keeps the shell from running the
 // last command in place of the subshell, which would close the lock early.
-// The file name changed with that fix, as daemons started by older versions
-// may still hold the old one.
 const FW_LOCK = '/var/lock/luci-apps.lock';
 
 // The commands as one script; failures end up in the system log.
@@ -920,15 +909,20 @@ function pw_restore_mtu(uci, id) {
 }
 
 // Points every peer at the local relay while the tunnel goes through
-// Passwall, and back at its real server otherwise.
+// Passwall, and back at its real server otherwise. Returns the profiles
+// whose servers changed: netifd does not see changes to the peer sections,
+// so a running tunnel has to be restarted to use them (restart_tunnels).
 function relay_sync(uci) {
 	const relay = via_passwall(uci);
-	let port = RELAY_BASE_PORT;
+	let port = RELAY_BASE_PORT, changed = [];
 
 	for (let id in profile_ids(uci)) {
-		let peers = [];
+		let peers = [], before = [];
 
 		uci.foreach('network', `wireguard_${id}`, (s) => push(peers, s));
+
+		for (let s in peers)
+			push(before, `${s.endpoint_host}:${s.endpoint_port}`);
 
 		for (let s in peers) {
 			const sid = s['.name'];
@@ -961,10 +955,52 @@ function relay_sync(uci) {
 			pw_apply_mtu(uci, id);
 		else
 			pw_restore_mtu(uci, id);
+
+		let after = [];
+
+		uci.foreach('network', `wireguard_${id}`, (s) => push(after, `${s.endpoint_host}:${s.endpoint_port}`));
+
+		if (join(' ', before) != join(' ', after))
+			push(changed, id);
 	}
 
 	uci.save('network');
 	uci.save('wgpasswall');
+
+	return changed;
+}
+
+// Connected profiles whose running tunnel does not use the server the
+// settings say: the relay (127.0.0.1) while the tunnel goes through Passwall,
+// the real server otherwise. E.g. after a change the tunnel missed.
+function stale_tunnels(uci, wg) {
+	const relay = via_passwall(uci);
+
+	wg ??= runtime_status().wg;
+	let stale = [];
+
+	for (let id in profile_ids(uci)) {
+		if (uci.get('network', id, 'auto') == '0' || !wg[id])
+			continue;
+
+		for (let p in wg[id].peers)
+			if (p.endpoint && (index(p.endpoint, '127.0.0.1:') == 0) != relay) {
+				push(stale, id);
+				break;
+			}
+	}
+
+	return stale;
+}
+
+// Restarts the connected ones of these profiles, so they use their new
+// servers.
+function restart_tunnels(uci, ids) {
+	for (let id in uniq(ids ?? []))
+		if (uci.get('network', id, 'auto') != '0') {
+			iface_down(id);
+			iface_up(id);
+		}
 }
 
 function pw_baseline_saved(uci) {
@@ -1055,20 +1091,12 @@ function pw_net_acl_sid(net) {
 }
 
 function is_app_acl(sid) {
-	if (index(sid, PW_NET_ACL_PREFIX) == 0 || sid in OLD_ACL_SIDS)
-		return true;
-
-	for (let p in OLD_ACL_PREFIXES)
-		if (index(sid, p) == 0)
-			return true;
-
-	return false;
+	return index(sid, PW_NET_ACL_PREFIX) == 0;
 }
 
 // The access control rules of the app: "Proxy" (global node and settings,
-// run by the global instance) for every network Passwall carries. Others,
-// and those of earlier versions, are removed; the user's own rules are left
-// alone.
+// run by the global instance) for every network Passwall carries. Others
+// are removed; the user's own rules are left alone.
 function pw_sync_acl(uci) {
 	const nets = pw_networks(uci);
 	let wanted = {}, ours = [];
@@ -1190,42 +1218,13 @@ function pw_sync(uci) {
 }
 
 /*
- * Old settings: the four modes and the per-device choice of earlier versions
- * become "via_passwall"; devices now pick a network instead.
- */
-function migrate(uci) {
-	const mode = uci.get('wgpasswall', 'settings', 'mode');
-
-	// the earlier default mark, which Passwall's Localhost Proxy does not skip
-	if (uci.get('wgpasswall', 'settings', 'wg_fwmark') == '0xca6c') {
-		uci.set('wgpasswall', 'settings', 'wg_fwmark', '0xcaff');
-		uci.save('wgpasswall');
-	}
-
-	if (mode == null && uci.get('wgpasswall', 'settings', 'scope') == null)
-		return;
-
-	ensure_settings(uci);
-
-	if (mode == 'vpn_passwall')
-		uci.set('wgpasswall', 'settings', 'via_passwall', '1');
-
-	for (let opt in [ 'mode', 'scope', 'vpn_device', 'device_mark', 'pw_node', 'last_profile' ])
-		uci.delete('wgpasswall', 'settings', opt);
-
-	uci.save('wgpasswall');
-}
-
-/*
  * Applies networks, routing, firewall, the relay and Passwall to the current
  * settings. Returns { packages, pw } for apply().
  */
 function sync_all(uci) {
-	migrate(uci);
-
 	const packages = ensure_networks(uci);
+	const changed = relay_sync(uci);
 
-	relay_sync(uci);
 	sync_routing(uci);
 	sync_firewall(uci);
 
@@ -1233,17 +1232,20 @@ function sync_all(uci) {
 
 	return {
 		packages: [ ...packages, 'wgpasswall', 'network', 'firewall', 'passwall' ],
-		pw
+		pw,
+		restart: changed
 	};
 }
 
 // sync_all() and apply(), plus the relay (started while the tunnel goes
-// through Passwall, stopped otherwise).
+// through Passwall, stopped otherwise) and restarting tunnels whose servers
+// changed.
 function sync_apply(uci) {
 	const r = sync_all(uci);
 
 	apply(uci, r.packages, r.pw);
 	relay_restart();
+	restart_tunnels(uci, r.restart);
 }
 
 /*
@@ -1251,10 +1253,15 @@ function sync_apply(uci) {
  * Passwall's own page or a firewall reload that did not happen. Returns a
  * list of codes: pw_settings (Passwall's options), pw_acl (the app's rules),
  * pw_no_node (Passwall needed but no node set), fw_rules (firewall rules saved
- * but not active) and fw_missing (firewall rules or networks removed).
+ * but not active), fw_missing (firewall rules or networks removed) and
+ * wg_endpoint (a connected tunnel not using the relay or server it should).
+ * `wg` is the tunnels' state from runtime_status(), if already at hand.
  */
-function drift(uci) {
+function drift(uci, wg) {
 	let issues = [];
+
+	if (length(stale_tunnels(uci, wg)))
+		push(issues, 'wg_endpoint');
 
 	if (pw_installed(uci) && pw_needed(uci)) {
 		const g = first_section(uci, 'passwall', 'global');
@@ -1452,7 +1459,7 @@ const methods = {
 				wan_zone_ok: zone_exists(uci, s.wan_zone),
 				killswitch_active: s.killswitch && uci.get('firewall', KS_SID, 'enabled') == '1',
 				proxy_apps: detect_proxy_apps(uci),
-				drift: drift(uci),
+				drift: drift(uci, rt.wg),
 				vpn_dns: vpn_dns(uci),
 				ipv6_blocked: ipv6_outside_vpn(uci),
 				networks: networks_status(uci),
@@ -1688,9 +1695,6 @@ const methods = {
 		args: { ports: {} },
 		call: function(req) {
 			const uci = cursor();
-
-			migrate(uci);
-
 			const packages = ensure_networks(uci);
 			const roles = port_roles(uci);
 			const lan = lan_bridge(uci);
@@ -1727,6 +1731,7 @@ const methods = {
 
 			apply(uci, [ ...packages, ...r.packages ], r.pw);
 			relay_restart();
+			restart_tunnels(uci, r.restart);
 
 			return { result: true, ports: roles };
 		}
@@ -1760,6 +1765,8 @@ const methods = {
 
 			apply(uci, r.packages, r.pw);
 			relay_restart();
+			// also tunnels that missed an earlier change
+			restart_tunnels(uci, [ ...r.restart, ...stale_tunnels(uci) ]);
 
 			return { result: true };
 		}
@@ -1825,7 +1832,7 @@ const methods = {
 			for (let sid in rules)
 				uci.delete('network', sid);
 
-			for (let sid in [ KS_SID, NO_V6_SID, OLD_MARK_SID, DNS_SID ])
+			for (let sid in [ KS_SID, NO_V6_SID, DNS_SID ])
 				uci.delete('firewall', sid);
 
 			unlink(DNS_NFT);

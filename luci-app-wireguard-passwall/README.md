@@ -82,7 +82,6 @@ Where each network's DNS goes:
 - **The router's own traffic** (package updates, NTP, ...): through Passwall while Passwall runs with its *Localhost Proxy* on (your choice in Passwall, e.g. for package updates where the package servers are blocked); otherwise through the VPN while a profile is connected directly, otherwise out directly. The page shows which under *Networks → This router*. WireGuard marks its own packets `0xcaff`, ending in `ff` like Xray's, so Passwall's Localhost Proxy leaves them alone and the tunnel keeps working.
 - **PersistentKeepalive**: on a router behind NAT, and with the VPN carried through Passwall, an idle tunnel can go quiet until NAT or the proxy forgets it. When a `.conf` has none, the import / edit dialog offers to add `PersistentKeepalive = 15` (inside the ~30 s shortest UDP timeouts even if one keepalive is lost); it costs well under 1 MB a day.
 - `PreUp`/`PostUp`/`Table` lines from wg-quick have no meaning on OpenWrt and are ignored (you'll see a note when importing).
-- **Upgrading from a version with modes** ("VPN", "VPN through Passwall", "Passwall only", "Off", "only chosen devices"): those are gone. "VPN through Passwall" becomes **Carry the VPN through Passwall**; everything else comes from the networks now, so after upgrading put the ports and Wi-Fi networks that should use the VPN (or Passwall) on its network. Until then your devices stay on the home network and use your regular connection, and the kill switch only covers the (empty) VPN network.
 
 ## Using it together with Passwall / Xray
 

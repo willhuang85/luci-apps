@@ -78,14 +78,13 @@ define Package/luci-app-wireguard-passwall/prerm
 	# the app's Passwall rules and DNS rules
 	uci -q set wgpasswall.settings.killswitch='0'
 	uci -q commit wgpasswall
-	for s in $$(uci -q show passwall | sed -n -E "s/^passwall\.((0wgpasswall_|zzz_wgpasswall_lan_|wgpasswall_lan_|wgpasswall_vpn_devices)[A-Za-z0-9_]*)=acl_rule$$/\1/p"); do
+	for s in $$(uci -q show passwall | sed -n -E "s/^passwall\.(0wgpasswall_[A-Za-z0-9_]*)=acl_rule$$/\1/p"); do
 		uci -q delete passwall.$$s
 	done
 	uci -q commit passwall
 	nft delete table inet wgpasswall_dns 2>/dev/null
 	rm -f /etc/wgpasswall/devices-dns.nft
 	uci -q delete firewall.wgpasswall_killswitch
-	uci -q delete firewall.wgpasswall_devices
 	uci -q delete firewall.wgpasswall_devices_dns
 	uci -q delete firewall.wgpasswall_no_ipv6
 	uci -q commit firewall
