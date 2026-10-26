@@ -1088,7 +1088,11 @@ function pw_sync_acl(uci) {
 	for (let sid, net in wanted) {
 		uci.set('passwall', sid, 'acl_rule');
 		uci.set('passwall', sid, 'enabled', '1');
-		uci.set('passwall', sid, 'remarks', `WireGuard + Passwall: the ${net} network`);
+		// named after what it carries, not after the app: "WireGuard +
+		// Passwall: ..." read as if it were about the VPN through Passwall
+		uci.set('passwall', sid, 'remarks', (net == NETS.proxy.net)
+			? 'Passwall network (set up by the WireGuard + Passwall page)'
+			: `Network ${net} (set up by the WireGuard + Passwall page)`);
 		uci.set('passwall', sid, 'interface', net);
 		// "mode" 1 is Proxy (26.8.10+; older versions proxy by default)
 		uci.set('passwall', sid, 'use_global_config', '1');

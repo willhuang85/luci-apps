@@ -275,6 +275,8 @@ check_pw_network() {
 	[ "$(uci -q get passwall.0wgpasswall_net_wgproxy.interface)" = wgproxy ] || fail "no Passwall rule for the Passwall network"
 	[ "$(uci -q get passwall.0wgpasswall_net_wgproxy.mode)" = 1 ] || fail "Passwall network rule is not Proxy"
 	[ "$(uci -q get passwall.0wgpasswall_net_wgproxy.enabled)" = 1 ] || fail "Passwall network rule not enabled"
+	[ "$(uci -q get passwall.0wgpasswall_net_wgproxy.remarks)" = "Passwall network (set up by the WireGuard + Passwall page)" ] || \
+		fail "Passwall network rule name: $(uci -q get passwall.0wgpasswall_net_wgproxy.remarks)"
 	[ "$(uci -q get passwall.myacl.remarks)" = "my own rule" ] || fail "the user's own rule changed"
 	[ "$(uci -q get passwall.@global_forwarding[0].udp_proxy_drop_ports)" = 443,51820 ] || fail "drop ports changed"
 	cmp -s /etc/passwall/rules/proxy_ip "$WORK/proxy_ip.orig" || fail "proxy list modified"
