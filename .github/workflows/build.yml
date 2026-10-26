@@ -111,6 +111,19 @@ jobs:
           mkdir -p "$RUNNER_TEMP/sdk"
           tar -xf "$archive" -C "$RUNNER_TEMP/sdk" --strip-components=1
 
+      # Smaller pages on the router. LuCI reads the "use strict" / "require"
+      # strings at the top of a view from its source before running it, so
+      # terser must keep them (directives=false); views end in a bare return.
+      # The tests run on the readable sources.
+      - name: Minify page scripts
+        run: |
+          for f in $(find luci-app-*/htdocs -name '*.js'); do
+            npx --yes terser@5.36.0 "$f" --parse bare_returns --compress directives=false \
+              --mangle --comments false -o "$f.min"
+            head -c 200 "$f.min" | grep -q '^"use strict";"require ' || { echo "require lines lost in $f"; exit 1; }
+            mv "$f.min" "$f"
+          done
+
       - name: Prepare SDK
         working-directory: ${{ runner.temp }}/sdk
         run: |

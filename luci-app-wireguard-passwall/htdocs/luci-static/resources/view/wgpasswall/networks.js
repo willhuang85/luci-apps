@@ -706,10 +706,13 @@ return view.extend({
 			]),
 			E('div', { 'class': 'wgc-nets' }, rows),
 			E('div', { 'class': 'wgc-actions', style: 'justify-content:flex-end; margin-top:8px' }, [
-				E('a', { 'class': 'btn cbi-button', href: L.url('admin/services/wifisetup') }, [ '📶 ' + _('Wi-Fi networks…') ]),
+				E('a', { 'class': 'btn cbi-button', href: L.url(data.wifisetup ? 'admin/services/wifisetup' : 'admin/network/wireless') }, [ '📶 ' + _('Wi-Fi networks…') ]),
 				E('button', { 'class': 'btn cbi-button cbi-button-action', click: () => this.showPorts() }, [ '🔌 ' + _('Wired ports…') ])
 			]),
-			E('div', { 'class': 'wgc-sub', style: 'margin-top:10px; font-size:.9em' }, _('Wi-Fi networks and the network each one is on are set in Wi-Fi Setup. A guest network always uses your regular internet connection.'))
+			E('div', { 'class': 'wgc-sub', style: 'margin-top:10px; font-size:.9em' }, (data.wifisetup
+				? _('Wi-Fi networks and the network each one is on are set in Wi-Fi Setup.')
+				: _('To put a Wi-Fi network on the VPN or Passwall network, set its network to "wgvpn" or "wgproxy" under Network → Wireless (or install Wi-Fi Setup).')) +
+				' ' + _('A guest network always uses your regular internet connection.'))
 		]);
 	},
 

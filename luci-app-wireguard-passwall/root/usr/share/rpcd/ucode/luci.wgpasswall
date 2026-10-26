@@ -1464,6 +1464,8 @@ const methods = {
 				ipv6_blocked: ipv6_outside_vpn(uci),
 				networks: networks_status(uci),
 				router: router_route(uci),
+				// Wi-Fi Setup sets the network of Wi-Fi networks, if installed
+				wifisetup: access('/usr/share/rpcd/ucode/luci.wifisetup') == true,
 				passwall: {
 					installed: pw_installed(uci),
 					needed: pw_needed(uci),

@@ -43,7 +43,7 @@ The status card turns green once the server answered with a handshake. A profile
 The app creates the VPN and Passwall networks the first time it runs: each gets its own bridge, a free `192.168.x.0/24` range (from `192.168.20.0` and `192.168.30.0` upwards), a DHCP pool and a firewall zone that, like the LAN, may reach the router (DHCP, DNS, LuCI) and the home network. Devices on different networks don't discover each other (AirPlay, printers, ...), but can reach each other by address.
 
 - **Wired ports**: **Wired ports…** moves the LAN ports between the home, VPN and Passwall bridges. A switch or access point plugged into a port puts all its devices on that network. If your computer is on a port you move, it gets an address on the other network: unplug and plug the cable back in, then open the router at that network's address (the dialog shows it).
-- **Wi-Fi networks**: in Wi-Fi Setup, **More Wi-Fi networks → Add Wi-Fi network**, then pick the network. Your main Wi-Fi stays on the home network.
+- **Wi-Fi networks**: in Wi-Fi Setup, **More Wi-Fi networks → Add Wi-Fi network**, then pick the network. Your main Wi-Fi stays on the home network. Wi-Fi Setup is optional: without it, set a Wi-Fi network's *Network* to `wgvpn` or `wgproxy` under *Network → Wireless*, then press **Reapply settings** so Passwall starts if it's now needed.
 - Everything matches by network, so the rules of the networks never overlap or depend on each other's order.
 
 ### What the kill switch does
