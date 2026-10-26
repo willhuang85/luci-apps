@@ -6,13 +6,10 @@ on:
     tags: [ 'v*' ]
   pull_request:
   workflow_dispatch:
-    inputs:
-      openwrt_version:
-        description: OpenWrt release to build against
-        default: '25.12.2'
 
+# Every job runs once per OpenWrt release: 25.12 installs .apk packages with
+# apk, 24.10 .ipk packages with opkg. Both sets go into the same release.
 env:
-  OPENWRT_VERSION: ${{ inputs.openwrt_version || '25.12.2' }}
   # The packages are architecture independent (PKGARCH:=all), so the SDK of
   # any target produces packages that install on every router.
   SDK_TARGET: x86/64
@@ -24,6 +21,12 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        openwrt: [ '25.12.2', '24.10.8' ]
+    env:
+      OPENWRT_VERSION: ${{ matrix.openwrt }}
     steps:
       - uses: actions/checkout@v4
 
@@ -59,6 +62,17 @@ jobs:
   build:
     needs: test
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - openwrt: '25.12.2'
+            format: apk
+          - openwrt: '24.10.8'
+            format: ipk
+    env:
+      OPENWRT_VERSION: ${{ matrix.openwrt }}
+    # the same number in every matrix job
     outputs:
       release: ${{ steps.rel.outputs.num }}
     steps:
@@ -147,7 +161,7 @@ jobs:
             pkg=$(find bin/packages -name "${p}-*.apk" -o -name "${p}_*.ipk" | head -n1)
             [ -n "$pkg" ] || { echo "Package $p not found"; find bin -type f; exit 1; }
             case "$pkg" in
-              *"-r${REL_NUM}.apk") ;;
+              *"-r${REL_NUM}.apk"|*"-r${REL_NUM}_all.ipk") ;;
               *) echo "Package $pkg does not carry release r${REL_NUM}"; exit 1 ;;
             esac
             cp "$pkg" "$GITHUB_WORKSPACE/dist/"
@@ -157,6 +171,13 @@ jobs:
               grep -q 'rpcd-mod-ucode' meta.txt || { echo "Dependencies missing from $p metadata"; exit 1; }
               # rpcd ignores world-writable plugins, so never ship such files
               if grep -nE 'mode: *0?[0-7]?[0-7][0-7][2367]([^0-7]|$)' meta.txt; then
+                echo "World-writable files in $p"; exit 1
+              fi
+            else
+              tar -xzOf "$pkg" ./control.tar.gz | tar -xzOf - ./control | tee meta.txt
+              grep -q '^Depends:.*rpcd-mod-ucode' meta.txt || { echo "Dependencies missing from $p metadata"; exit 1; }
+              tar -xzOf "$pkg" ./data.tar.gz | tar -tvzf - | tee files.txt
+              if grep -E '^[^l].......w' files.txt; then
                 echo "World-writable files in $p"; exit 1
               fi
             fi
@@ -169,6 +190,7 @@ jobs:
       # that has the public key in /etc/apk/keys. A signed index
       # (packages.adb) lets the router use the release as a package feed.
       - name: Sign package and index
+        if: matrix.format == 'apk'
         working-directory: ${{ runner.temp }}/sdk
         env:
           APK_SIGNING_KEY: ${{ secrets.APK_SIGNING_KEY }}
@@ -196,6 +218,49 @@ jobs:
           echo "Public key (luci-apps.pem):"
           cat luci-apps.pem
 
+      # opkg installs single .ipk files without a signature, so LuCI's
+      # "Upload package" works as is. To use the release as a package feed,
+      # opkg needs a package index (Packages.gz) signed with a usign key
+      # (repository secret OPKG_SIGNING_KEY, a usign / signify secret key
+      # without a passphrase). signify-openbsd makes the same keys and
+      # signatures as OpenWrt's usign.
+      - name: Index and sign packages (opkg)
+        if: matrix.format == 'ipk'
+        env:
+          OPKG_SIGNING_KEY: ${{ secrets.OPKG_SIGNING_KEY }}
+        run: |
+          printf '#!/bin/sh\nsha256sum "$2" | cut -d" " -f1\n' > "$RUNNER_TEMP/mkhash"
+          chmod +x "$RUNNER_TEMP/mkhash"
+          cd dist
+          # the same index OpenWrt's "make package/index" writes
+          MKHASH="$RUNNER_TEMP/mkhash" "$RUNNER_TEMP/sdk/scripts/ipkg-make-index.sh" . > Packages.manifest
+          grep -vE '^(Maintainer|LicenseFiles|Source|SourceName|Require|SourceDateEpoch)' Packages.manifest > Packages
+          rm Packages.manifest
+          # usign miscomputes signatures of files of these lengths; OpenWrt pads them the same way
+          case "$(((64 + $(stat -L -c%s Packages)) % 128))" in 110|111) printf '\n\n' >> Packages ;; esac
+          gzip -9nc Packages > Packages.gz
+          cat Packages
+          if [ -z "$OPKG_SIGNING_KEY" ]; then
+            echo "::warning::OPKG_SIGNING_KEY secret not set: the opkg package index is unsigned, so the release cannot be used as an opkg feed"
+            exit 0
+          fi
+          sudo apt-get install -y signify-openbsd
+          (umask 077; printf '%s\n' "$OPKG_SIGNING_KEY" > "$RUNNER_TEMP/opkg-key.sec")
+          # the public key is in the secret key: algorithm, key number and the
+          # second half of the Ed25519 secret key
+          python3 - "$RUNNER_TEMP/opkg-key.sec" > luci-apps-opkg.pub <<'PY'
+          import base64, sys
+          k = base64.b64decode(open(sys.argv[1]).read().split('\n')[1])
+          print('untrusted comment: luci-apps opkg public key')
+          print(base64.b64encode(k[0:2] + k[32:40] + k[72:104]).decode())
+          PY
+          signify-openbsd -S -s "$RUNNER_TEMP/opkg-key.sec" -m Packages -x Packages.sig
+          signify-openbsd -V -p luci-apps-opkg.pub -m Packages -x Packages.sig
+          rm -f "$RUNNER_TEMP/opkg-key.sec"
+          ls -l
+          echo "Public key (luci-apps-opkg.pub):"
+          cat luci-apps-opkg.pub
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -203,8 +268,9 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
-  # Publishes the packages (and, when signed, packages.adb and the public
-  # key luci-apps.pem) as a GitHub release: on every push to main,
+  # Publishes the packages of both OpenWrt releases (and, when signed, the
+  # package indexes packages.adb / Packages.gz and the public keys
+  # luci-apps.pem / luci-apps-opkg.pub) as one GitHub release: on every push to main,
   # tagged r<commit count> (e.g. r45), and on pushed v* tags. Re-running a
   # build of the same commit replaces the files.
   release:

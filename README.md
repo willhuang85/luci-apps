@@ -1,6 +1,6 @@
 # luci-apps
 
-Simple, consumer-router style apps for OpenWrt's LuCI web interface. Built and tested for **OpenWrt 25.12** (apk package manager); install any of them.
+Simple, consumer-router style apps for OpenWrt's LuCI web interface. Built and tested for **OpenWrt 25.12** (apk package manager) and **OpenWrt 24.10** (opkg); install any of them.
 
 | App | Menu | What it does |
 |---|---|---|
@@ -16,9 +16,11 @@ Simple, consumer-router style apps for OpenWrt's LuCI web interface. Built and t
 
 ## Install on your router
 
+Every release has two sets of the same apps: `.apk` files for OpenWrt 25.12 and `.ipk` files for OpenWrt 24.10 (`cat /etc/openwrt_release` shows your version). The steps below are for 25.12; see [OpenWrt 24.10](#openwrt-2410-opkg) for the differences.
+
 1. Get the packages
    - From the [Releases](../../releases) page (a release with all packages is published on every merge into `main`), or
-   - From the **Actions** tab → latest *Build packages* run → artifact `luci-apps-openwrt-25.12.2` (a zip with the `.apk` files inside).
+   - From the **Actions** tab → latest *Build packages* run → artifact `luci-apps-openwrt-25.12.2` (a zip with the `.apk` files inside; `luci-apps-openwrt-24.10.8` has the `.ipk` files).
 2. Copy the ones you want to the router (`-O` is needed because OpenWrt has no SFTP server by default):
    ```sh
    scp -O luci-app-*.apk root@192.168.1.1:/tmp/
@@ -63,6 +65,36 @@ Then install from **System → Software → Upload Package…** with no extra fl
 echo "https://github.com/willhuang85/luci-apps/releases/latest/download/packages.adb" >> /etc/apk/repositories.d/customfeeds.list
 ```
 
+### OpenWrt 24.10 (opkg)
+
+Use the `.ipk` files (`luci-app-tether_1.0.0-r12_all.ipk`, ...) and opkg instead of apk:
+
+```sh
+scp -O luci-app-*.ipk root@192.168.1.1:/tmp/
+ssh root@192.168.1.1
+opkg update
+opkg install /tmp/luci-app-*.ipk
+```
+
+opkg installs single package files without checking a signature, so **System → Software → Upload Package…** works as is.
+
+**Package feed (optional):** to get the apps and their updates in *System → Software*, CI also publishes a package index (`Packages.gz`) signed with a usign key. Once, on your computer, create the key (`signify-openbsd` on Debian/Ubuntu, `signify` on other systems; it makes the same keys as OpenWrt's `usign`):
+
+```sh
+signify-openbsd -G -n -c "luci-apps" -p luci-apps-opkg.pub -s luci-apps-opkg.sec
+```
+
+and store the contents of `luci-apps-opkg.sec` as the repository secret `OPKG_SIGNING_KEY` (same place as `APK_SIGNING_KEY` above). Every build after that also contains `Packages.sig` and the public key `luci-apps-opkg.pub`. Then, once, on the router:
+
+```sh
+wget -O /tmp/luci-apps-opkg.pub \
+  https://github.com/willhuang85/luci-apps/releases/latest/download/luci-apps-opkg.pub
+opkg-key add /tmp/luci-apps-opkg.pub
+echo "src/gz luci_apps https://github.com/willhuang85/luci-apps/releases/latest/download" >> /etc/opkg/customfeeds.conf
+opkg update
+```
+
+Elsewhere in these READMEs, read `opkg install` / `opkg remove` / `opkg list-installed | grep luci-app` for `apk add` / `apk del` / `apk info -e`.
 
 ### Troubleshooting
 
@@ -84,10 +116,10 @@ echo "https://github.com/willhuang85/luci-apps/releases/latest/download/packages
 The GitHub Actions workflow (`.github/workflows/build.yml`) runs on every push:
 
 1. **test** – builds ucode, rpcd and friends at the exact revisions of the OpenWrt release (`tests/lib/build-stack.sh`), loads the backends into a real rpcd next to fake `iwinfo` (loaded into rpcd, as on a router) / `network.wireless` / `network.interface` / `hostapd` objects (and a fake `/sys` with a plugged-in iPhone) and walks through every feature, runs the unit tests, tests the WireGuard relay end to end against a stub SOCKS5 proxy, syntax-checks JS/JSON/shell.
-2. **build** – downloads the official OpenWrt 25.12.2 SDK, builds all packages and uploads the `.apk` files as an artifact. The packages are architecture independent, so one build works on every router.
-3. **release** – on every push to `main` (and on pushed `v*` tags), publishes the `.apk` files (plus, when signed, `packages.adb` and the public key) as a GitHub release.
+2. **build** – downloads the official OpenWrt 25.12.2 and 24.10.8 SDKs, builds all packages and uploads the `.apk` and `.ipk` files as one artifact per release. The packages are architecture independent, so one build works on every router.
+3. **release** – on every push to `main` (and on pushed `v*` tags), publishes both sets (plus, when signed, the package indexes `packages.adb` / `Packages.gz` and the public keys) as one GitHub release.
 
-Build for another OpenWrt release via *Actions → Build packages → Run workflow* and enter the version.
+Both the tests and the builds run once per OpenWrt release; to add or change one, edit the `matrix` entries in the workflow.
 
 Build locally with an OpenWrt SDK:
 

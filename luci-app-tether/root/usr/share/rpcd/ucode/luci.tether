@@ -470,6 +470,8 @@ const methods = {
 					supported: sup.iphone || sup.android,
 					iphone_support: sup.iphone,
 					android_support: sup.android,
+					// OpenWrt 24.10 installs packages with opkg, 25.12 with apk
+					opkg: access('/bin/opkg') == true && !access('/usr/bin/apk'),
 					phone: usb_phone(net),
 					netdev: net?.dev,
 					carrier: net ? sysread(`class/net/${net.dev}/carrier`) == '1' : false,

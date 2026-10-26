@@ -446,7 +446,8 @@ return view.extend({
 		const u = this.st.usb;
 		const live = this.st.active && this.st.method == 'usb';
 		const phone = u.phone;
-		const install = 'apk update && apk add kmod-usb-net-ipheth usbmuxd kmod-usb-net-cdc-ncm kmod-usb-net-rndis';
+		const pkgs = 'kmod-usb-net-ipheth usbmuxd kmod-usb-net-cdc-ncm kmod-usb-net-rndis';
+		const install = u.opkg ? 'opkg update && opkg install ' + pkgs : 'apk update && apk add ' + pkgs;
 		let note = '';
 
 		if (!u.supported || (phone?.kind == 'iphone' && !u.iphone_support) || (phone?.kind == 'android' && !u.android_support))
