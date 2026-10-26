@@ -53,6 +53,8 @@ start_stub
 WGPASSWALL_RELAY_CONFIG="$T/relay.json" WGPASSWALL_RELAY_STATUS="$T/status.json" \
 	WGPASSWALL_RELAY_WG_DUMP="$T/wg.dump" WGPASSWALL_RELAY_CHECK_MS=500 WGPASSWALL_RELAY_GRACE=2 \
 	WGPASSWALL_RELAY_HANDSHAKE_MAX=5 WGPASSWALL_RELAY_RECENT_TX=2 WGPASSWALL_RELAY_SENDING_MIN=4 \
+	WGPASSWALL_RELAY_PW_CHECK_AFTER=2 WGPASSWALL_RELAY_PROBE_GAP=1 WGPASSWALL_RELAY_PW_RESTART_GAP=1000 \
+	WGPASSWALL_RELAY_PW_RESTART="echo restart >> $T/pw-restarts" WGPASSWALL_RELAY_UCODE="$(command -v ucode)" \
 	ucode "$SRC/luci-app-wireguard-passwall/root/usr/libexec/wgpasswall-relay" > "$T/relay.log" 2>&1 &
 RELAY=$!
 sleep 1
@@ -105,5 +107,32 @@ sleep 7
 before=$(grep -o '"resets": [0-9]*' "$T/status.json" | head -1)
 sleep 3
 [ "$(grep -o '"resets": [0-9]*' "$T/status.json" | head -1)" = "$before" ] || fail "relay reconnected an idle tunnel"
+
+# keeps WireGuard "sending" with an old handshake until the log has $1
+dead_until() {
+	for i in $(seq 1 25); do
+		handshake $(( $(date +%s) - 100 ))
+		ping_relay $L1 dead >/dev/null
+		grep -q "$1" "$T/relay.log" && return 0
+	done
+	return 1
+}
+
+echo "== VPN server down, node fine: Passwall is left alone"
+touch "$T/generation.vpndown"
+dead_until "node answers" || fail "node not checked, or reported down"
+[ ! -e "$T/pw-restarts" ] || fail "Passwall restarted although its node answers"
+
+echo "== Passwall's node stuck: Passwall is restarted, once"
+rm "$T/generation.vpndown"; touch "$T/generation.nodedown"
+dead_until "restarting Passwall" || fail "Passwall not restarted for a stuck node"
+for i in 1 2 3 4 5 6; do handshake $(( $(date +%s) - 100 )); ping_relay $L1 dead >/dev/null; done
+[ "$(wc -l < "$T/pw-restarts")" = 1 ] || fail "Passwall restarted more than once: $(wc -l < "$T/pw-restarts")"
+rm "$T/generation.nodedown"
+for i in $(seq 1 12); do
+	r=$(ping_relay $L1 back)
+	[ "$r" = "pong:back" ] && break
+done
+[ "$r" = "pong:back" ] || fail "relay did not recover once the node works again"
 
 echo "relay: all checks passed"

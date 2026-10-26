@@ -31,9 +31,19 @@
 // handshake every 2 minutes while traffic flows (keepalives included) and
 // retries every 5 seconds when it gets no answer; SENDING_MIN gives it time
 // for that after an idle spell, when the last handshake is old anyway. An
-// idle tunnel sends nothing and is left alone. For tests,
-// WGPASSWALL_RELAY_WG_DUMP can name a file to read instead of `wg show all
-// dump`, and the WGPASSWALL_RELAY_* timings below can be shortened.
+// idle tunnel sends nothing and is left alone.
+//
+// Fresh associations do not help when Passwall's own client is stuck on its
+// node (seen with an Xray hysteria node after the server side was paused and
+// resumed: nothing got through until Passwall restarted). So after
+// PW_CHECK_AFTER reconnects in a row without a handshake, the relay checks
+// the node itself by fetching a small page through the SOCKS port (in a
+// child process, "probe", so relaying goes on). If the node answers, the VPN
+// server is what does not (down?) and Passwall is left alone; if not,
+// Passwall is restarted, under the lock of the luci-apps, at most once every
+// PW_RESTART_GAP seconds. For tests, WGPASSWALL_RELAY_WG_DUMP can name a
+// file to read instead of `wg show all dump`, and the WGPASSWALL_RELAY_*
+// settings below can be changed.
 
 'use strict';
 
@@ -49,6 +59,13 @@ const GRACE = +(getenv('WGPASSWALL_RELAY_GRACE') ?? 30);		// s after (re)connect
 const HANDSHAKE_MAX = +(getenv('WGPASSWALL_RELAY_HANDSHAKE_MAX') ?? 180);
 const RECENT_TX = +(getenv('WGPASSWALL_RELAY_RECENT_TX') ?? 15);	// s
 const SENDING_MIN = +(getenv('WGPASSWALL_RELAY_SENDING_MIN') ?? 20);	// s
+const PW_CHECK_AFTER = +(getenv('WGPASSWALL_RELAY_PW_CHECK_AFTER') ?? 3);	// reconnects
+const PROBE_GAP = +(getenv('WGPASSWALL_RELAY_PROBE_GAP') ?? 120);	// s between checks
+const PW_RESTART_GAP = +(getenv('WGPASSWALL_RELAY_PW_RESTART_GAP') ?? 600);	// s
+const PW_RESTART = getenv('WGPASSWALL_RELAY_PW_RESTART') ??
+	'(mkdir -p /var/lock; exec 9>/var/lock/luci-apps.lock; flock 9; /etc/init.d/passwall restart 9>&-; true) </dev/null >/dev/null 2>&1 &';
+const PROBE_HOST = getenv('WGPASSWALL_RELAY_PROBE_HOST') ?? 'connectivitycheck.gstatic.com';
+const PROBE_TIMEOUT = 10;	// s
 
 function load_config() {
 	if (getenv('WGPASSWALL_RELAY_CONFIG'))
@@ -125,6 +142,53 @@ function recv_exact(sock, n) {
 
 	return buf;
 }
+
+// Fetches a small page through the proxy (SOCKS5 CONNECT to PROBE_HOST:80):
+// true if the node answers.
+function probe_node() {
+	const s = socket.create(socket.AF_INET, socket.SOCK_STREAM);
+	const timeout = { sec: PROBE_TIMEOUT, usec: 0 };
+
+	if (!s)
+		return false;
+
+	s.setopt(socket.SOL_SOCKET, socket.SO_RCVTIMEO, timeout);
+	s.setopt(socket.SOL_SOCKET, socket.SO_SNDTIMEO, timeout);
+
+	if (!s.connect(socks_host, socks_port))
+		return false;
+
+	s.send(chr(5, 1, 0));
+
+	const greet = recv_exact(s, 2);
+
+	if (!greet || ord(greet, 1) != 0)
+		return false;
+
+	s.send(chr(5, 1, 0) + socks_addr(PROBE_HOST, 80));
+
+	const head = recv_exact(s, 4);
+
+	if (!head || ord(head, 1) != 0)
+		return false;
+
+	const atyp = ord(head, 3);
+
+	if (!recv_exact(s, (atyp == 1) ? 6 : (atyp == 4) ? 18 : ord(recv_exact(s, 1) ?? '\0') + 2))
+		return false;
+
+	s.send(`GET /generate_204 HTTP/1.0\r\nHost: ${PROBE_HOST}\r\nConnection: close\r\n\r\n`);
+
+	const reply = s.recv(64);
+
+	s.close();
+
+	return match(reply ?? '', /^HTTP\/1\.[01] [0-9]{3}/) != null;
+}
+
+// "wgpasswall-relay probe": only the check of the node, as exit code
+if (ARGV[0] == 'probe')
+	exit(probe_node() ? 0 : 1);
 
 // Opens the TCP control connection and requests a UDP association.
 // Returns { ctrl, relay } or { error }.
@@ -327,6 +391,28 @@ function handshakes() {
 	return out;
 }
 
+let probing = false, last_probe = 0, last_pw_restart = 0;
+
+// Checks the node in a child process; restarts Passwall if it does not
+// answer either.
+function check_node(r) {
+	probing = true;
+	last_probe = time();
+
+	uloop.process(getenv('WGPASSWALL_RELAY_UCODE') ?? '/usr/bin/ucode', [ sourcepath(), 'probe' ], getenv(), (code) => {
+		probing = false;
+
+		if (code == 0) {
+			warn(`wgpasswall-relay: Passwall's node answers, but ${r.host}:${r.port} does not through it; leaving Passwall alone\n`);
+			return;
+		}
+
+		last_pw_restart = time();
+		warn(`wgpasswall-relay: Passwall's node does not answer either; restarting Passwall\n`);
+		system(PW_RESTART);
+	});
+}
+
 function watchdog() {
 	const now = time();
 	let hs = null;
@@ -347,7 +433,15 @@ function watchdog() {
 		if (now - last > HANDSHAKE_MAX) {
 			warn(`wgpasswall-relay: no handshake through the proxy for ${r.host}:${r.port} since ${last ? now - last + 's' : 'start'}; reconnecting\n`);
 			r.resets = (r.resets ?? 0) + 1;
+			r.dead_resets = (r.dead_resets ?? 0) + 1;
 			set_down(r, 'no answer from the VPN server through the proxy; reconnecting');
+
+			if (r.dead_resets >= PW_CHECK_AFTER && !probing && now - last_probe >= PROBE_GAP &&
+			    now - last_pw_restart >= PW_RESTART_GAP)
+				check_node(r);
+		}
+		else {
+			r.dead_resets = 0;
 		}
 	}
 }
