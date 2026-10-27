@@ -3,7 +3,7 @@
 
 'use strict';
 
-import { readfile } from 'fs';
+import { readfile, writefile } from 'fs';
 
 global.__uci_store = {
 	network: {
@@ -216,6 +216,16 @@ check('uninstall: rules gone', st.firewall.wgpasswall_killswitch == null && st.f
 
 delete st.firewall.z2;
 check('ks needs zones', call('set_options', { killswitch: true }).error != null && st.wgpasswall.settings.killswitch == '0');
+
+// the relay log, as written by the relay
+r = call('relay_log');
+check('relay log: none yet', length(r.events) == 0 && !r.running && r.now > 0);
+writefile(getenv('WGPASSWALL_RELAY_LOG'), sprintf('%J', [ { t: 1, kind: 'start', tunnels: 1 }, { t: 2, kind: 'reset', host: 'vpn', port: 51820, age: 190 } ]));
+writefile(getenv('WGPASSWALL_RELAY_STATUS'), sprintf('%J', { updated: time(), relays: [] }));
+r = call('relay_log');
+check('relay log: events', length(r.events) == 2 && r.events[1].kind == 'reset' && r.events[1].age == 190 && r.running);
+writefile(getenv('WGPASSWALL_RELAY_LOG'), 'junk');
+check('relay log: unreadable', length(call('relay_log').events ?? [ 1 ]) == 0);
 
 print(`${total - failures}/${total} passed\n`);
 exit(failures ? 1 : 0);

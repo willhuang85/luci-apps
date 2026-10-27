@@ -13,7 +13,12 @@ SOCKS=41080 ECHO=41820 L1=41821 L2=41822
 cleanup() { kill $STUB $RELAY 2>/dev/null || true; rm -rf "$T"; }
 trap cleanup EXIT
 
-fail() { echo "FAIL: $*"; cat "$T/relay.log" 2>/dev/null; cat "$T/status.json" 2>/dev/null; exit 1; }
+fail() { echo "FAIL: $*"; cat "$T/relay.log" 2>/dev/null; cat "$T/status.json" 2>/dev/null; cat "$T/events.json" 2>/dev/null; exit 1; }
+
+# number of relay log events of kind $1 (and, optionally, with "$2": true)
+events() {
+	python3 -c 'import json, sys; e = json.load(open(sys.argv[1])); print(len([x for x in e if x["kind"] == sys.argv[2] and (len(sys.argv) < 4 or x.get(sys.argv[3]))]))' "$T/events.json" "$@"
+}
 
 start_stub() {
 	python3 "$SRC/tests/wgpasswall/helpers/socks5_udp_stub.py" $SOCKS $ECHO "$T/generation" > "$T/stub.log" 2>&1 &
@@ -50,7 +55,7 @@ handshake "$(date +%s)"
 echo 1 > "$T/generation"
 
 start_stub
-WGPASSWALL_RELAY_CONFIG="$T/relay.json" WGPASSWALL_RELAY_STATUS="$T/status.json" \
+WGPASSWALL_RELAY_CONFIG="$T/relay.json" WGPASSWALL_RELAY_STATUS="$T/status.json" WGPASSWALL_RELAY_LOG="$T/events.json" \
 	WGPASSWALL_RELAY_WG_DUMP="$T/wg.dump" WGPASSWALL_RELAY_CHECK_MS=500 WGPASSWALL_RELAY_GRACE=2 \
 	WGPASSWALL_RELAY_HANDSHAKE_MAX=5 WGPASSWALL_RELAY_RECENT_TX=2 WGPASSWALL_RELAY_SENDING_MIN=4 \
 	WGPASSWALL_RELAY_PW_CHECK_AFTER=2 WGPASSWALL_RELAY_PROBE_GAP=1 WGPASSWALL_RELAY_PW_RESTART_GAP=1000 \
@@ -63,6 +68,7 @@ sleep 1
 [ "$(ping_relay $L2 world)" = "pong:world" ] || fail "hostname destination not relayed"
 sleep 2.5
 grep -q '"up": true' "$T/status.json" || fail "status does not report the association"
+[ "$(events start)" = 1 ] && [ "$(events up)" = 2 ] || fail "relay log lacks the start or the connections"
 
 echo "== proxy restart"
 kill $STUB; wait $STUB 2>/dev/null || true
@@ -73,6 +79,9 @@ start_stub
 sleep 4
 [ "$(ping_relay $L1 again)" = "pong:again" ] || fail "relay did not recover after proxy restart"
 kill -0 $RELAY || fail "relay died"
+# lost and back, per relay: retries while the proxy is down are not logged
+[ "$(events up again)" = 2 ] || fail "relay log lacks the reconnects: $(events up again)"
+[ "$(events down)" -ge 2 ] && [ "$(events down)" -le 4 ] || fail "relay log has $(events down) down events"
 
 echo "== healthy tunnel is left alone"
 for i in 1 2 3 4; do handshake "$(date +%s)"; ping_relay $L1 busy >/dev/null; sleep 1; done
@@ -100,6 +109,7 @@ done
 sleep 2.5
 grep -q '"resets": [1-9]' "$T/status.json" || fail "status does not count the reconnect"
 grep -q "no handshake through the proxy" "$T/relay.log" || fail "reconnect not logged"
+[ "$(events reset)" -ge 1 ] || fail "relay log lacks the reconnect"
 
 echo "== idle tunnel (nothing sent) is left alone"
 handshake 0
@@ -134,5 +144,17 @@ for i in $(seq 1 12); do
 	[ "$r" = "pong:back" ] && break
 done
 [ "$r" = "pong:back" ] || fail "relay did not recover once the node works again"
+[ "$(events node_ok)" -ge 1 ] && [ "$(events pw_restart)" = 1 ] || fail "relay log lacks the node checks"
+
+echo "== relay log is kept across restarts"
+kill $RELAY; wait $RELAY 2>/dev/null || true
+[ "$(events stop)" = 1 ] || fail "relay log lacks the stop"
+n=$(python3 -c 'import json, sys; print(len(json.load(open(sys.argv[1]))))' "$T/events.json")
+WGPASSWALL_RELAY_CONFIG="$T/relay.json" WGPASSWALL_RELAY_STATUS="$T/status.json" WGPASSWALL_RELAY_LOG="$T/events.json" \
+	WGPASSWALL_RELAY_WG_DUMP="$T/wg.dump" ucode "$SRC/luci-app-wireguard-passwall/root/usr/libexec/wgpasswall-relay" >> "$T/relay.log" 2>&1 &
+RELAY=$!
+sleep 1
+[ "$(events start)" = 2 ] || fail "relay log not kept across a restart"
+[ "$(python3 -c 'import json, sys; print(len(json.load(open(sys.argv[1]))))' "$T/events.json")" -gt "$n" ] || fail "relay log lost its events"
 
 echo "relay: all checks passed"

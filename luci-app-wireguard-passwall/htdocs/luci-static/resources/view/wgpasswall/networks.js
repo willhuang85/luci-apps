@@ -15,6 +15,7 @@ const callDisconnect = rpc.declare({ object: 'luci.wgpasswall', method: 'disconn
 const callSetOptions = rpc.declare({ object: 'luci.wgpasswall', method: 'set_options', params: [ 'killswitch', 'via_passwall' ] });
 const callSetPorts = rpc.declare({ object: 'luci.wgpasswall', method: 'set_ports', params: [ 'ports' ] });
 const callReapply = rpc.declare({ object: 'luci.wgpasswall', method: 'reapply' });
+const callRelayLog = rpc.declare({ object: 'luci.wgpasswall', method: 'relay_log' });
 
 // The networks a wired port or Wi-Fi network can be on (status.networks)
 const NETWORKS = {
@@ -116,10 +117,18 @@ const CSS = `
 .wgc-kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin-top: 8px; }
 .wgc-kv > div:nth-child(odd) { color: var(--wgc-muted); }
 .wgc-kv > div { overflow-wrap: anywhere; }
+.wgc-link { display: inline-block; margin-top: 8px; }
+.wgc-log { max-height: 50vh; overflow-y: auto; margin-top: 12px; border-top: 1px solid var(--wgc-line); }
+.wgc-log-row { display: grid; grid-template-columns: auto max-content minmax(0, 1fr); gap: 2px 10px; align-items: center;
+	padding: 6px 0; border-bottom: 1px solid var(--wgc-line); }
+.wgc-log-time { color: var(--wgc-muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.wgc-log-text { overflow-wrap: anywhere; }
 @media (max-width: 600px) {
 	.wgc-card { padding: 14px; }
 	.wgc-profile .wgc-actions { width: 100%; }
 	.wgc-profile .wgc-actions > * { flex: 1 1 auto; }
+	.wgc-log-row { grid-template-columns: auto minmax(0, 1fr); }
+	.wgc-log-text { grid-column: 2; }
 }
 `;
 
@@ -151,6 +160,45 @@ function formatAge(sec) {
 		return _('%d minutes ago').format(Math.floor(sec / 60));
 
 	return _('%d hours ago').format(Math.floor(sec / 3600));
+}
+
+function formatDuration(sec) {
+	sec = Math.max(0, Math.round(sec || 0));
+
+	if (sec < 60)
+		return '%ds'.format(sec);
+
+	if (sec < 3600)
+		return '%dm %ds'.format(Math.floor(sec / 60), sec % 60);
+
+	return formatUptime(sec);
+}
+
+// One entry of the relay log (see wgpasswall-relay): dot colour and text.
+function relayEvent(e) {
+	switch (e.kind) {
+	case 'start':
+		return { cls: '', text: _('Relay started') };
+	case 'stop':
+		return { cls: '', text: _('Relay stopped') };
+	case 'up':
+		if (e.again)
+			return { cls: 'ok', text: _('Reconnected through Passwall after %s').format(formatDuration(e.after)) };
+
+		return { cls: 'ok', text: e.after ? _('Connected through Passwall after %s').format(formatDuration(e.after)) : _('Connected through Passwall') };
+	case 'down':
+		return { cls: 'bad', text: _('Lost Passwall: %s').format(e.msg) };
+	case 'reset':
+		return { cls: 'warn', text: e.age != null
+			? _('Proxy went quiet: no handshake for %s, reconnecting with a fresh proxy session').format(formatDuration(e.age))
+			: _('Proxy went quiet: no handshake yet, reconnecting with a fresh proxy session') };
+	case 'node_ok':
+		return { cls: 'warn', text: _('Checked Passwall\'s node: it answers, so the VPN server is what does not answer; Passwall left alone') };
+	case 'pw_restart':
+		return { cls: 'bad', text: _('Checked Passwall\'s node: it does not answer either; restarting Passwall') };
+	}
+
+	return { cls: '', text: e.msg ?? e.kind };
 }
 
 function formatUptime(sec) {
@@ -766,12 +814,60 @@ return view.extend({
 					E('div', { 'class': 'wgc-sub' }, pw.node
 						? _('WireGuard reaches your VPN server through Passwall\'s node (%s), hiding that you use a VPN. Slower, and only as reliable as the node.').format(pw.node.label)
 						: _('WireGuard reaches your VPN server through the node selected in Passwall, hiding that you use a VPN.')),
-					viaNote
+					viaNote,
+					data.via_passwall ? E('a', { 'class': 'wgc-link', href: '#', click: (ev) => { ev.preventDefault(); this.showRelayLog(); } },
+						[ '📋 ' + _('Relay log: reconnects and Passwall restarts') ]) : ''
 				]),
 				toggle(data.via_passwall, _('Carry the VPN through Passwall'), 'handleViaPasswall')
 			]) : '',
 			info.length ? E('div', { 'class': 'wgc-sub', style: 'margin-top:6px' }, info.map((t) => E('div', { style: 'margin-top:4px' }, t))) : ''
 		]);
+	},
+
+	// What the relay did: how often it reconnected, and why.
+	showRelayLog() {
+		const body = E('div', { 'class': 'wgc wgc-modal' }, [ E('p', { 'class': 'spinning' }, _('Loading…')) ]);
+		const load = () => callRelayLog().then((r) => {
+			const events = (r.events ?? []).slice().reverse();
+			const day = events.filter((e) => r.now - e.t < 86400);
+			const count = (fn) => day.filter(fn).length;
+
+			dom.content(body, [
+				E('div', { 'class': 'wgc-stats', style: 'margin-top:0' }, [
+					this.renderStat(_('Reconnects, 24 h'), String(count((e) => e.kind == 'up' && e.again))),
+					this.renderStat(_('Proxy went quiet, 24 h'), String(count((e) => e.kind == 'reset'))),
+					this.renderStat(_('Passwall restarts, 24 h'), String(count((e) => e.kind == 'pw_restart'))),
+					this.renderStat(_('Relay'), r.running ? _('Running') : _('Not running'))
+				]),
+				E('div', { 'class': 'wgc-sub', style: 'margin-top:12px' }, [
+					_('"Proxy went quiet": the proxy kept the connection open, but no WireGuard handshake came back through it for 3 minutes (for example because the proxy server stopped answering), so the relay started a fresh proxy session. "Lost Passwall": Passwall\'s SOCKS port closed or could not be reached, for example while Passwall restarted.'),
+					' ',
+					_('Kept until the router restarts (the latest 200 entries); times are the router\'s.')
+				]),
+				events.length ? E('div', { 'class': 'wgc-log' }, events.slice(0, 200).map((e) => {
+					const ev = relayEvent(e);
+					const t = new Date(e.t * 1000);
+
+					return E('div', { 'class': 'wgc-log-row' }, [
+						E('span', { 'class': 'wgc-dot ' + ev.cls }),
+						E('span', { 'class': 'wgc-log-time', title: t.toLocaleString() }, t.toLocaleString(undefined,
+							{ month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' })),
+						E('span', { 'class': 'wgc-log-text' }, [ ev.text, e.host ? E('span', { 'class': 'wgc-sub' }, ' · %s:%d'.format(e.host, e.port)) : '' ])
+					]);
+				})) : E('div', { 'class': 'wgc-note' }, _('Nothing yet: the relay starts when a VPN connects through Passwall.'))
+			]);
+		}).catch((err) => dom.content(body, E('div', { 'class': 'wgc-note bad' }, err.message)));
+
+		ui.showModal(_('Relay log'), [
+			body,
+			E('div', { 'class': 'right', style: 'margin-top:16px; display:flex; gap:8px; justify-content:flex-end; flex-wrap:wrap; align-items:center' }, [
+				E('a', { href: L.url('admin/status/logs/syslog'), style: 'margin-right:auto' }, _('System log')),
+				E('button', { 'class': 'btn cbi-button', click: load }, [ _('Refresh') ]),
+				E('button', { 'class': 'btn cbi-button cbi-button-positive', click: ui.hideModal }, [ _('Close') ])
+			])
+		]);
+
+		return load();
 	},
 
 	// Dialog to move wired ports between the networks.

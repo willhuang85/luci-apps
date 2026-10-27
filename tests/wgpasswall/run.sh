@@ -19,4 +19,5 @@ MOCKS="$PWD/tests/wgpasswall/mocks/*.uc"
 echo "== conf parser"
 "$UCODE" ${UCODE_DIR:+-L "$UCODE_DIR/*.so"} -L "$SRC" tests/wgpasswall/conf_test.uc
 echo "== rpcd backend"
-WGPASSWALL_DNS_NFT="$(mktemp -d)/devices-dns.nft" "$UCODE" ${UCODE_DIR:+-L "$UCODE_DIR/*.so"} -L "$MOCKS" -L "$SRC" tests/wgpasswall/backend_test.uc
+T=$(mktemp -d)
+WGPASSWALL_DNS_NFT="$T/devices-dns.nft" WGPASSWALL_RELAY_LOG="$T/relay-log.json" WGPASSWALL_RELAY_STATUS="$T/relay-status.json" "$UCODE" ${UCODE_DIR:+-L "$UCODE_DIR/*.so"} -L "$MOCKS" -L "$SRC" tests/wgpasswall/backend_test.uc

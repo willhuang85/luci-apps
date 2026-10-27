@@ -20,6 +20,9 @@
 //   { "socks": { "host": "127.0.0.1", "port": 1070 },
 //     "relays": [ { "listen": 51821, "host": "vpn.example.com", "port": 51820 } ] }
 // Status: /var/run/wgpasswall/relay-status.json
+// What it did (connected, lost the proxy, reconnected, ...) for the page's
+// relay log: /var/run/wgpasswall/relay-log.json, kept across restarts of
+// the relay until the router reboots.
 //
 // Watchdog: the association to the local SOCKS port can stay open while the
 // proxy's own connection to its server is dead (seen with Xray: it keeps the
@@ -53,6 +56,8 @@ import { readfile, writefile, rename, mkdir, popen } from 'fs';
 import { cursor } from 'uci';
 
 const STATUS = getenv('WGPASSWALL_RELAY_STATUS') ?? '/var/run/wgpasswall/relay-status.json';
+const LOG = getenv('WGPASSWALL_RELAY_LOG') ?? '/var/run/wgpasswall/relay-log.json';
+const LOG_MAX = 200;	// events
 const RETRY_MS = 3000;
 const CHECK_MS = +(getenv('WGPASSWALL_RELAY_CHECK_MS') ?? 10000);
 const GRACE = +(getenv('WGPASSWALL_RELAY_GRACE') ?? 30);		// s after (re)connecting
@@ -257,12 +262,44 @@ function associate() {
 let relays = [];
 let connect_relay;	// defined below, needed by the retry timer
 
-function set_down(r, error) {
+let events = json(readfile(LOG) ?? '[]');
+
+if (type(events) != 'array')
+	events = [];
+
+// Adds to the relay log (and the system log): kind, the relay it is about
+// (or null), a message for the system log and details for the page.
+function log_event(kind, r, msg, details) {
+	push(events, { t: time(), kind, host: r?.host, port: r?.port, msg, ...(details ?? {}) });
+
+	if (length(events) > LOG_MAX)
+		events = slice(events, -LOG_MAX);
+
+	writefile(LOG + '.tmp', sprintf('%J', events));
+	rename(LOG + '.tmp', LOG);
+	warn(`wgpasswall-relay: ${r ? `${r.host}:${r.port}: ` : ''}${msg}\n`);
+}
+
+// quiet: the reason is logged already
+function set_down(r, error, quiet) {
 	if (r.ctrl_handle) r.ctrl_handle.delete();
 	if (r.ctrl) r.ctrl.close();
 	if (r.out_handle) r.out_handle.delete();
 	if (r.out) r.out.close();
 
+	// log a lost association, or a new reason while it stays down, not
+	// every retry
+	if (r.up) {
+		r.down_since = time();
+
+		if (!quiet)
+			log_event('down', r, error);
+	}
+	else if (!quiet && error != r.logged_error)
+		log_event('down', r, error);
+
+	r.logged_error = error;
+	r.down_since ??= time();
 	r.ctrl = r.ctrl_handle = r.relay = r.out = r.out_handle = null;
 	r.up = false;
 	r.error = error;
@@ -316,6 +353,16 @@ connect_relay = function(r) {
 	r.up = true;
 	r.error = null;
 	r.since = time();
+
+	const after = r.down_since ? r.since - r.down_since : 0;
+
+	if (r.connected)
+		log_event('up', r, `connected again through the proxy after ${after}s`, { again: true, after });
+	else
+		log_event('up', r, after ? `connected through the proxy after ${after}s` : 'connected through the proxy', { after });
+
+	r.connected = true;
+	r.down_since = r.logged_error = null;
 
 	// the association lives as long as the TCP connection
 	r.ctrl_handle = uloop.handle(r.ctrl, () => {
@@ -403,12 +450,12 @@ function check_node(r) {
 		probing = false;
 
 		if (code == 0) {
-			warn(`wgpasswall-relay: Passwall's node answers, but ${r.host}:${r.port} does not through it; leaving Passwall alone\n`);
+			log_event('node_ok', r, 'Passwall\'s node answers, but the VPN server does not through it; leaving Passwall alone');
 			return;
 		}
 
 		last_pw_restart = time();
-		warn(`wgpasswall-relay: Passwall's node does not answer either; restarting Passwall\n`);
+		log_event('pw_restart', r, 'Passwall\'s node does not answer either; restarting Passwall');
 		system(PW_RESTART);
 	});
 }
@@ -431,10 +478,11 @@ function watchdog() {
 			continue;
 
 		if (now - last > HANDSHAKE_MAX) {
-			warn(`wgpasswall-relay: no handshake through the proxy for ${r.host}:${r.port} since ${last ? now - last + 's' : 'start'}; reconnecting\n`);
+			log_event('reset', r, `no handshake through the proxy since ${last ? now - last + 's' : 'start'}; reconnecting`,
+				{ age: last ? now - last : null });
 			r.resets = (r.resets ?? 0) + 1;
 			r.dead_resets = (r.dead_resets ?? 0) + 1;
-			set_down(r, 'no answer from the VPN server through the proxy; reconnecting');
+			set_down(r, 'no answer from the VPN server through the proxy; reconnecting', true);
 
 			if (r.dead_resets >= PW_CHECK_AFTER && !probing && now - last_probe >= PROBE_GAP &&
 			    now - last_pw_restart >= PW_RESTART_GAP)
@@ -459,6 +507,9 @@ function write_status() {
 	rename(STATUS + '.tmp', STATUS);
 }
 
+log_event('start', null, `started for ${length(relays)} tunnel(s), through the SOCKS port ${socks_host}:${socks_port}`,
+	{ tunnels: length(relays) });
+
 for (let r in relays)
 	connect_relay(r);
 
@@ -477,3 +528,6 @@ watchdog_timer = uloop.timer(CHECK_MS, function() {
 });
 
 uloop.run();
+
+// procd stops the relay with SIGTERM, which ends uloop.run()
+log_event('stop', null, 'stopped');

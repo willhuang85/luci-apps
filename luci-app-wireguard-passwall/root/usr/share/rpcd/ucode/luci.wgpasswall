@@ -820,7 +820,9 @@ function runtime_status() {
  * exist) and restored exactly once nothing needs Passwall anymore.
  */
 const RELAY_BASE_PORT = 51821;
-const RELAY_STATUS = '/var/run/wgpasswall/relay-status.json';
+const RELAY_STATUS = getenv('WGPASSWALL_RELAY_STATUS') ?? '/var/run/wgpasswall/relay-status.json';
+// what the relay did, kept until reboot
+const RELAY_LOG = getenv('WGPASSWALL_RELAY_LOG') ?? '/var/run/wgpasswall/relay-log.json';
 const PW_MTU = 1280;
 const UNSET = '__unset__';
 // Passwall options the app controls while Passwall is needed
@@ -1473,6 +1475,24 @@ const methods = {
 					node: pw_installed(uci) ? pw_node(uci) : null
 				},
 				profiles
+			};
+		}
+	},
+
+	// What the relay did (see /usr/libexec/wgpasswall-relay), oldest first.
+	// now: the router's clock, for the ages.
+	relay_log: {
+		call: function() {
+			let events = null, st = null;
+
+			// both are rewritten whole (rename), but never fail on a broken one
+			try { events = json(readfile(RELAY_LOG) ?? '[]'); } catch (e) {}
+			try { st = json(readfile(RELAY_STATUS) ?? 'null'); } catch (e) {}
+
+			return {
+				now: time(),
+				running: !!st && time() - st.updated <= 10,
+				events: (type(events) == 'array') ? events : []
 			};
 		}
 	},
