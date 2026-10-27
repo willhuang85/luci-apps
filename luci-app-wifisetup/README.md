@@ -105,7 +105,7 @@ luci-app-wifisetup/
 
 - **WPA3 options are greyed out** – the installed `wpad` variant has no SAE support. OpenWrt 25.12 ships `wpad-basic-mbedtls`, which has it; if you replaced it with a "mini" variant, install `wpad-basic-mbedtls` (or `wpad-mbedtls`) again.
 - **A band stays "Starting…"** – on DFS channels (5 GHz 52–144) the router must listen for radar for 1–10 minutes first. Also check the **Country**: channels and power not allowed in the selected country don't start. `logread -e hostapd` shows the details.
-- Uninstalling (`apk del luci-app-wifisetup`) keeps your Wi-Fi settings as they are; the schedule is removed so Wi-Fi is never left switched off.
+- Uninstalling (`apk del luci-app-wifisetup`, or `opkg remove` on OpenWrt 24.10) keeps your Wi-Fi settings as they are; the schedule is removed so Wi-Fi is never left switched off.
 
 > Tip: do the first setup from a computer connected by **cable**. Changing the Wi-Fi name or password disconnects every Wi-Fi device, including the one you're using; the page waits and continues by itself once you reconnect, but a cable makes it painless.
 

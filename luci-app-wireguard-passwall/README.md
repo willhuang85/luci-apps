@@ -154,4 +154,4 @@ luci-app-wireguard-passwall/
 
 ## Uninstalling
 
-`apk del luci-app-wireguard-passwall` first puts everything back: wired ports and Wi-Fi networks return to the home network, the VPN and Passwall networks, the kill switch and the app's firewall and Passwall rules are removed, Passwall gets its own settings back and the profiles are disconnected, so you don't lose internet access.
+`apk del luci-app-wireguard-passwall` (or `opkg remove` on OpenWrt 24.10) first puts everything back: wired ports and Wi-Fi networks return to the home network, the VPN and Passwall networks, the kill switch and the app's firewall and Passwall rules are removed, Passwall gets its own settings back and the profiles are disconnected, so you don't lose internet access.

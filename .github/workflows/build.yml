@@ -271,8 +271,8 @@ jobs:
   # Publishes the packages of both OpenWrt releases (and, when signed, the
   # package indexes packages.adb / Packages.gz and the public keys
   # luci-apps.pem / luci-apps-opkg.pub) as one GitHub release: on every push to main,
-  # tagged r<commit count> (e.g. r45), and on pushed v* tags. Re-running a
-  # build of the same commit replaces the files.
+  # tagged r<commit count> (e.g. r45), and on pushed v* tags. Published
+  # releases are immutable, so re-running a build does not change them.
   release:
     if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     needs: build

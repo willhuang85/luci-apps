@@ -60,7 +60,7 @@ Switching on brings up the chosen interface and gives the main internet a lower 
 
 The check pings `1.1.1.1` through the main interface's device (`ping -I`), so it tests the main connection even while the default route goes to the phone. Change the target with `uci set tether.settings.check_host=…`, the zone with `tether.settings.wan_zone`.
 
-Uninstalling (`apk del luci-app-tether`) switches back to the main internet first.
+Uninstalling (`apk del luci-app-tether`, or `opkg remove` on OpenWrt 24.10) switches back to the main internet first.
 
 Code layout:
 

@@ -1,6 +1,6 @@
 # luci-apps
 
-Simple, consumer-router style apps for OpenWrt's LuCI web interface. Built and tested for **OpenWrt 25.12** (apk package manager) and **OpenWrt 24.10** (opkg); install any of them.
+Simple, consumer-router style apps for OpenWrt's LuCI web interface. Each app is a separate package; install the ones you want. Works on **OpenWrt 25.12** and **OpenWrt 24.10**, and on ImmortalWrt releases based on them.
 
 | App | Menu | What it does |
 |---|---|---|
@@ -14,114 +14,132 @@ Simple, consumer-router style apps for OpenWrt's LuCI web interface. Built and t
 
 <sub>Screenshots show sample data; colours and fonts follow your LuCI theme. Tested with the default Bootstrap theme and [Argon](https://github.com/jerrykuku/luci-theme-argon), light and dark.</sub>
 
-## Install on your router
+## Install
 
-Every release has two sets of the same apps: `.apk` files for OpenWrt 25.12 and `.ipk` files for OpenWrt 24.10 (`cat /etc/openwrt_release` shows your version). The steps below are for 25.12; see [OpenWrt 24.10](#openwrt-2410-opkg) for the differences.
+Check your OpenWrt version with `cat /etc/openwrt_release`. OpenWrt **25.12** uses `apk` and `.apk` packages; OpenWrt **24.10** uses `opkg` and `.ipk` packages. Every [release](../../releases) has both.
 
-1. Get the packages
-   - From the [Releases](../../releases) page (a release with all packages is published on every merge into `main`), or
-   - From the **Actions** tab → latest *Build packages* run → artifact `luci-apps-openwrt-25.12.2` (a zip with the `.apk` files inside; `luci-apps-openwrt-24.10.8` has the `.ipk` files).
-2. Copy the ones you want to the router (`-O` is needed because OpenWrt has no SFTP server by default):
-   ```sh
-   scp -O luci-app-*.apk root@192.168.1.1:/tmp/
-   ```
-3. Install them on the router. The packages are built by CI, not signed by OpenWrt, so allow them explicitly:
-   ```sh
-   ssh root@192.168.1.1
-   apk update
-   apk add --allow-untrusted /tmp/luci-app-*.apk
-   ```
-   `apk update` lets apk pull the dependencies it doesn't find on the router (`qrencode`, `usbmuxd`, `wireguard-tools`, the ucode modules, ...) from the official feeds, so the router needs internet access for the install. Install the tethering app **before** you need it.
-4. **Reload the LuCI page** (Ctrl+F5), then open the new pages under **Services**. Installing doesn't log you out.
+The router needs internet access while installing, to download the apps' dependencies (`qrencode`, `usbmuxd`, `wireguard-tools`, ...) from the official OpenWrt feeds. Install Phone Tethering **before** your main internet goes down.
 
-### Installing from LuCI (signed packages)
+### Option 1: add the package feed (recommended)
 
-OpenWrt only trusts packages signed with a key in `/etc/apk/keys`. Unsigned self-built packages fail with `UNTRUSTED signature` unless `--allow-untrusted` is passed, which LuCI's **Upload Package…** dialog cannot do. CI therefore signs the packages with your own key:
+Do this once; afterwards the apps install and update from **System → Software** like any other package.
 
-**Once, on GitHub:** create a signing key on your computer and store it as a repository secret.
-
-```sh
-openssl ecparam -name prime256v1 -genkey -noout -out apk-signing-key.pem
-```
-
-GitHub → repository → *Settings → Secrets and variables → Actions → New repository secret*: name `APK_SIGNING_KEY`, value: the contents of `apk-signing-key.pem`. Keep the file somewhere safe and private (you can reuse the key of your other apps). Every build after that is signed, and the artifact / release additionally contains `luci-apps.pem` (the public key) and `packages.adb` (a signed package index).
-
-**Releases:** every merge into `main` publishes a GitHub release `r<N>` (e.g. `r12`), where `N` is the number of commits on `main` and also the package release (`luci-app-tether-1.0.0-r12.apk`). Bump `PKG_VERSION` in an app's Makefile for a new version of that app. The latest release's files are always at:
-
-```
-https://github.com/willhuang85/luci-apps/releases/latest/download/<file>
-```
-
-**Once, on the router:** trust the public key.
+**OpenWrt 25.12:**
 
 ```sh
 wget -O /etc/apk/keys/luci-apps.pem \
   https://github.com/willhuang85/luci-apps/releases/latest/download/luci-apps.pem
+echo "https://github.com/willhuang85/luci-apps/releases/latest/download/packages.adb" \
+  >> /etc/apk/repositories.d/customfeeds.list
+apk update
+apk add luci-app-wifisetup        # or luci-app-tether, luci-app-wireguard-passwall
 ```
 
-Then install from **System → Software → Upload Package…** with no extra flags. Or add the release as a package feed, so the apps show up and update in *System → Software* like any other package:
-
-```sh
-echo "https://github.com/willhuang85/luci-apps/releases/latest/download/packages.adb" >> /etc/apk/repositories.d/customfeeds.list
-```
-
-### OpenWrt 24.10 (opkg)
-
-Use the `.ipk` files (`luci-app-tether_1.0.0-r12_all.ipk`, ...) and opkg instead of apk:
-
-```sh
-scp -O luci-app-*.ipk root@192.168.1.1:/tmp/
-ssh root@192.168.1.1
-opkg update
-opkg install /tmp/luci-app-*.ipk
-```
-
-opkg installs single package files without checking a signature, so **System → Software → Upload Package…** works as is.
-
-**Package feed (optional):** to get the apps and their updates in *System → Software*, CI also publishes a package index (`Packages.gz`) signed with a usign key. Once, on your computer, create the key (`signify-openbsd` on Debian/Ubuntu, `signify` on other systems; it makes the same keys as OpenWrt's `usign`):
-
-```sh
-signify-openbsd -G -n -c "luci-apps" -p luci-apps-opkg.pub -s luci-apps-opkg.sec
-```
-
-and store the contents of `luci-apps-opkg.sec` as the repository secret `OPKG_SIGNING_KEY` (same place as `APK_SIGNING_KEY` above). Every build after that also contains `Packages.sig` and the public key `luci-apps-opkg.pub`. Then, once, on the router:
+**OpenWrt 24.10:**
 
 ```sh
 wget -O /tmp/luci-apps-opkg.pub \
   https://github.com/willhuang85/luci-apps/releases/latest/download/luci-apps-opkg.pub
 opkg-key add /tmp/luci-apps-opkg.pub
-echo "src/gz luci_apps https://github.com/willhuang85/luci-apps/releases/latest/download" >> /etc/opkg/customfeeds.conf
+echo "src/gz luci_apps https://github.com/willhuang85/luci-apps/releases/latest/download" \
+  >> /etc/opkg/customfeeds.conf
 opkg update
+opkg install luci-app-wifisetup   # or luci-app-tether, luci-app-wireguard-passwall
 ```
 
-Elsewhere in these READMEs, read `opkg install` / `opkg remove` / `opkg list-installed | grep luci-app` for `apk add` / `apk del` / `apk info -e`.
+The key lets the router check that the packages really come from this repository.
+
+### Option 2: install a downloaded package
+
+Download the files for your version from the [latest release](../../releases/latest), then either upload them in **System → Software → Upload Package…**, or copy them to the router and install them there (`-O` is needed because OpenWrt has no SFTP server by default):
+
+```sh
+# OpenWrt 25.12
+scp -O luci-app-*.apk root@192.168.1.1:/tmp/
+ssh root@192.168.1.1 'apk update && apk add --allow-untrusted /tmp/luci-app-*.apk'
+
+# OpenWrt 24.10
+scp -O luci-app-*.ipk root@192.168.1.1:/tmp/
+ssh root@192.168.1.1 'opkg update && opkg install /tmp/luci-app-*.ipk'
+```
+
+On 25.12, **Upload Package…** only accepts the files once the router trusts the key (the `wget … luci-apps.pem` line in option 1); from the command line, `--allow-untrusted` does the same. On 24.10, uploading works as is.
+
+### After installing
+
+Reload the LuCI page (Ctrl+F5) and open the new page under **Services**. Installing doesn't log you out.
+
+### Update and remove
+
+| | OpenWrt 25.12 | OpenWrt 24.10 |
+|---|---|---|
+| Update (with the feed) | `apk update && apk upgrade luci-app-wifisetup` | `opkg update && opkg upgrade luci-app-wifisetup` |
+| Remove | `apk del luci-app-wifisetup` | `opkg remove luci-app-wifisetup` |
+| Is it installed? | `apk info -e luci-app-wifisetup` | `opkg list-installed \| grep luci-app` |
+
+Or use **System → Software**. Removing an app first undoes what it changed that could cut you off (for example, tethering switches back to the main internet); each app's README says exactly what it undoes.
 
 ### Troubleshooting
 
-- **Installed but no menu entry** – reload the page with Ctrl+F5. Still nothing? Check `apk info -e luci-app-wifisetup` (or the app you installed), run `/etc/init.d/rpcd reload` and verify `ubus list 'luci.*'` lists `luci.wifisetup`, `luci.tether` or `luci.wgpasswall`.
-- **`UNTRUSTED signature`** – see *Installing from LuCI* above, or use `apk add --allow-untrusted`.
-- **`wget ... Failed to send request: Operation not permitted`** during `apk update` – the router itself cannot reach the package mirror; a firewall rule is dropping the router's own outgoing traffic (not related to these apps). Check with:
+- **Installed but no menu entry** – reload the page with Ctrl+F5. Still nothing? Check that the package is installed (table above), run `/etc/init.d/rpcd reload` and verify `ubus list 'luci.*'` lists `luci.wifisetup`, `luci.tether` or `luci.wgpasswall`.
+- **`UNTRUSTED signature`** (25.12) – the router doesn't have the key yet: run the `wget … luci-apps.pem` line from option 1, or install with `apk add --allow-untrusted`.
+- **`wget ... Failed to send request: Operation not permitted`** during `apk update` / `opkg update` – the router itself cannot reach the package mirror; a firewall rule is dropping the router's own outgoing traffic (not related to these apps). Check with:
   ```sh
   ping -c 3 1.1.1.1                 # basic connectivity
   nslookup downloads.openwrt.org    # DNS
   ip rule                           # look for "prohibit"/"blackhole"
   nft list ruleset | grep -inE 'drop|reject' | head -30
   ```
-  If a proxy app such as Passwall runs with "Localhost proxy", stop it briefly (`/etc/init.d/passwall stop`), run `apk update`, install, then start it again.
-  If Passwall is already off but `ping 1.1.1.1` works while `apk update` fails, Passwall's rules for the router's own traffic were left behind (its table is still listed by `nft list tables`): `nft delete table inet passwall` removes them, and Passwall recreates the table on its next start. These apps run their firewall reloads and Passwall restarts one at a time to avoid this; toggling Passwall from its own page at the same moment can still cause it.
-- App specific: see the [Wi-Fi Setup](luci-app-wifisetup/README.md#troubleshooting) and [Phone Tethering](luci-app-tether/README.md#troubleshooting) READMEs.
+  If a proxy app such as Passwall runs with "Localhost proxy", stop it briefly (`/etc/init.d/passwall stop`), update and install, then start it again.
+  If Passwall is already off but `ping 1.1.1.1` works while the update fails, Passwall's rules for the router's own traffic were left behind (its table is still listed by `nft list tables`): `nft delete table inet passwall` removes them, and Passwall recreates the table on its next start. These apps run their firewall reloads and Passwall restarts one at a time to avoid this; toggling Passwall from its own page at the same moment can still cause it.
+- App specific: see the [Wi-Fi Setup](luci-app-wifisetup/README.md#troubleshooting), [Phone Tethering](luci-app-tether/README.md#troubleshooting) and [WireGuard + Passwall](luci-app-wireguard-passwall/README.md) READMEs.
 
-## Building
+## Contributing
 
-The GitHub Actions workflow (`.github/workflows/build.yml`) runs on every push:
+Issues and pull requests are welcome. Every push and pull request is tested and built by GitHub Actions, so you can check a change without a router, and each run's artifacts contain packages you can install for testing.
 
-1. **test** – builds ucode, rpcd and friends at the exact revisions of the OpenWrt release (`tests/lib/build-stack.sh`), loads the backends into a real rpcd next to fake `iwinfo` (loaded into rpcd, as on a router) / `network.wireless` / `network.interface` / `hostapd` objects (and a fake `/sys` with a plugged-in iPhone) and walks through every feature, runs the unit tests, tests the WireGuard relay end to end against a stub SOCKS5 proxy, syntax-checks JS/JSON/shell.
-2. **build** – downloads the official OpenWrt 25.12.2 and 24.10.8 SDKs, builds all packages and uploads the `.apk` and `.ipk` files as one artifact per release. The packages are architecture independent, so one build works on every router.
-3. **release** – on every push to `main` (and on pushed `v*` tags), publishes both sets (plus, when signed, the package indexes `packages.adb` / `Packages.gz` and the public keys) as one GitHub release.
+### Layout
 
-Both the tests and the builds run once per OpenWrt release; to add or change one, edit the `matrix` entries in the workflow.
+Each app is an OpenWrt package directory:
 
-Build locally with an OpenWrt SDK:
+```
+luci-app-<name>/
+  Makefile                          package metadata, dependencies, install / remove scripts
+  htdocs/.../view/<name>/*.js       the LuCI page (runs in the browser)
+  root/usr/share/rpcd/ucode/luci.*  the backend: an rpcd ucode plugin, called by the page over ubus
+  root/usr/share/rpcd/acl.d/        which backend methods the page may call
+  root/usr/share/luci/menu.d/       the menu entry
+  root/etc/config/<name>            default settings (uci)
+```
+
+Other helpers live next to them under `root/` (for example the WireGuard relay in `root/usr/libexec/`). The packages contain only scripts, so they are architecture independent (`PKGARCH:=all`).
+
+### Tests
+
+| Command | What it tests | Needs |
+|---|---|---|
+| `./tests/run.sh` | unit tests of all backends, plus static checks for the rules below | a [ucode](https://github.com/jow-/ucode) build (`UCODE_DIR=/path/to/build` or `ucode` in `$PATH`) |
+| `sudo -E ./tests/integration.sh` | Wi-Fi Setup and Phone Tethering loaded into a real rpcd, with fake Wi-Fi hardware and a fake plugged-in iPhone | root, a throwaway machine or container |
+| `sudo -E ./tests/wgpasswall/integration.sh` | WireGuard + Passwall in a real rpcd, with a stub Passwall | root, a throwaway machine or container |
+| `./tests/wgpasswall/relay_test.sh` | the WireGuard → SOCKS5 relay end to end, against a stub proxy | ucode with the socket and uloop modules, python3 |
+
+The integration tests build libubox, ubus, uci, ucode and rpcd at the exact revisions of an OpenWrt release (`tests/lib/build-stack.sh`) and install them into `/usr`; pick the release with `OPENWRT_VERSION=24.10.8` (default `25.12.2`). Test against the release's ucode, not the latest one: newer ucode accepts syntax that the router's ucode rejects.
+
+### Rules the backends follow
+
+`tests/run.sh` checks these:
+
+- **Never call rpcd's own ubus objects** (`uci`, `file`, `session`, `iwinfo`, `luci`, `rc`, …) from a backend. rpcd is single threaded, so the call waits for itself and blocks all of LuCI. Use the ucode `uci` module directly, or do the call from the page.
+- **Firewall reloads and Passwall restarts go through `run_locked()`**, so that two apps never restart them at the same time.
+
+Also:
+
+- Page scripts are minified when packages are built. LuCI reads the `'use strict'` and `'require …'` lines at the top of a view before running it; the build keeps them and fails if they get lost.
+- rpcd ignores world-writable plugins; the Makefiles set file modes, and the build fails on world-writable files.
+
+### Build packages locally
+
+With the SDK of your OpenWrt release (from downloads.openwrt.org, any target):
 
 ```sh
 ln -s "$PWD"/luci-app-* /path/to/openwrt-sdk/package/
@@ -129,13 +147,28 @@ cd /path/to/openwrt-sdk
 make defconfig && make package/luci-app-wifisetup/compile V=s    # or any other app
 ```
 
-Run the tests (needs a [ucode](https://github.com/jow-/ucode) build, ideally the revision your OpenWrt release ships):
+The packages land in `bin/packages/`. No feeds need to be installed: the dependencies are only recorded, not built.
 
-```sh
-UCODE_DIR=/path/to/ucode/build ./tests/run.sh
-```
+### CI and releases
 
-`tests/integration.sh` (Wi-Fi Setup and Phone Tethering) and `tests/wgpasswall/integration.sh` build libubox, ubus, uci, ucode and rpcd at the revisions used by the OpenWrt release and drive the real plugins over ubus; `tests/wgpasswall/relay_test.sh` tests the WireGuard → SOCKS5 relay. It installs into `/usr` and `/etc/config`, so only run it on a throwaway machine or container (CI does this on every push).
+`.github/workflows/build.yml` runs on every push and pull request, once per OpenWrt release (the `matrix` entries: 25.12.2 and 24.10.8):
+
+1. **test** – all of the tests above.
+2. **build** – builds the packages with the official SDK and uploads them as an artifact per OpenWrt release.
+3. **release** – on pushes to `main` (and pushed `v*` tags): publishes both sets, the signed package indexes and the public keys as one GitHub release.
+
+Releases are numbered `r<N>`, where `N` is the number of commits on `main`; it is also the package release (`luci-app-tether-1.0.0-r73.apk`), so nobody bumps `PKG_RELEASE` by hand. For a new version of an app, bump `PKG_VERSION` in its Makefile.
+
+### Signing keys (for forks)
+
+CI signs with two repository secrets (*Settings → Secrets and variables → Actions*). A fork without them still builds; its packages are unsigned and its releases can't be used as a package feed.
+
+| Secret | For | Create with |
+|---|---|---|
+| `APK_SIGNING_KEY` | 25.12: the `.apk` files and `packages.adb` | `openssl ecparam -name prime256v1 -genkey -noout -out apk-signing-key.pem` |
+| `OPKG_SIGNING_KEY` | 24.10: `Packages.sig` | `signify -G -n -c "luci-apps" -p luci-apps-opkg.pub -s luci-apps-opkg.sec` |
+
+Store the whole private key file (`apk-signing-key.pem`, `luci-apps-opkg.sec`) as the secret's value and keep it somewhere safe. `signify` is `brew install signify-osx` on macOS and `signify-openbsd` on Debian/Ubuntu; its keys are the same as OpenWrt's `usign`. CI derives the public keys (`luci-apps.pem`, `luci-apps-opkg.pub`) from the secrets and publishes them with every release.
 
 ## License
 
