@@ -68,7 +68,7 @@ const PW_CHECK_AFTER = +(getenv('WGPASSWALL_RELAY_PW_CHECK_AFTER') ?? 3);	// rec
 const PROBE_GAP = +(getenv('WGPASSWALL_RELAY_PROBE_GAP') ?? 120);	// s between checks
 const PW_RESTART_GAP = +(getenv('WGPASSWALL_RELAY_PW_RESTART_GAP') ?? 600);	// s
 const PW_RESTART = getenv('WGPASSWALL_RELAY_PW_RESTART') ??
-	'(mkdir -p /var/lock; exec 9>/var/lock/luci-apps.lock; flock 9; /etc/init.d/passwall restart 9>&-; true) </dev/null >/dev/null 2>&1 &';
+	'(mkdir -p /var/run; exec 9>/var/run/luci-apps.lock; flock 9; /etc/init.d/passwall restart 9>&-; true) </dev/null >/dev/null 2>&1 &';
 const PROBE_HOST = getenv('WGPASSWALL_RELAY_PROBE_HOST') ?? 'connectivitycheck.gstatic.com';
 const PROBE_TIMEOUT = 10;	// s
 

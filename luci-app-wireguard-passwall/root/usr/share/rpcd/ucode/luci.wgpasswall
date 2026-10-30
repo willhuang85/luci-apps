@@ -144,11 +144,18 @@ function settings(uci) {
 	if (table >= 253 && table <= 255)
 		table = 51820;
 
+	let lan_zone = uci.get('wgpasswall', 'settings', 'lan_zone') || 'lan';
+	let wan_zone = uci.get('wgpasswall', 'settings', 'wan_zone') || 'wan';
+
+	// the home zone reaches the VPN and Passwall networks: never the WAN
+	if (lan_zone == wan_zone)
+		lan_zone = 'lan', wan_zone = 'wan';
+
 	return {
 		killswitch: uci.get('wgpasswall', 'settings', 'killswitch') == '1',
 		via_passwall: uci.get('wgpasswall', 'settings', 'via_passwall') == '1',
-		lan_zone: uci.get('wgpasswall', 'settings', 'lan_zone') || 'lan',
-		wan_zone: uci.get('wgpasswall', 'settings', 'wan_zone') || 'wan',
+		lan_zone,
+		wan_zone,
 		route_table: table,
 		rule_priority: opt_uint(uci, 'rule_priority', 30100, 1000, 32000),
 		bypass_mask: opt_uint(uci, 'bypass_mask', 0xff, 1, 0xffffffff),
@@ -732,7 +739,9 @@ function sync_firewall(uci) {
 // would otherwise inherit it and hold the lock for as long as they run,
 // blocking every later reload. The "; true" keeps the shell from running the
 // last command in place of the subshell, which would close the lock early.
-const FW_LOCK = '/var/lock/luci-apps.lock';
+// In /var/run, which only root can write: /var/lock is open to every user,
+// who could hold the lock or put something else in its place.
+const FW_LOCK = '/var/run/luci-apps.lock';
 
 // The commands as one script; failures end up in the system log.
 function locked_script(cmds) {
@@ -743,7 +752,7 @@ function run_locked(cmds) {
 	if (!length(cmds))
 		return;
 
-	system(`(mkdir -p /var/lock; exec 9>${FW_LOCK}; flock 9; sh -c ${shell_quote(locked_script(cmds))} 9>&-; true) >/dev/null 2>&1 &`);
+	system(`(mkdir -p /var/run; exec 9>${FW_LOCK}; flock 9; sh -c ${shell_quote(locked_script(cmds))} 9>&-; true) >/dev/null 2>&1 &`);
 }
 
 // Passwall commands queued last: a queued job whose Passwall commands are
@@ -1564,6 +1573,10 @@ const methods = {
 
 			if (!length(label) || length(label) > 64)
 				return { error: 'Please enter a name of 1 to 64 characters' };
+
+			for (let i = 0; i < length(label); i++)
+				if (ord(label, i) < 0x20 || ord(label, i) == 0x7f)
+					return { error: 'The name cannot contain control characters' };
 
 			let id = req.args.id;
 			let auto = false;

@@ -3,15 +3,13 @@
 		"description": "Grant access to the WireGuard VPN client",
 		"read": {
 			"ubus": {
-				"luci.wgpasswall": [ "status", "parse", "get", "relay_log" ]
-			},
-			"uci": [ "wgpasswall" ]
+				"luci.wgpasswall": [ "status", "parse", "relay_log" ]
+			}
 		},
 		"write": {
 			"ubus": {
-				"luci.wgpasswall": [ "save", "remove", "connect", "disconnect", "set_options", "set_ports", "reapply" ]
-			},
-			"uci": [ "wgpasswall" ]
+				"luci.wgpasswall": [ "get", "save", "remove", "connect", "disconnect", "set_options", "set_ports", "reapply" ]
+			}
 		}
 	}
 }

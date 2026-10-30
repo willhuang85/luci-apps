@@ -102,7 +102,10 @@ check('6g forced wpa3', W.wifisetup_main_radio2.encryption == 'sae' && W.wifiset
 check('station untouched', W.sta.ssid == 'Upstream' && W.sta.encryption == null);
 
 r = call('get');
-check('main read back', r.main.ssid == 'Home' && r.main.encryption == 'sae-mixed' && r.main.key == 'correct horse');
+check('main read back', r.main.ssid == 'Home' && r.main.encryption == 'sae-mixed');
+// passwords only through "keys" (write access), never through "get"
+check('get has no passwords', r.main.key == null && r.guest?.key == null && length(filter(r.extras, (x) => x.key != null)) == 0);
+check('keys', call('keys').main == 'correct horse');
 
 r = call('set_network', { net: 'main', ssid: 'Home', key: 'correct horse', encryption: 'sae-mixed', same_name: false,
 	ssids: { radio0: 'Home 2G', radio1: 'Home 5G' }, hidden: true });
@@ -162,6 +165,19 @@ check('guest forwarding', st.firewall.wifisetup_guest_fwd?.src == 'guestwifi' &&
 check('guest rules', st.firewall.wifisetup_guest_dhcp?.dest_port == '67-68' && st.firewall.wifisetup_guest_dns?.dest_port == '53');
 check('main not on guest', W.default_radio0.network == 'lan');
 
+// a "wan_zone" setting that names the home network's zone never opens the LAN to guests
+st.firewall.z1.network = [ 'lan' ];
+st.wifisetup ??= {};
+const saved_settings = st.wifisetup.settings;
+st.wifisetup.settings = { '.type': 'settings', '.name': 'settings', '.index': 900, wan_zone: 'lan' };
+call('set_network', { net: 'guest', enabled: true, ssid: 'Home Guest', key: 'welcome123', encryption: 'sae-mixed', isolate: true, bands: [ 'radio0', 'radio1' ] });
+check('guest never forwarded to the LAN zone', st.firewall.wifisetup_guest_fwd == null);
+st.wifisetup.settings = saved_settings;
+if (saved_settings == null) delete st.wifisetup.settings;
+delete st.firewall.z1.network;
+call('set_network', { net: 'guest', enabled: true, ssid: 'Home Guest', key: 'welcome123', encryption: 'sae-mixed', isolate: true, bands: [ 'radio0', 'radio1' ] });
+check('guest forwarding back', st.firewall.wifisetup_guest_fwd?.dest == 'wan');
+
 r = call('get');
 check('guest read back', r.guest.enabled && r.guest.ssid == 'Home Guest' && r.guest.isolate && r.guest.bands.radio1 && !r.guest.bands.radio2);
 check('guest address', r.guest.address == '192.168.4.1');
@@ -192,6 +208,9 @@ check('kick', call('kick', { mac: 'aa:bb:cc:dd:ee:01', ifname: 'phy1-ap0' }).res
 check('kick unknown interface', call('kick', { mac: '00:11:22:33:44:55', ifname: 'eth0' }).error != null);
 check('kick bad mac', call('kick', { mac: 'nope', ifname: 'phy1-ap0' }).error != null);
 
+call('block', { mac: 'aa:bb:cc:dd:ee:09', name: 'bad\nname' });
+check('block name without control characters', length(filter(call('get').blocked, (b) => b.mac == 'AA:BB:CC:DD:EE:09' && b.name == '')) == 1);
+call('unblock', { mac: 'aa:bb:cc:dd:ee:09' });
 r = call('block', { mac: 'aa:bb:cc:dd:ee:02', name: 'Tablet' });
 check('block', !r.error && length(call('get').blocked) == 1 && call('get').blocked[0].name == 'Tablet');
 check('block kicks everywhere', 'hostapd.phy0-ap0.del_client aa:bb:cc:dd:ee:02' in global.__ubus_calls &&

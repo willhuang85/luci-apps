@@ -5,6 +5,18 @@
 'require poll';
 'require dom';
 
+// LuCI's E() puts a string child into the page as HTML. The names, SSIDs,
+// hostnames and messages shown here come from the router's config, nearby
+// Wi-Fi networks or USB devices, so this E() always adds strings as text.
+// Dialog titles go through showModal() below for the same reason.
+const E = (tag, attr, data) => (typeof attr == 'string' || typeof attr == 'number')
+	? dom.create(tag, [ `${attr}` ])
+	: dom.create(tag, attr, (typeof data == 'string' || typeof data == 'number') ? [ `${data}` ] : data);
+
+function showModal(title, children) {
+	return ui.showModal((title != null) ? [ title ] : null, children);
+}
+
 const callStatus = rpc.declare({ object: 'luci.tether', method: 'status' });
 const callCheckMain = rpc.declare({ object: 'luci.tether', method: 'check_main' });
 const callSetWifi = rpc.declare({ object: 'luci.tether', method: 'set_wifi', params: [ 'ssid', 'key', 'encryption', 'radio' ] });
@@ -253,7 +265,7 @@ return view.extend({
 			return Promise.resolve();
 
 		this.busy = true;
-		ui.showModal(null, [ E('p', { 'class': 'spinning' }, label) ]);
+		showModal(null, [ E('p', { 'class': 'spinning' }, label) ]);
 
 		return Promise.resolve().then(fn).then(check)
 			.then(() => sleep(wait ?? 3000))
@@ -480,7 +492,9 @@ return view.extend({
 		const w = this.st.wifi;
 		const radios = this.st.radios.filter((r) => r.enabled);
 		const ssid = E('input', { type: 'text', 'class': 'cbi-input-text', maxlength: 32, value: w.ssid ?? '', placeholder: _('e.g. Will\'s iPhone, Pixel 9') });
-		const key = E('input', { type: 'password', 'class': 'cbi-input-text', maxlength: 63, value: w.key ?? '', autocomplete: 'off' });
+		// the saved password is never sent to the page; empty keeps it
+		const key = E('input', { type: 'password', 'class': 'cbi-input-text', maxlength: 63, value: '', autocomplete: 'off',
+			placeholder: w.has_key ? _('Saved (leave empty to keep it)') : '' });
 		const enc = E('select', { 'class': 'cbi-input-select' }, SECURITY.map(([ v, l ]) =>
 			E('option', { value: v, selected: v == (w.encryption ?? 'sae-mixed') ? '' : null }, l)));
 		const radio = E('select', { 'class': 'cbi-input-select' }, radios.map((r) =>
@@ -498,7 +512,7 @@ return view.extend({
 
 			if (!ssid.value.length)
 				err = _('Enter the hotspot name, as shown in the phone\'s hotspot settings');
-			else if (keyed && (key.value.length < 8 || key.value.length > 63))
+			else if (keyed && !(w.has_key && !key.value.length && ssid.value == w.ssid) && (key.value.length < 8 || key.value.length > 63))
 				err = _('The password is shown in the phone\'s hotspot settings');
 
 			hint.textContent = err ?? '';
@@ -543,7 +557,7 @@ return view.extend({
 				this.st.active && this.st.method == 'wifi' ? 8000 : 500);
 		};
 
-		ui.showModal(_('Phone hotspot'), [
+		showModal(_('Phone hotspot'), [
 			E('div', { 'class': 'tt' }, [
 				E('div', { 'class': 'tt-row' }, [
 					E('div', { 'class': 'tt-sub tt-grow', style: 'margin:0' }, _('Turn on the phone\'s hotspot, then search for it or type its name.')),

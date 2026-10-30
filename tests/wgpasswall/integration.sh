@@ -87,7 +87,7 @@ done
 # waits until the firewall reloads / Passwall restarts the app queued are done
 wait_queue() {
 	for i in $(seq 1 120); do
-		pgrep -f '^/bin/sh -c [(]mkdir -p /var/lock; exec 9>' >/dev/null || return 0
+		pgrep -f '^/bin/sh -c [(]mkdir -p /var/run; exec 9>' >/dev/null || return 0
 		sleep 0.5
 	done
 	fail "queued firewall reloads / Passwall restarts did not finish"
@@ -420,7 +420,7 @@ echo "== superseded Passwall restarts are skipped"
 wait_queue
 : > /tmp/order.log
 # hold the lock, queue three changes behind it, then let them run
-( exec 9>/var/lock/luci-apps.lock; flock 9; sleep 3 ) &
+( exec 9>/var/run/luci-apps.lock; flock 9; sleep 3 ) &
 sleep 0.5
 ubus call luci.wgpasswall set_ports '{"ports":{"lan2":"proxy"}}' >/dev/null
 ubus call luci.wgpasswall set_ports '{"ports":{"lan2":"lan"}}' >/dev/null

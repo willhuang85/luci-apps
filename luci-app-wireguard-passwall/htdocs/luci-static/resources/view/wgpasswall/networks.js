@@ -5,6 +5,18 @@
 'require poll';
 'require dom';
 
+// LuCI's E() puts a string child into the page as HTML. The names, SSIDs,
+// hostnames and messages shown here come from the router's config, nearby
+// Wi-Fi networks or USB devices, so this E() always adds strings as text.
+// Dialog titles go through showModal() below for the same reason.
+const E = (tag, attr, data) => (typeof attr == 'string' || typeof attr == 'number')
+	? dom.create(tag, [ `${attr}` ])
+	: dom.create(tag, attr, (typeof data == 'string' || typeof data == 'number') ? [ `${data}` ] : data);
+
+function showModal(title, children) {
+	return ui.showModal((title != null) ? [ title ] : null, children);
+}
+
 const callStatus = rpc.declare({ object: 'luci.wgpasswall', method: 'status' });
 const callParse = rpc.declare({ object: 'luci.wgpasswall', method: 'parse', params: [ 'conf' ] });
 const callGet = rpc.declare({ object: 'luci.wgpasswall', method: 'get', params: [ 'id' ] });
@@ -332,7 +344,7 @@ return view.extend({
 		this.root.querySelectorAll('button, input').forEach((el) => el.disabled = true);
 
 		if (label)
-			ui.showModal(null, [ E('p', { 'class': 'spinning' }, label) ]);
+			showModal(null, [ E('p', { 'class': 'spinning' }, label) ]);
 
 		return Promise.resolve().then(fn).then((res) => {
 			if (res?.error)
@@ -563,7 +575,7 @@ return view.extend({
 
 		buttons.push(E('button', { 'class': 'btn cbi-button cbi-button-action' + (isNew ? '' : ' important'), click: () => save(false) }, [ _('Save') ]));
 
-		ui.showModal(isNew ? _('Import WireGuard configuration') : _('Edit %s').format(opts.label), [
+		showModal(isNew ? _('Import WireGuard configuration') : _('Edit %s').format(opts.label), [
 			E('div', { 'class': 'wgc wgc-modal' }, [
 				E('label', { 'class': 'wgc-field' }, _('Name')),
 				nameInput,
@@ -858,7 +870,7 @@ return view.extend({
 			]);
 		}).catch((err) => dom.content(body, E('div', { 'class': 'wgc-note bad' }, err.message)));
 
-		ui.showModal(_('Relay log'), [
+		showModal(_('Relay log'), [
 			body,
 			E('div', { 'class': 'right', style: 'margin-top:16px; display:flex; gap:8px; justify-content:flex-end; flex-wrap:wrap; align-items:center' }, [
 				E('a', { href: L.url('admin/status/logs/syslog'), style: 'margin-right:auto' }, _('System log')),
@@ -915,7 +927,7 @@ return view.extend({
 			return this.act(_('Moving ports…'), () => callSetPorts(map));
 		});
 
-		ui.showModal(_('Wired ports'), [
+		showModal(_('Wired ports'), [
 			E('div', { 'class': 'wgc wgc-modal' }, [
 				E('div', { 'class': 'wgc-sub' }, _('Choose the network for each LAN port. A switch or access point plugged into a port puts all its devices on that network.')),
 				ports.length ? E('div', { 'class': 'wgc-ports' }, rows)

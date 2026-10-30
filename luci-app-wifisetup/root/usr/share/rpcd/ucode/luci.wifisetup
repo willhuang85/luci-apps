@@ -345,11 +345,25 @@ function ensure_guest_network(uci) {
 		uci.set('firewall', GUEST_ZONE_SID, 'forward', 'REJECT');
 	}
 
-	if (uci.get('firewall', GUEST_FWD_SID) == null)
-		uci.set('firewall', GUEST_FWD_SID, 'forwarding');
+	// guests reach the internet through the WAN zone, but never through a
+	// zone the home network is in (a wrong "wan_zone" setting)
+	let wan_ok = false;
 
-	uci.set('firewall', GUEST_FWD_SID, 'src', GUEST_NET);
-	uci.set('firewall', GUEST_FWD_SID, 'dest', s.wan_zone);
+	uci.foreach('firewall', 'zone', (z) => {
+		if (z.name == s.wan_zone && !(s.lan_network in as_list(z.network)))
+			wan_ok = true;
+	});
+
+	if (!wan_ok) {
+		uci.delete('firewall', GUEST_FWD_SID);
+	}
+	else {
+		if (uci.get('firewall', GUEST_FWD_SID) == null)
+			uci.set('firewall', GUEST_FWD_SID, 'forwarding');
+
+		uci.set('firewall', GUEST_FWD_SID, 'src', GUEST_NET);
+		uci.set('firewall', GUEST_FWD_SID, 'dest', s.wan_zone);
+	}
 
 	if (uci.get('firewall', GUEST_RULE_SIDS.dhcp) == null) {
 		uci.set('firewall', GUEST_RULE_SIDS.dhcp, 'rule');
@@ -438,7 +452,9 @@ function set_flag(uci, sid, opt, on) {
 // would otherwise inherit it and hold the lock for as long as they run,
 // blocking every later reload. The "; true" keeps the shell from running the
 // last command in place of the subshell, which would close the lock early.
-const FW_LOCK = '/var/lock/luci-apps.lock';
+// In /var/run, which only root can write: /var/lock is open to every user,
+// who could hold the lock or put something else in its place.
+const FW_LOCK = '/var/run/luci-apps.lock';
 
 // The commands as one script; failures end up in the system log.
 function locked_script(cmds) {
@@ -450,7 +466,7 @@ function run_locked(cmds, delay) {
 	if (!length(cmds))
 		return;
 
-	system(`(${delay ? `sleep ${delay}; ` : ''}mkdir -p /var/lock; exec 9>${FW_LOCK}; flock 9; sh -c ${shell_quote(locked_script(cmds))} 9>&-; true) >/dev/null 2>&1 &`);
+	system(`(${delay ? `sleep ${delay}; ` : ''}mkdir -p /var/run; exec 9>${FW_LOCK}; flock 9; sh -c ${shell_quote(locked_script(cmds))} 9>&-; true) >/dev/null 2>&1 &`);
 }
 
 // Commits and applies the changes shortly after the reply was sent; `after`
@@ -673,9 +689,16 @@ const methods = {
 				push(extras, x);
 			}
 
+			const main = network_config(uci, l.main, band_of);
+
+			// the passwords only come from "keys", which needs write access
+			for (let n in [ main, guest, ...extras ])
+				if (n)
+					delete n.key;
+
 			return {
 				radios: list,
-				main: network_config(uci, l.main, band_of),
+				main,
 				guest: guest ?? { enabled: false },
 				extras,
 				// the networks extra networks can be on, besides the LAN
@@ -1087,8 +1110,11 @@ const methods = {
 
 				uci.set('wifisetup', sid, 'mac', mac);
 
-				if (length(req.args.name ?? ''))
-					uci.set('wifisetup', sid, 'name', substr(req.args.name, 0, 64));
+				const name = substr(req.args.name ?? '', 0, 64);
+
+				// a label only (e.g. the DHCP host name): no control characters
+				if (length(name) && bytes_in(name, 0x20, 0xff) && index(name, '\x7f') < 0)
+					uci.set('wifisetup', sid, 'name', name);
 			}
 
 			sync_macfilter(uci);
@@ -1151,6 +1177,32 @@ const methods = {
 
 	// QR code to join a network ('main', 'guest' or the id of an extra
 	// network): an SVG image plus the plain credentials.
+	/*
+	 * The Wi-Fi passwords, for the page's edit dialogs: { main, guest,
+	 * extras: { <id>: key } }. Separate from "get", and in the write part of
+	 * the ACL, so users with read-only access do not see them.
+	 */
+	keys: {
+		call: function() {
+			const uci = cursor();
+			const l = layout(uci);
+			let band_of = {}, extras = {};
+
+			for (let s in radios(uci))
+				band_of[s['.name']] = radio_band(s);
+
+			for (let id in keys(l.extras))
+				extras[id] = network_config(uci, l.extras[id], band_of)?.key ?? '';
+
+			return {
+				main: network_config(uci, l.main, band_of)?.key ?? '',
+				guest: network_config(uci, l.guest, band_of)?.key ?? '',
+				extras
+			};
+		}
+	},
+
+	// the QR code holds the password, so this is in the write part of the ACL
 	qrcode: {
 		args: { net: '' },
 		call: function(req) {

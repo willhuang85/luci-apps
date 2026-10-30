@@ -125,17 +125,20 @@ Other helpers live next to them under `root/` (for example the WireGuard relay i
 
 The integration tests build libubox, ubus, uci, ucode and rpcd at the exact revisions of an OpenWrt release (`tests/lib/build-stack.sh`) and install them into `/usr`; pick the release with `OPENWRT_VERSION=24.10.8` (default `25.12.2`). Test against the release's ucode, not the latest one: newer ucode accepts syntax that the router's ucode rejects.
 
-### Rules the backends follow
+### Rules the apps follow
 
 `tests/run.sh` checks these:
 
 - **Never call rpcd's own ubus objects** (`uci`, `file`, `session`, `iwinfo`, `luci`, `rc`, …) from a backend. rpcd is single threaded, so the call waits for itself and blocks all of LuCI. Use the ucode `uci` module directly, or do the call from the page.
 - **Firewall reloads and Passwall restarts go through `run_locked()`**, so that two apps never restart them at the same time.
+- **Pages add text as text.** LuCI's `E()` and `ui.showModal()` put a plain string into the page as HTML, and much of what the pages show comes from outside: nearby Wi-Fi network names, USB device names, Passwall node names, DHCP host names. Each page therefore defines its own `E()` and `showModal()` at the top, which add strings as text; never call `ui.showModal()` directly or set `innerHTML`.
+- **Read-only access never gets secrets.** Methods in the `read` part of an ACL return no passwords or private keys (those come from methods in `write`, e.g. Wi-Fi Setup's `keys`); the apps' ACLs grant no direct `uci` access.
 
 Also:
 
 - Page scripts are minified when packages are built. LuCI reads the `'use strict'` and `'require …'` lines at the top of a view before running it; the build keeps them and fails if they get lost.
 - rpcd ignores world-writable plugins; the Makefiles set file modes, and the build fails on world-writable files.
+- Build tools are pinned: GitHub Actions to a commit, terser and its dependencies through `.github/minify/package-lock.json`.
 
 ### Build packages locally
 

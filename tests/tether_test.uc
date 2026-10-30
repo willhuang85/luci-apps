@@ -146,6 +146,7 @@ check('usb supported', call('status').usb.supported);
 // the hotspot search itself runs in the browser (iwinfo scan)
 check('no backend scan', m.scan == null);
 
+check('control characters', call('set_wifi', { ssid: 'a\nb', key: 'abcdefgh', encryption: 'sae-mixed', radio: 'radio0' }).error != null);
 check('short password', call('set_wifi', { ssid: 'Will’s iPhone', key: 'abc', encryption: 'sae-mixed', radio: 'radio0' }).error != null);
 check('bad radio', call('set_wifi', { ssid: 'Will’s iPhone', key: 'abcdefgh', encryption: 'sae-mixed', radio: 'lan' }).error != null);
 check('bad encryption', call('set_wifi', { ssid: 'X', key: 'abcdefgh', encryption: 'wep', radio: 'radio0' }).error != null);
@@ -159,6 +160,12 @@ check('in wan zone', join(',', st.firewall.z2.network) == 'wan,wan6,backup,tethe
 check('main untouched by setup', N.wan.metric == null);
 r = call('status');
 check('wifi configured', r.wifi.configured && r.wifi.ssid == 'Will’s iPhone' && r.wifi.band_label == '2.4 GHz' && r.wifi.sta_ifname == null);
+// the password stays on the router; an empty one keeps it for the same hotspot
+check('status has no password', r.wifi.key == null && r.wifi.has_key);
+check('empty password keeps it', call('set_wifi', { ssid: 'Will’s iPhone', key: '', encryption: 'sae-mixed', radio: 'radio0' }).result &&
+	W.tether_sta.key == 'hotspot-pass');
+check('other hotspot needs one', call('set_wifi', { ssid: 'Other', key: '', encryption: 'sae-mixed', radio: 'radio0' }).error != null &&
+	W.tether_sta.ssid == 'Will’s iPhone');
 
 r = call('start', { method: 'wifi' });
 check('wifi started', r.result && r.method == 'wifi');
@@ -248,6 +255,8 @@ check('stop when inactive is harmless', call('stop').result && N.wan.metric == n
 // --- main internet check (no ping target reachable from the test box)
 st.tether.settings.check_host = '1.1.1.1; reboot';
 check('check host validated', call('check_main').error != null);
+st.tether.settings.check_host = '-f';
+check('check host is never a ping option', call('check_main').error != null);
 delete st.tether.settings.check_host;
 global.__wifi.ifaces[0].up = false;
 r = call('check_main');

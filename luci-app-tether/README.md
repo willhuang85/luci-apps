@@ -27,7 +27,7 @@ Do this once while your internet works, so everything is ready when it isn't:
 - **Install the package** – it needs internet to download its dependencies.
 - **USB, iPhone**: plug in the iPhone, unlock it and tap **Trust** when asked. The pairing is stored on the router (`/etc/lockdown`), so you only do this once. The *USB cable* card shows a tick for "iPhone plugged in" and, with Personal Hotspot on, "Tethering link".
 - **USB, Android**: plug in the phone; the card shows e.g. "Pixel 9 plugged in". Turn on *Settings → Network & internet → Hotspot & tethering → USB tethering* and "Tethering link" gets its tick. Android switches USB tethering off when the cable is unplugged, so turn it on again each time.
-- **Wi-Fi**: under *Wi-Fi hotspot* press **Set up**, pick your phone from the search and enter the hotspot password (iPhone: *Settings → Personal Hotspot*, Android: *Settings → Network & internet → Hotspot & tethering → Wi-Fi hotspot*).
+- **Wi-Fi**: under *Wi-Fi hotspot* press **Set up**, pick your phone from the search and enter the hotspot password (iPhone: *Settings → Personal Hotspot*, Android: *Settings → Network & internet → Hotspot & tethering → Wi-Fi hotspot*). The page never shows the saved password again; to change other settings of the same hotspot, leave the password empty and the saved one is kept.
 
 ## When your internet goes down
 

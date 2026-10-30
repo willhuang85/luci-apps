@@ -5,6 +5,18 @@
 'require poll';
 'require dom';
 
+// LuCI's E() puts a string child into the page as HTML. The names, SSIDs,
+// hostnames and messages shown here come from the router's config, nearby
+// Wi-Fi networks or USB devices, so this E() always adds strings as text.
+// Dialog titles go through showModal() below for the same reason.
+const E = (tag, attr, data) => (typeof attr == 'string' || typeof attr == 'number')
+	? dom.create(tag, [ `${attr}` ])
+	: dom.create(tag, attr, (typeof data == 'string' || typeof data == 'number') ? [ `${data}` ] : data);
+
+function showModal(title, children) {
+	return ui.showModal((title != null) ? [ title ] : null, children);
+}
+
 const callGet = rpc.declare({ object: 'luci.wifisetup', method: 'get' });
 const callStatus = rpc.declare({ object: 'luci.wifisetup', method: 'status' });
 const callSetNetwork = rpc.declare({ object: 'luci.wifisetup', method: 'set_network',
@@ -19,6 +31,7 @@ const callBlock = rpc.declare({ object: 'luci.wifisetup', method: 'block', param
 const callUnblock = rpc.declare({ object: 'luci.wifisetup', method: 'unblock', params: [ 'mac' ] });
 const callSetSchedule = rpc.declare({ object: 'luci.wifisetup', method: 'set_schedule', params: [ 'enabled', 'off', 'on', 'days' ] });
 const callQrcode = rpc.declare({ object: 'luci.wifisetup', method: 'qrcode', params: [ 'net' ] });
+const callKeys = rpc.declare({ object: 'luci.wifisetup', method: 'keys' });
 
 // Radio details come straight from iwinfo, like on LuCI's own pages: iwinfo
 // is served by rpcd, which the luci.wifisetup backend runs in, so the
@@ -295,9 +308,26 @@ function widthOptions(htmodes, band, current) {
 	return list;
 }
 
+// The configuration with the Wi-Fi passwords, which only users who may
+// change them (write access) get.
+function getConfig() {
+	return Promise.all([ callGet(), L.resolveDefault(callKeys(), null) ]).then(([ cfg, keys ]) => {
+		if (cfg.main)
+			cfg.main.key = keys?.main ?? '';
+
+		if (cfg.guest)
+			cfg.guest.key = keys?.guest ?? '';
+
+		for (let x of cfg.extras ?? [])
+			x.key = keys?.extras?.[x.id] ?? '';
+
+		return cfg;
+	});
+}
+
 // Adds what each radio can do (from iwinfo) to the configuration.
 function loadConfig() {
-	return callGet().then((cfg) => Promise.all((cfg.radios ?? []).map((r) => Promise.all([
+	return getConfig().then((cfg) => Promise.all((cfg.radios ?? []).map((r) => Promise.all([
 		L.resolveDefault(callIwinfoInfo(r.id), {}),
 		L.resolveDefault(callIwinfoFreqlist(r.id), []),
 		L.resolveDefault(callIwinfoTxpowerlist(r.id), [])
@@ -416,13 +446,13 @@ return view.extend({
 			return Promise.resolve();
 
 		this.busy = true;
-		ui.showModal(null, [ E('p', { 'class': 'spinning' }, label) ]);
+		showModal(null, [ E('p', { 'class': 'spinning' }, label) ]);
 
 		return Promise.resolve().then(fn).then(check).then(() => {
 			if (!opts?.restartsWifi)
 				return;
 
-			ui.showModal(null, [
+			showModal(null, [
 				E('p', { 'class': 'spinning' }, _('Applying… Wi-Fi restarts, devices reconnect in a few seconds.')),
 				opts.reconnect ? E('p', {}, opts.reconnect) : ''
 			]);
@@ -907,7 +937,7 @@ return view.extend({
 			hidden, _('Hide network name (devices must enter the name by hand to join)')
 		])));
 
-		ui.showModal(x ? _('Edit %s').format(cur.ssid) : _('Add Wi-Fi network'), [
+		showModal(x ? _('Edit %s').format(cur.ssid) : _('Add Wi-Fi network'), [
 			E('div', { 'class': 'tw' }, [
 				E('div', { 'class': 'tw-form', style: 'margin-top:0' }, rows),
 				(!nets.vpn && nets.wgpasswall) ? E('div', { 'class': 'tw-note info' }, _('The VPN network of WireGuard + Passwall is missing: open its page and click "Reapply settings".')) : ''
@@ -973,7 +1003,7 @@ return view.extend({
 		channel.addEventListener('change', updateNote);
 		updateNote();
 
-		ui.showModal(_('%s settings').format(r.label), [
+		showModal(_('%s settings').format(r.label), [
 			E('div', { 'class': 'tw' }, [
 				r.hardware ? E('div', { 'class': 'tw-sub' }, r.hardware) : '',
 				E('div', { 'class': 'tw-form' }, [
@@ -1240,7 +1270,7 @@ return view.extend({
 			const pwEl = E('span', { 'class': 'tw-mono' }, '••••••••');
 			let shown = false;
 
-			ui.showModal(net == 'guest' ? _('Join the guest network') : (net == 'main') ? _('Join the Wi-Fi') : _('Join "%s"').format(res.ssid), [
+			showModal(net == 'guest' ? _('Join the guest network') : (net == 'main') ? _('Join the Wi-Fi') : _('Join "%s"').format(res.ssid), [
 				E('div', { 'class': 'tw tw-qr' }, [
 					res.svg
 						? E('img', { src: 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(res.svg), alt: _('QR code to join %s').format(res.ssid) })

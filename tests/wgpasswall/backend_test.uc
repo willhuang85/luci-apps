@@ -63,6 +63,7 @@ check('parse summary', r.full_tunnel && r.endpoint == '1.2.3.4:51820');
 check('parse error', call('parse', { conf: 'junk' }).error != null);
 check('parse: keepalive missing', r.keepalive_missing == 1);
 
+check('label without control characters', call('save', { label: 'a\nb', conf: text }).error != null);
 r = call('save', { label: 'My Home VPN!', conf: text });
 check('save ok', r.id == 'wgc_myhomevpn' && !r.error);
 check('iface created', st.network.wgc_myhomevpn?.proto == 'wireguard');

@@ -313,7 +313,9 @@ function shell_quote(s) {
 // would otherwise inherit it and hold the lock for as long as they run,
 // blocking every later reload. The "; true" keeps the shell from running the
 // last command in place of the subshell, which would close the lock early.
-const FW_LOCK = '/var/lock/luci-apps.lock';
+// In /var/run, which only root can write: /var/lock is open to every user,
+// who could hold the lock or put something else in its place.
+const FW_LOCK = '/var/run/luci-apps.lock';
 
 // The commands as one script; failures end up in the system log.
 function locked_script(cmds) {
@@ -325,7 +327,7 @@ function run_locked(cmds, delay) {
 	if (!length(cmds))
 		return;
 
-	system(`(${delay ? `sleep ${delay}; ` : ''}mkdir -p /var/lock; exec 9>${FW_LOCK}; flock 9; sh -c ${shell_quote(locked_script(cmds))} 9>&-; true) >/dev/null 2>&1 &`);
+	system(`(${delay ? `sleep ${delay}; ` : ''}mkdir -p /var/run; exec 9>${FW_LOCK}; flock 9; sh -c ${shell_quote(locked_script(cmds))} 9>&-; true) >/dev/null 2>&1 &`);
 }
 
 // Commits and applies the changes shortly after the reply was sent (a
@@ -364,7 +366,8 @@ function sta_config(uci) {
 	return {
 		configured: !!length(s.ssid ?? ''),
 		ssid: s.ssid ?? '',
-		key: s.key ?? '',
+		// never the password itself: status is readable with read-only access
+		has_key: length(s.key ?? '') > 0,
 		encryption: STA_ENCRYPTIONS[s.encryption] != null ? s.encryption : 'sae-mixed',
 		radio: s.device,
 		band: radio ? radio_band(radio) : null,
@@ -415,6 +418,10 @@ function check_ssid(ssid) {
 	if (length(ssid) > 32)
 		return 'The hotspot name can be at most 32 bytes long';
 
+	for (let i = 0; i < length(ssid); i++)
+		if (ord(ssid, i) < 0x20 || ord(ssid, i) == 0x7f)
+			return 'The hotspot name cannot contain control characters';
+
 	return null;
 }
 
@@ -430,6 +437,33 @@ function check_key(key, enc) {
 			return 'The password can only contain letters, digits, spaces and the usual symbols';
 
 	return null;
+}
+
+const CHECK_CACHE = 5;	// s
+let last_check = null;
+
+// Pings the check host through the first main interface that is up.
+function check_main(uci, dump, host) {
+	for (let m in main_ifaces(uci)) {
+		if (m.ipv6_only)
+			continue;
+
+		const i = iface_info(dump, m.name);
+
+		if (!i.up || !i.device)
+			continue;
+
+		const p = popen(`ping -4 -q -c 2 -W 2 -I ${shell_quote(i.device)} ${shell_quote(host)} 2>/dev/null`, 'r');
+		const out = p ? p.read('all') : '';
+
+		p?.close();
+
+		const rtt = match(out ?? '', /= [0-9.]+\/([0-9.]+)\//);
+
+		return { ok: rtt != null, interface: m.name, rtt: rtt ? +rtt[1] : null };
+	}
+
+	return { ok: false, interface: null, reason: 'down' };
 }
 
 function rx_tx(dev) {
@@ -497,31 +531,22 @@ const methods = {
 			const host = settings(uci).check_host;
 			const dump = iface_dump();
 
-			if (!match(host, /^[0-9A-Za-z.:-]+$/))
+			// pinging blocks rpcd for a few seconds: answer repeated calls
+			// (several open pages, or a read-only user calling it in a loop)
+			// from the last check
+			if (last_check && time() - last_check.at < CHECK_CACHE)
+				return last_check.result;
+
+			// a host name or address, never an option for ping
+			if (!match(host, /^[0-9A-Za-z.:][0-9A-Za-z.:-]*$/))
 				return { error: 'Invalid check host' };
 
-			for (let m in main_ifaces(uci)) {
-				if (m.ipv6_only)
-					continue;
+			last_check = { at: time(), result: check_main(uci, dump, host) };
 
-				const i = iface_info(dump, m.name);
-
-				if (!i.up || !i.device)
-					continue;
-
-				const p = popen(`ping -4 -q -c 2 -W 2 -I ${i.device} ${host} 2>/dev/null`, 'r');
-				const out = p ? p.read('all') : '';
-
-				p?.close();
-
-				const rtt = match(out ?? '', /= [0-9.]+\/([0-9.]+)\//);
-
-				return { ok: rtt != null, interface: m.name, rtt: rtt ? +rtt[1] : null };
-			}
-
-			return { ok: false, interface: null, reason: 'down' };
+			return last_check.result;
 		}
 	},
+
 
 	// Hotspot to join for Wi-Fi tethering.
 	set_wifi: {
@@ -533,6 +558,14 @@ const methods = {
 
 			if (STA_ENCRYPTIONS[a.encryption] == null)
 				return { error: 'Unknown security mode' };
+
+			// no password for the same hotspot: keep the saved one (the page
+			// never gets to see it)
+			const saved = uci.get('wireless', STA_SID, 'key');
+
+			if (STA_ENCRYPTIONS[a.encryption] && !length(a.key ?? '') && length(saved ?? '') &&
+			    a.ssid == uci.get('wireless', STA_SID, 'ssid'))
+				a.key = saved;
 
 			if ((err = check_ssid(a.ssid)) || (err = check_key(a.key, a.encryption)))
 				return { error: err };

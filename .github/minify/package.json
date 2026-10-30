@@ -1,0 +1,7 @@
+{
+	"private": true,
+	"description": "Minifier for the page scripts in release builds (see .github/workflows/build.yml); package-lock.json pins it and all its dependencies with their checksums",
+	"devDependencies": {
+		"terser": "5.36.0"
+	}
+}

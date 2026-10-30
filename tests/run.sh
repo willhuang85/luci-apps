@@ -34,6 +34,20 @@ if grep -nE "system\(.*/etc/init\.d/(firewall|passwall) (reload|restart|start|st
 fi
 echo ok
 
+echo "== pages add router data as text, not HTML"
+# LuCI's E() and ui.showModal() put a string into the page as HTML; SSIDs,
+# hostnames, names and messages come from outside (nearby Wi-Fi networks,
+# USB devices, Passwall subscriptions), so every page uses its own E() and
+# showModal() that add strings as text.
+for f in luci-app-*/htdocs/luci-static/resources/view/*/*.js; do
+	grep -q '^const E = (tag, attr, data) =>' "$f" || { echo "FAIL: $f lacks the text-only E()"; exit 1; }
+	if grep -n 'innerHTML\|insertAdjacentHTML\|outerHTML' "$f" || [ "$(grep -c 'ui\.showModal(' "$f")" != 1 ]; then
+		echo "FAIL: $f inserts HTML or calls ui.showModal() directly"
+		exit 1
+	fi
+done
+echo ok
+
 echo "== checkboxes keep the theme's own drawing"
 # Bootstrap draws checkboxes with pseudo elements positioned against the
 # input; position: static moves them away and the checkbox disappears
