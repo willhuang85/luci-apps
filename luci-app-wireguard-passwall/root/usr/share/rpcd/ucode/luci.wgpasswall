@@ -88,11 +88,14 @@ const NET_FWDS = {
 // overlap, so the order does not matter.
 const PW_NET_ACL_PREFIX = '0wgpasswall_net_';
 
-// DNS of the VPN network's devices: an nftables table of its own, loaded by
-// fw4 through an include, ahead of Passwall's DNS redirect
+// DNS of the VPN network's devices and the size of TCP segments through the
+// tunnels: an nftables table of its own, loaded by fw4 through an include,
+// ahead of Passwall's DNS redirect
 const DNS_SID = 'wgpasswall_devices_dns';
 const DNS_NFT = getenv('WGPASSWALL_DNS_NFT') ?? '/etc/wgpasswall/devices-dns.nft';
 const DNS_TABLE = 'wgpasswall_dns';
+// WireGuard's MTU when the profile sets none
+const WG_MTU = 1420;
 
 const RULE_SIDS = {
 	rule: [ 'wgpasswall_rule_main', 'wgpasswall_rule_vpn' ],
@@ -577,6 +580,32 @@ function vpn_dns(uci) {
 	return (v4 || v6) ? { v4, v6 } : null;
 }
 
+// TCP connections through a tunnel agree on a segment size (MSS) that fits
+// the tunnel's MTU, in both directions. fw4's "mtu_fix" only lowers the MSS
+// a device announces going out into the tunnel (from the route's MTU); the
+// MSS a server announces coming back stays as it is, often fitting a 1500
+// byte link, and the device then sends packets the tunnel has to split.
+// Behind a proxy (VPN carried through Passwall, MTU 1280) such split
+// packets get lost: the large first packets of a TLS handshake never arrive
+// and sites reset the connection. So SYN packets in both directions get at
+// most the tunnel's MTU minus the IP and TCP headers.
+function mss_nft(uci) {
+	let rules = '';
+
+	for (let id in profile_ids(uci)) {
+		let mtu = +(uci.get('network', id, 'mtu') ?? WG_MTU);
+
+		if (!(mtu >= 576 && mtu <= 65535))
+			mtu = WG_MTU;
+
+		for (let dir in [ 'iifname', 'oifname' ])
+			for (let f in [ [ 'ipv4', mtu - 40 ], [ 'ipv6', mtu - 60 ] ])
+				rules += `\t\t${dir} "${id}" meta nfproto ${f[0]} tcp flags syn / fin,syn,rst tcp option maxseg size gt ${f[1]} counter tcp option maxseg size set ${f[1]} comment "WireGuard + Passwall: TCP segments that fit the tunnel"\n`;
+	}
+
+	return length(rules) ? `\tchain mss {\n\t\ttype filter hook forward priority mangle; policy accept;\n${rules}\t}\n` : null;
+}
+
 // nftables rules sending the DNS of the VPN network's devices to the VPN's
 // DNS servers. Their traffic goes through the VPN already, so the queries do
 // too. Runs before Passwall's DNS redirect (dstnat - 1) and fw4's own
@@ -586,35 +615,42 @@ function vpn_dns(uci) {
 // connected), the router refuses its DNS queries too: it would otherwise
 // look the names up through the internet connection's DNS.
 // Without any of these the file only removes the table.
+//
+// The table also keeps TCP segments through the tunnels small enough for
+// them (mss_nft).
 function vpn_dns_nft(uci) {
 	const dns = vpn_dns(uci);
-	let out = `table inet ${DNS_TABLE}\ndelete table inet ${DNS_TABLE}\n`;
-
-	if (!net_exists(uci, 'vpn'))
-		return out;
-
+	const mss = mss_nft(uci);
 	const match_dns = `iifname "${NETS.vpn.bridge}" meta l4proto { tcp, udp }`;
+	let chains = [];
 
-	if (!connected_profile(uci) && settings(uci).killswitch)
-		return out + `\ntable inet ${DNS_TABLE} {\n\tchain input {\n\t\ttype filter hook input priority filter - 5; policy accept;\n\t\t${match_dns} th dport 53 counter reject comment "WireGuard + Passwall: no DNS for the VPN network while the kill switch holds it offline"\n\t}\n}\n`;
+	if (mss)
+		push(chains, mss);
 
-	if (!dns)
-		return out;
+	if (!net_exists(uci, 'vpn')) {
+		// nothing more
+	}
+	else if (!connected_profile(uci) && settings(uci).killswitch) {
+		push(chains, `\tchain input {\n\t\ttype filter hook input priority filter - 5; policy accept;\n\t\t${match_dns} th dport 53 counter reject comment "WireGuard + Passwall: no DNS for the VPN network while the kill switch holds it offline"\n\t}\n`);
+	}
+	else if (dns) {
+		let c = `\tchain dstnat {\n\t\ttype nat hook prerouting priority dstnat - 10; policy accept;\n`;
 
-	out += `\ntable inet ${DNS_TABLE} {\n\tchain dstnat {\n\t\ttype nat hook prerouting priority dstnat - 10; policy accept;\n`;
+		if (dns.v4)
+			c += `\t\t${match_dns} meta nfproto ipv4 th dport 53 counter dnat ip to ${dns.v4}:53 comment "WireGuard + Passwall: VPN DNS for the VPN network"\n`;
 
-	if (dns.v4)
-		out += `\t\t${match_dns} meta nfproto ipv4 th dport 53 counter dnat ip to ${dns.v4}:53 comment "WireGuard + Passwall: VPN DNS for the VPN network"\n`;
+		if (dns.v6)
+			c += `\t\t${match_dns} meta nfproto ipv6 th dport 53 counter dnat ip6 to [${dns.v6}]:53 comment "WireGuard + Passwall: VPN DNS for the VPN network"\n`;
 
-	if (dns.v6)
-		out += `\t\t${match_dns} meta nfproto ipv6 th dport 53 counter dnat ip6 to [${dns.v6}]:53 comment "WireGuard + Passwall: VPN DNS for the VPN network"\n`;
+		push(chains, c + '\t}\n');
 
-	out += '\t}\n';
+		if (!dns.v6)
+			push(chains, `\tchain input {\n\t\ttype filter hook input priority filter - 5; policy accept;\n\t\t${match_dns} meta nfproto ipv6 ct original proto-dst 53 counter reject comment "WireGuard + Passwall: no IPv6 DNS from the router for the VPN network"\n\t}\n`);
+	}
 
-	if (!dns.v6)
-		out += `\n\tchain input {\n\t\ttype filter hook input priority filter - 5; policy accept;\n\t\t${match_dns} meta nfproto ipv6 ct original proto-dst 53 counter reject comment "WireGuard + Passwall: no IPv6 DNS from the router for the VPN network"\n\t}\n`;
+	const out = `table inet ${DNS_TABLE}\ndelete table inet ${DNS_TABLE}\n`;
 
-	return out + '}\n';
+	return length(chains) ? out + `\ntable inet ${DNS_TABLE} {\n${join('\n', chains)}}\n` : out;
 }
 
 // Creates or removes the policy routing rules shared by all profiles and
@@ -1315,7 +1351,7 @@ function drift(uci, wg) {
 	if (uci.get('firewall', NO_V6_SID, 'enabled') == '1')
 		push(want, 'WireGuard + Passwall: no IPv6 outside the VPN');
 
-	// every rule of the DNS table counts its packets
+	// every rule of the app's own table (DNS, MSS) counts its packets
 	const dns_rules = index(vpn_dns_nft(uci), 'counter') >= 0;
 
 	if (!net_exists(uci, 'vpn') || uci.get('firewall', NETS.vpn.zone_sid) == null ||

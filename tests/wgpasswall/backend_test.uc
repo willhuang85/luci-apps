@@ -158,6 +158,15 @@ check('dns: include', st.firewall.wgpasswall_devices_dns?.['.type'] == 'include'
 check('dns: redirect to VPN DNS', index(dns_nft(), 'iifname "br-wgvpn" meta l4proto { tcp, udp } meta nfproto ipv4 th dport 53 counter dnat ip to 10.2.0.1:53') >= 0);
 check('dns: before Passwall', index(dns_nft(), 'priority dstnat - 10;') >= 0);
 check('dns: router IPv6 DNS refused', index(dns_nft(), 'meta nfproto ipv6 ct original proto-dst 53 counter reject') >= 0);
+// TCP segments fit the tunnel both ways: WireGuard's default MTU, or the profile's
+check('mss: default MTU', index(dns_nft(), 'iifname "wgc_myhomevpn" meta nfproto ipv4 tcp flags syn / fin,syn,rst tcp option maxseg size gt 1380 counter tcp option maxseg size set 1380') >= 0 &&
+	index(dns_nft(), 'oifname "wgc_myhomevpn" meta nfproto ipv6 tcp flags syn / fin,syn,rst tcp option maxseg size gt 1360') >= 0);
+st.network.wgc_myhomevpn.mtu = '1280';
+call('sync');
+check('mss: lowered MTU', index(dns_nft(), 'iifname "wgc_myhomevpn" meta nfproto ipv4 tcp flags syn / fin,syn,rst tcp option maxseg size gt 1240 counter tcp option maxseg size set 1240') >= 0 &&
+	index(dns_nft(), 'iifname "wgc_myhomevpn" meta nfproto ipv4 tcp flags syn / fin,syn,rst tcp option maxseg size gt 1380') < 0);
+delete st.network.wgc_myhomevpn.mtu;
+call('sync');
 check('ipv6: blocked for the VPN network (IPv4-only full tunnel)', st.firewall.wgpasswall_no_ipv6?.enabled == '1' &&
 	st.firewall.wgpasswall_no_ipv6?.src == 'wgvpn' && st.firewall.wgpasswall_no_ipv6?.family == 'ipv6' && call('status').ipv6_blocked);
 call('disconnect', { id: 'wgc_myhomevpn' });

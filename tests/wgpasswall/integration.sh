@@ -349,6 +349,9 @@ check_wrapped() {
 	ubus call luci.wgpasswall get '{"id":"wgc_civpn"}' | jq -e '.conf | contains("Endpoint = 1.2.3.4:51820")' >/dev/null || fail "editor does not show the real server"
 	ubus call luci.wgpasswall status | jq -e '.profiles[0].endpoint == "1.2.3.4:51820" and .via_passwall' >/dev/null || fail "status does not show the real server"
 	[ "$(uci -q get network.wgc_civpn.mtu)" = 1280 ] || fail "MTU not lowered"
+	grep -q 'iifname "wgc_civpn" meta nfproto ipv4 .* maxseg size set 1240' /etc/wgpasswall/devices-dns.nft || \
+		{ cat /etc/wgpasswall/devices-dns.nft; fail "TCP segments not clamped to the lowered MTU"; }
+	nft -c -f /etc/wgpasswall/devices-dns.nft || fail "MSS rules do not load"
 	ubus call luci.wgpasswall get '{"id":"wgc_civpn"}' | jq -e '.conf | contains("MTU") | not' >/dev/null || fail "editor shows lowered MTU"
 	[ "$(uci -q get network.wgpasswall_rule_vpn_wgvpn.in)" = wgvpn ] || fail "VPN network not routed into the tunnel"
 	uci -q get network.wgpasswall_rule_vpn_loopback >/dev/null && fail "router traffic routed into the wrapped tunnel"
