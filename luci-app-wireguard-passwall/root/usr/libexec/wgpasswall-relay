@@ -52,7 +52,7 @@
 
 import * as socket from 'socket';
 import * as uloop from 'uloop';
-import { readfile, writefile, rename, mkdir, popen } from 'fs';
+import { readfile, writefile, rename, mkdir, popen, access } from 'fs';
 import { cursor } from 'uci';
 
 const STATUS = getenv('WGPASSWALL_RELAY_STATUS') ?? '/var/run/wgpasswall/relay-status.json';
@@ -494,6 +494,26 @@ function watchdog() {
 	}
 }
 
+// Passwall uninstalled while the tunnels go through it: after 3 checks in a
+// row (not while apk or opkg runs, an upgrade removes Passwall's files for a
+// moment) the app puts the tunnels back on their servers, which stops this
+// relay.
+let pw_gone = 0;
+
+function check_passwall() {
+	if (getenv('WGPASSWALL_RELAY_CONFIG') || access('/etc/init.d/passwall')) {
+		pw_gone = 0;
+		return;
+	}
+
+	if (++pw_gone < 3 || system('pidof apk opkg >/dev/null 2>&1') == 0)
+		return;
+
+	pw_gone = 0;
+	log_event('pw_removed', null, 'Passwall is not installed anymore; the VPN goes to its server directly again');
+	system('ubus call luci.wgpasswall sync </dev/null >/dev/null 2>&1 &');
+}
+
 function write_status() {
 	let st = [];
 
@@ -524,6 +544,7 @@ status_timer = uloop.timer(2000, function() {
 let watchdog_timer;
 watchdog_timer = uloop.timer(CHECK_MS, function() {
 	watchdog();
+	check_passwall();
 	watchdog_timer.set(CHECK_MS);
 });
 

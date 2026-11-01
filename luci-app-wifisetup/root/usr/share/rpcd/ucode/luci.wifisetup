@@ -172,6 +172,11 @@ function role_network(uci, role) {
 	if (role == 'lan')
 		return settings(uci).lan_network;
 
+	// the Passwall network only while Passwall is installed: WireGuard +
+	// Passwall removes it once Passwall is gone
+	if (role == 'proxy' && !access('/etc/init.d/passwall'))
+		return null;
+
 	const net = ROLE_NETS[role];
 
 	return (net && uci.get('network', net) == 'interface') ? net : null;
@@ -660,6 +665,14 @@ const methods = {
 	get: {
 		call: function() {
 			const uci = cursor();
+
+			// Passwall uninstalled: WireGuard + Passwall moves the Passwall
+			// network's Wi-Fi networks back to the home network (after this
+			// reply: luci.wgpasswall is served by rpcd, which waits for this)
+			if (access('/usr/share/rpcd/ucode/luci.wgpasswall') && !access('/etc/init.d/passwall') &&
+			    uci.get('network', ROLE_NETS.proxy) == 'interface')
+				system('(sleep 1; ubus call luci.wgpasswall sync) </dev/null >/dev/null 2>&1 &');
+
 			const l = layout(uci);
 			let band_of = {}, list = [], country = null;
 

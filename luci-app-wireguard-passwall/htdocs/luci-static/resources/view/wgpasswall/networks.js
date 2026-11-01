@@ -208,6 +208,8 @@ function relayEvent(e) {
 		return { cls: 'warn', text: _('Checked Passwall\'s node: it answers, so the VPN server is what does not answer; Passwall left alone') };
 	case 'pw_restart':
 		return { cls: 'bad', text: _('Checked Passwall\'s node: it does not answer either; restarting Passwall') };
+	case 'pw_removed':
+		return { cls: 'warn', text: _('Passwall was uninstalled: the VPN goes to its server directly again') };
 	}
 
 	return { cls: '', text: e.msg ?? e.kind };
@@ -1079,7 +1081,7 @@ return view.extend({
 			...profiles.map((p) => this.renderProfile(p)),
 			this.renderDropZone(!profiles.length),
 			E('div', { 'class': 'wgc-row', style: 'justify-content:flex-end; flex-wrap:wrap; gap:8px; margin-top:16px' }, [
-				E('span', { 'class': 'wgc-sub', style: 'margin:0' }, _('Changed something in Passwall or the firewall?')),
+				E('span', { 'class': 'wgc-sub', style: 'margin:0' }, data.passwall?.installed ? _('Changed something in Passwall or the firewall?') : _('Changed something in the firewall?')),
 				E('button', { 'class': 'btn cbi-button', click: ui.createHandlerFn(this, 'handleReapply') }, [ _('Reapply settings') ])
 			])
 		];
@@ -1094,7 +1096,9 @@ return view.extend({
 		return E([], [
 			E('style', {}, CSS),
 			E('h2', {}, _('WireGuard + Passwall')),
-			E('div', { 'class': 'cbi-map-descr', style: 'margin-bottom:16px' }, _('Devices on the VPN network go through your WireGuard VPN, devices on the Passwall network through Passwall, and everything else uses your regular internet connection. Choose the network of each wired port here and of each Wi-Fi network in Wi-Fi Setup.')),
+			E('div', { 'class': 'cbi-map-descr', style: 'margin-bottom:16px' }, data.passwall?.installed
+				? _('Devices on the VPN network go through your WireGuard VPN, devices on the Passwall network through Passwall, and everything else uses your regular internet connection. Choose the network of each wired port here and of each Wi-Fi network in Wi-Fi Setup.')
+				: _('Devices on the VPN network go through your WireGuard VPN, and everything else uses your regular internet connection. Choose the network of each wired port here and of each Wi-Fi network in Wi-Fi Setup.')),
 			this.root
 		]);
 	}

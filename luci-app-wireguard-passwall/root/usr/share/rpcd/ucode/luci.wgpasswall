@@ -815,6 +815,9 @@ function apply(uci, packages, after) {
 	if ('dhcp' in packages)
 		push(cmds, '/etc/init.d/dnsmasq reload');
 
+	if ('wireless' in packages)
+		push(cmds, 'wifi reload');
+
 	if (length(after)) {
 		const token = trim(readfile('/proc/sys/kernel/random/uuid') ?? '') || `${time()}`;
 
@@ -1209,6 +1212,12 @@ function pw_snapshot(uci) {
 	return join('\n', out);
 }
 
+// apk or opkg at work: while Passwall is upgraded, its files are gone for a
+// moment, which must not count as Passwall being uninstalled
+function pkg_manager_busy() {
+	return system('pidof apk opkg >/dev/null 2>&1') == 0;
+}
+
 /*
  * Brings Passwall's configuration in line with what the networks and the
  * tunnel need. Returns the commands for apply(): (re)starting Passwall when
@@ -1216,8 +1225,29 @@ function pw_snapshot(uci) {
  * it is no longer needed.
  */
 function pw_sync(uci) {
-	if (!pw_installed(uci))
+	// Passwall uninstalled but its configuration left behind: the app's rules
+	// come out and Passwall's own settings go back, so a reinstall starts as
+	// before; there is no Passwall to restart
+	if (!pw_installed(uci)) {
+		const g = first_section(uci, 'passwall', 'global');
+
+		if (g && !pkg_manager_busy()) {
+			pw_sync_acl(uci);
+
+			if (pw_baseline_saved(uci))
+				pw_restore_baseline(uci, g, first_section(uci, 'passwall', 'global_forwarding'));
+
+			uci.save('passwall');
+		}
+
+		if (pw_baseline_saved(uci) && !pkg_manager_busy()) {
+			uci.delete('wgpasswall', 'passwall');
+			uci.set('wgpasswall', 'passwall', 'passwall');
+			uci.save('wgpasswall');
+		}
+
 		return [];
+	}
 
 	const g = first_section(uci, 'passwall', 'global');
 	const fw = first_section(uci, 'passwall', 'global_forwarding');
@@ -1264,12 +1294,110 @@ function pw_sync(uci) {
 	return cmds;
 }
 
+// Puts the network's wired ports back on the home network's bridge and its
+// Wi-Fi networks on the home network, then removes the network: bridge,
+// interface, DHCP, zone and forwardings. Returns true if Wi-Fi changed.
+function remove_net(uci, key) {
+	const n = NETS[key];
+	const lan = lan_bridge(uci);
+	const lan_sid = lan ? bridge_sid(uci, lan) : null;
+	const ports = as_list(uci.get('network', n.dev_sid, 'ports'));
+	let wifi = false;
+
+	if (lan_sid && length(ports))
+		uci.set('network', lan_sid, 'ports', uniq([ ...as_list(uci.get('network', lan_sid, 'ports')), ...ports ]));
+
+	uci.foreach('wireless', 'wifi-iface', (s) => {
+		const nets = as_list(s.network);
+
+		if (n.net in nets) {
+			const rest = filter(nets, (x) => x != n.net);
+
+			uci.set('wireless', s['.name'], 'network', length(rest) ? rest : [ 'lan' ]);
+			wifi = true;
+		}
+	});
+
+	uci.delete('network', n.dev_sid);
+	uci.delete('network', n.net);
+	uci.delete('dhcp', n.net);
+	uci.delete('firewall', n.zone_sid);
+
+	for (let f in NET_FWDS[key])
+		uci.delete('firewall', f[0]);
+
+	return wifi;
+}
+
+// What the app still has set up for Passwall although Passwall is not
+// installed (anymore).
+function pw_leftovers(uci) {
+	if (pw_installed(uci))
+		return false;
+
+	let acl = false;
+
+	uci.foreach('passwall', null, (s) => {
+		if (is_app_acl(s['.name']))
+			acl = true;
+	});
+
+	return settings(uci).via_passwall || net_exists(uci, 'proxy') || uci.get('network', NETS.proxy.dev_sid) != null ||
+		uci.get('firewall', NETS.proxy.zone_sid) != null || pw_baseline_saved(uci) || acl;
+}
+
+/*
+ * Passwall uninstalled: what the app set up for it goes back, so nothing is
+ * left pointing at a Passwall that is not there. The Passwall network's
+ * ports and Wi-Fi networks return to the home network and the network is
+ * removed; carrying the VPN through Passwall is switched off (relay_sync()
+ * then points the tunnels at their servers again). Passwall's own leftover
+ * configuration is handled by pw_sync(). Returns the uci packages changed.
+ */
+function pw_removed(uci) {
+	if (!pw_leftovers(uci) || pkg_manager_busy())
+		return [];
+
+	let packages = [ 'wgpasswall' ];
+
+	if (settings(uci).via_passwall) {
+		ensure_settings(uci);
+		uci.set('wgpasswall', 'settings', 'via_passwall', '0');
+	}
+
+	if (net_exists(uci, 'proxy') || uci.get('network', NETS.proxy.dev_sid) != null || uci.get('firewall', NETS.proxy.zone_sid) != null) {
+		if (remove_net(uci, 'proxy'))
+			push(packages, 'wireless');
+
+		push(packages, 'network', 'dhcp', 'firewall');
+	}
+
+	for (let pkg in packages)
+		uci.save(pkg);
+
+	return packages;
+}
+
+// Puts back what the app set up for an uninstalled Passwall (pw_removed()
+// through "sync"), from places that only notice it: a sync after the reply,
+// as luci.wgpasswall is served by rpcd, and at most once a minute.
+const PW_REMOVED_STAMP = getenv('WGPASSWALL_PW_STAMP') ?? '/var/run/wgpasswall/pw-removed';
+
+function pw_removed_later() {
+	if (time() - +(readfile(PW_REMOVED_STAMP) ?? 0) < 60)
+		return;
+
+	mkdir(replace(PW_REMOVED_STAMP, /\/[^\/]*$/, ''));
+	writefile(PW_REMOVED_STAMP, `${time()}`);
+	system('(sleep 1; ubus call luci.wgpasswall sync) </dev/null >/dev/null 2>&1 &');
+}
+
 /*
  * Applies networks, routing, firewall, the relay and Passwall to the current
  * settings. Returns { packages, pw } for apply().
  */
 function sync_all(uci) {
-	const packages = ensure_networks(uci);
+	const packages = [ ...pw_removed(uci), ...ensure_networks(uci) ];
 	const changed = relay_sync(uci);
 
 	sync_routing(uci);
@@ -1443,6 +1571,12 @@ const methods = {
 	status: {
 		call: function() {
 			const uci = cursor();
+
+			// Passwall uninstalled: the page shows nothing of it, and the app
+			// puts back what it set up for it
+			if (pw_leftovers(uci))
+				pw_removed_later();
+
 			const rt = runtime_status();
 			const s = settings(uci);
 			const now = time();
@@ -1852,8 +1986,6 @@ const methods = {
 	uninstall: {
 		call: function() {
 			const uci = cursor();
-			const lan = lan_bridge(uci);
-			const lan_sid = lan ? bridge_sid(uci, lan) : null;
 			let wifi = false, after = [];
 
 			for (let id in profile_ids(uci)) {
@@ -1866,31 +1998,9 @@ const methods = {
 			uci.set('wgpasswall', 'settings', 'via_passwall', '0');
 			relay_sync(uci);
 
-			for (let key, n in NETS) {
-				const ports = as_list(uci.get('network', n.dev_sid, 'ports'));
-
-				if (lan_sid && length(ports))
-					uci.set('network', lan_sid, 'ports', uniq([ ...as_list(uci.get('network', lan_sid, 'ports')), ...ports ]));
-
-				uci.foreach('wireless', 'wifi-iface', (s) => {
-					const nets = as_list(s.network);
-
-					if (n.net in nets) {
-						const rest = filter(nets, (x) => x != n.net);
-
-						uci.set('wireless', s['.name'], 'network', length(rest) ? rest : [ 'lan' ]);
-						wifi = true;
-					}
-				});
-
-				uci.delete('network', n.dev_sid);
-				uci.delete('network', n.net);
-				uci.delete('dhcp', n.net);
-				uci.delete('firewall', n.zone_sid);
-
-				for (let f in NET_FWDS[key])
-					uci.delete('firewall', f[0]);
-			}
+			for (let key in keys(NETS))
+				if (remove_net(uci, key))
+					wifi = true;
 
 			let rules = [];
 

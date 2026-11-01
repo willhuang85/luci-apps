@@ -108,6 +108,10 @@ How **Carry the VPN through Passwall** works: each tunnel's endpoint is pointed 
 
 **Reapply settings** (bottom of the page) sets everything up again: networks, routing, firewall rules and Passwall's settings, then reloads the firewall and restarts Passwall if it is needed. Use it after changing things on Passwall's own page or in the firewall. The page also warns ("Settings out of step") when Passwall's settings or the app's rules no longer match, or its firewall rules are saved but not active.
 
+### If Passwall is uninstalled
+
+The app puts back what it set up for Passwall: the Passwall network's wired ports and Wi-Fi networks return to the home network and the Passwall network is removed, carrying the VPN through Passwall is switched off (the tunnel connects to its server directly again), and if Passwall's configuration was left behind, the app's access control rule comes out of it and Passwall's own settings go back in, so a reinstalled Passwall starts as it was. This happens on the next change, when this page or Wi-Fi Setup is opened, within half a minute if the VPN was carried through Passwall (the relay notices), or after a reboot; never while `apk`/`opkg` is running, since an upgrade of Passwall removes its files for a moment. The pages then no longer offer anything of Passwall. Install Passwall again to get the Passwall network back.
+
 ### Why not let Passwall's "Localhost Proxy" carry WireGuard?
 
 Letting Passwall intercept WireGuard's packets transparently (Localhost Proxy plus the server in the proxy list) looks like it should work, and the proxy log even shows the packets arriving, but it falls apart within seconds: the replies the proxy injects back to WireGuard create a new connection-tracking entry that looks like it was opened by the server, after which Passwall treats WireGuard's packets as replies and lets them out directly. The relay avoids interception altogether.

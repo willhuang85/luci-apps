@@ -439,6 +439,43 @@ awk '/restart-begin/ { if (busy) { print "restarts overlap at line " NR; bad = 1
      END { exit bad }' /tmp/order.log || { cat /tmp/order.log; fail "firewall reloads / Passwall restarts overlapped"; }
 grep -q firewall-reload /tmp/order.log || fail "firewall never reloaded"
 
+echo "== Passwall uninstalled"
+# in use: a port and a Wi-Fi network on the Passwall network, the VPN connected through it
+ubus call luci.wgpasswall set_ports '{"ports":{"lan2":"proxy"}}' >/dev/null || fail "set_ports proxy"
+uci set wireless.wifinet2.disabled=0; uci commit wireless
+ubus call luci.wgpasswall set_options '{"via_passwall":true}' >/dev/null || fail "via_passwall on"
+ubus call luci.wgpasswall connect '{"id":"wgc_civpn"}' >/dev/null || fail "connect"
+wait_queue
+check_wrapped
+# the package goes, its configuration stays behind (as when it was changed)
+mv /etc/init.d/passwall "$WORK/passwall.init"
+rm -f /var/run/wgpasswall/pw-removed
+# opening the page notices it and puts back what the app set up for Passwall
+ubus call luci.wgpasswall status | jq -e '.passwall.installed == false' >/dev/null || fail "Passwall still reported as installed"
+for i in $(seq 1 20); do uci -q get network.wgproxy >/dev/null || break; sleep 0.5; done
+wait_queue
+uci -q get network.wgproxy >/dev/null && fail "Passwall network not removed after Passwall was uninstalled"
+uci -q get network.wgpasswall_proxy_dev >/dev/null && fail "Passwall network bridge left behind"
+uci -q get dhcp.wgproxy >/dev/null && fail "Passwall network DHCP left behind"
+uci -q get firewall.wgpasswall_proxy_zone >/dev/null && fail "Passwall network zone left behind"
+uci -q get firewall.wgpasswall_proxy_wan >/dev/null && fail "Passwall network forwarding left behind"
+uci -q get network.brlan.ports | grep -qw lan2 || fail "port not back on the home network: $(uci -q get network.brlan.ports)"
+[ "$(uci -q get wireless.wifinet2.network)" = lan ] || fail "Wi-Fi not back on the home network"
+[ "$(uci -q get wgpasswall.settings.via_passwall)" = 0 ] || fail "carrying the VPN through Passwall still on"
+uci show network | grep -q "endpoint_host='1.2.3.4'" || fail "tunnel not back on its server"
+uci show network | grep -q wgpasswall_orig_host && fail "relay endpoint left behind"
+uci -q get network.wgc_civpn.mtu >/dev/null && fail "lowered MTU left behind"
+# Passwall's leftover configuration is as before the app changed it
+pw_same || { uci show passwall | sort | diff "$WORK/passwall.orig" -; fail "Passwall's configuration not restored"; }
+ubus call luci.wgpasswall status | jq -e '.networks.proxy.exists == false and .via_passwall == false and .drift == []' >/dev/null || \
+	fail "status after Passwall was uninstalled: $(ubus call luci.wgpasswall status | jq -c '{networks: .networks.proxy, via_passwall, drift}')"
+# Passwall installed again: the Passwall network can be set up again
+mv "$WORK/passwall.init" /etc/init.d/passwall
+ubus call luci.wgpasswall disconnect '{"id":"wgc_civpn"}' >/dev/null || fail "disconnect"
+ubus call luci.wgpasswall sync >/dev/null
+wait_queue
+[ "$(uci -q get network.wgproxy.device)" = br-wgproxy ] || fail "Passwall network not set up again"
+
 echo "== uninstall"
 ubus call luci.wgpasswall set_ports '{"ports":{"lan1":"vpn","lan2":"proxy"}}' >/dev/null || fail "set_ports"
 uci set wireless.wifinet2.disabled=0; uci commit wireless
