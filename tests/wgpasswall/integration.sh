@@ -469,12 +469,22 @@ uci -q get network.wgc_civpn.mtu >/dev/null && fail "lowered MTU left behind"
 pw_same || { uci show passwall | sort | diff "$WORK/passwall.orig" -; fail "Passwall's configuration not restored"; }
 ubus call luci.wgpasswall status | jq -e '.networks.proxy.exists == false and .via_passwall == false and .drift == []' >/dev/null || \
 	fail "status after Passwall was uninstalled: $(ubus call luci.wgpasswall status | jq -c '{networks: .networks.proxy, via_passwall, drift}')"
-# Passwall installed again: the Passwall network can be set up again
+# Passwall installed again: opening the page sets up the Passwall network again
 mv "$WORK/passwall.init" /etc/init.d/passwall
 ubus call luci.wgpasswall disconnect '{"id":"wgc_civpn"}' >/dev/null || fail "disconnect"
-ubus call luci.wgpasswall sync >/dev/null
+wait_queue
+rm -f /var/run/wgpasswall/pw-removed
+ubus call luci.wgpasswall status | jq -e '.passwall.installed' >/dev/null || fail "Passwall not reported as installed again"
+for i in $(seq 1 20); do uci -q get network.wgproxy >/dev/null && break; sleep 0.5; done
 wait_queue
 [ "$(uci -q get network.wgproxy.device)" = br-wgproxy ] || fail "Passwall network not set up again"
+# and works as before: a port on it turns Passwall on with the app's rule
+ubus call luci.wgpasswall set_ports '{"ports":{"lan2":"proxy"}}' >/dev/null || fail "set_ports proxy after reinstall"
+wait_queue
+check_pw_network
+ubus call luci.wgpasswall set_ports '{"ports":{"lan2":"lan"}}' >/dev/null
+wait_queue
+pw_same || { uci show passwall | sort | diff "$WORK/passwall.orig" -; fail "Passwall's configuration not restored after reinstall"; }
 
 echo "== uninstall"
 ubus call luci.wgpasswall set_ports '{"ports":{"lan1":"vpn","lan2":"proxy"}}' >/dev/null || fail "set_ports"

@@ -1378,9 +1378,11 @@ function pw_removed(uci) {
 	return packages;
 }
 
-// Puts back what the app set up for an uninstalled Passwall (pw_removed()
-// through "sync"), from places that only notice it: a sync after the reply,
-// as luci.wgpasswall is served by rpcd, and at most once a minute.
+// Brings the networks in line with Passwall being installed or not: puts
+// back what the app set up for an uninstalled Passwall (pw_removed()), or
+// sets up the Passwall network once Passwall is installed (again). Called
+// from places that only notice it: a sync after the reply, as
+// luci.wgpasswall is served by rpcd, and at most once a minute.
 const PW_REMOVED_STAMP = getenv('WGPASSWALL_PW_STAMP') ?? '/var/run/wgpasswall/pw-removed';
 
 function pw_removed_later() {
@@ -1573,8 +1575,9 @@ const methods = {
 			const uci = cursor();
 
 			// Passwall uninstalled: the page shows nothing of it, and the app
-			// puts back what it set up for it
-			if (pw_leftovers(uci))
+			// puts back what it set up for it; Passwall installed (again): the
+			// app sets up the Passwall network
+			if (pw_leftovers(uci) || (pw_installed(uci) && !net_exists(uci, 'proxy')))
 				pw_removed_later();
 
 			const rt = runtime_status();

@@ -667,10 +667,11 @@ const methods = {
 			const uci = cursor();
 
 			// Passwall uninstalled: WireGuard + Passwall moves the Passwall
-			// network's Wi-Fi networks back to the home network (after this
-			// reply: luci.wgpasswall is served by rpcd, which waits for this)
-			if (access('/usr/share/rpcd/ucode/luci.wgpasswall') && !access('/etc/init.d/passwall') &&
-			    uci.get('network', ROLE_NETS.proxy) == 'interface')
+			// network's Wi-Fi networks back to the home network; installed
+			// (again): it sets up the Passwall network (after this reply:
+			// luci.wgpasswall is served by rpcd, which waits for this)
+			if (access('/usr/share/rpcd/ucode/luci.wgpasswall') &&
+			    !access('/etc/init.d/passwall') == (uci.get('network', ROLE_NETS.proxy) == 'interface'))
 				system('(sleep 1; ubus call luci.wgpasswall sync) </dev/null >/dev/null 2>&1 &');
 
 			const l = layout(uci);
